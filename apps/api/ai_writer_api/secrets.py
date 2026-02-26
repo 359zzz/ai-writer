@@ -43,8 +43,16 @@ def _parse_key_value(line: str) -> tuple[str, str] | None:
             k = k.strip()
             v = v.strip()
             if k and v:
+                v = _strip_wrapping_quotes(v)
                 return k, v
     return None
+
+
+def _strip_wrapping_quotes(v: str) -> str:
+    t = v.strip()
+    if len(t) >= 2 and ((t[0] == t[-1] == '"') or (t[0] == t[-1] == "'")):
+        return t[1:-1].strip()
+    return t
 
 
 def _looks_like_api_key(s: str) -> bool:
@@ -142,4 +150,3 @@ def secrets_status() -> dict[str, object]:
         "gemini_model_present": bool(s.gemini_model),
         "gemini_base_url_present": bool(s.gemini_base_url),
     }
-

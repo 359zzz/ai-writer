@@ -235,6 +235,56 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             yield emit("run_completed", "Director", {})
             return
 
+        # Agent: Extractor (continue mode)
+        story_state: dict[str, Any] | None = None
+        source_text = str(payload.get("source_text") or "").strip()
+        if kind == "continue" and source_text:
+            try:
+                yield emit("agent_started", "Extractor", {})
+                system = (
+                    "You are ExtractorAgent. Extract a structured StoryState from an existing manuscript excerpt. "
+                    "Output JSON only."
+                )
+                user = (
+                    "Extract the following fields:\n"
+                    "{\n"
+                    '  "summary_so_far": "...",\n'
+                    '  "characters": [ {"name":"...","current_status":"...","relationships":"..."} ],\n'
+                    '  "world": "...",\n'
+                    '  "timeline": [ {"event":"...","when":"..."} ],\n'
+                    '  "open_loops": ["..."],\n'
+                    '  "style_profile": {"pov":"...","tense":"...","tone":"..."}\n'
+                    "}\n\n"
+                    "Manuscript:\n"
+                    f"{source_text[:8000]}\n"
+                )
+                cfg = llm_cfg()
+                yield emit(
+                    "tool_call",
+                    "Extractor",
+                    {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
+                )
+                extracted_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
+                parsed = parse_json_loose(extracted_text)
+                if isinstance(parsed, dict):
+                    story_state = parsed
+                    with get_session() as s4b:
+                        p4b = s4b.get(Project, project_id)
+                        if p4b:
+                            p4b.settings = deep_merge(p4b.settings or {}, {"story_state": story_state})  # type: ignore[assignment]
+                            p4b.updated_at = _now_utc()
+                            s4b.add(p4b)
+                            s4b.commit()
+                            s4b.refresh(p4b)
+                            project.settings = p4b.settings
+                yield emit("agent_output", "Extractor", {"keys": list(story_state.keys()) if story_state else []})
+                yield emit("artifact", "Extractor", {"artifact_type": "story_state", "story_state": story_state})
+                yield emit("agent_finished", "Extractor", {})
+            except Exception as e:
+                # Continue mode should degrade gracefully: keep going without story_state.
+                yield emit("agent_output", "Extractor", {"error": f"extractor_failed:{type(e).__name__}"})
+                yield emit("agent_finished", "Extractor", {})
+
         story = (project.settings or {}).get("story") if isinstance((project.settings or {}).get("story"), dict) else {}
         writing = (project.settings or {}).get("writing") if isinstance((project.settings or {}).get("writing"), dict) else {}
         chapter_count = int(writing.get("chapter_count") or 10)
@@ -251,6 +301,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 )
                 user = (
                     f"Story info:\n{json_dumps(story)}\n\n"
+                    f"StoryState (if any):\n{json_dumps(story_state or {})}\n\n"
                     f"Target chapter_count: {chapter_count}\n\n"
                     "Output JSON in the form:\n"
                     "{ \"chapters\": [ {\"index\":1,\"title\":\"...\",\"summary\":\"...\",\"goal\":\"...\"} ] }\n"
@@ -373,6 +424,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             ]
             if chapter_plan:
                 user_parts.append(f"Chapter plan:\n{json_dumps(chapter_plan)}")
+            if story_state:
+                user_parts.append(f"StoryState:\n{json_dumps(story_state)}")
             if kb_context:
                 kb_text = "\n\n".join(
                     f"[KB#{k['id']}] {k.get('title','')}\n{k.get('content','')}" for k in kb_context

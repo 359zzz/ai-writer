@@ -37,8 +37,19 @@ type ChapterItem = {
   updated_at: string;
 };
 
+type RunItem = {
+  id: string;
+  project_id: string;
+  kind: string;
+  status: string;
+  created_at: string;
+  finished_at: string | null;
+  error: string | null;
+};
+
 export default function Home() {
   const [tab, setTab] = useState<TabKey>("writing");
+  const [agentsView, setAgentsView] = useState<"timeline" | "graph">("timeline");
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -59,6 +70,8 @@ export default function Home() {
       data: Record<string, unknown>;
     }>
   >([]);
+  const [runs, setRuns] = useState<RunItem[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [runInProgress, setRunInProgress] = useState<boolean>(false);
   const [generatedMarkdown, setGeneratedMarkdown] = useState<string>("");
@@ -66,6 +79,7 @@ export default function Home() {
   const [chapters, setChapters] = useState<ChapterItem[]>([]);
   const [chapterIndex, setChapterIndex] = useState<number>(1);
   const [researchQuery, setResearchQuery] = useState<string>("");
+  const [continueText, setContinueText] = useState<string>("");
   const [kbTitle, setKbTitle] = useState<string>("Lore");
   const [kbTags, setKbTags] = useState<string>("lore");
   const [kbContent, setKbContent] = useState<string>("");
@@ -140,6 +154,29 @@ export default function Home() {
   }, [projects, selectedProjectId]);
 
   useEffect(() => {
+    setRuns([]);
+    setSelectedRunId(null);
+    setRunEvents([]);
+  }, [selectedProjectId]);
+
+  const agentFlow = useMemo(() => {
+    const seq = runEvents
+      .map((e) => e.agent)
+      .filter((a): a is string => typeof a === "string" && a.trim().length > 0);
+    const compressed: string[] = [];
+    for (const a of seq) {
+      if (compressed.length === 0 || compressed[compressed.length - 1] !== a) {
+        compressed.push(a);
+      }
+    }
+    return compressed;
+  }, [runEvents]);
+
+  const runEventsRunId = useMemo(() => {
+    return runEvents[0]?.run_id ?? null;
+  }, [runEvents]);
+
+  useEffect(() => {
     let cancelled = false;
     async function run() {
       if (!selectedProjectId) {
@@ -163,6 +200,71 @@ export default function Home() {
       cancelled = true;
     };
   }, [apiBase, selectedProjectId, runEvents.length]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      if (tab !== "agents") return;
+      if (!selectedProjectId) return;
+      if (runInProgress) return;
+
+      try {
+        const r1 = await fetch(
+          `${apiBase}/api/projects/${selectedProjectId}/runs`,
+          { cache: "no-store" },
+        );
+        if (!r1.ok) throw new Error(`HTTP ${r1.status}`);
+        const runList = (await r1.json()) as RunItem[];
+        if (cancelled) return;
+        setRuns(runList);
+
+        const rid = selectedRunId ?? runList[0]?.id ?? null;
+        if (!rid) return;
+        if (selectedRunId !== rid) setSelectedRunId(rid);
+
+        const currentRunId = runEventsRunId;
+        if (currentRunId === rid && runEvents.length > 0) return;
+
+        const r2 = await fetch(`${apiBase}/api/runs/${rid}/events`, {
+          cache: "no-store",
+        });
+        if (!r2.ok) throw new Error(`HTTP ${r2.status}`);
+        const evts = (await r2.json()) as Array<{
+          run_id: string;
+          seq: number;
+          ts: string;
+          event_type: string;
+          agent: string | null;
+          payload: Record<string, unknown>;
+        }>;
+        if (cancelled) return;
+        setRunEvents(
+          evts.map((e) => ({
+            run_id: e.run_id,
+            seq: e.seq,
+            ts: e.ts,
+            type: e.event_type,
+            agent: e.agent,
+            data: e.payload ?? {},
+          })),
+        );
+      } catch {
+        if (!cancelled) setRuns([]);
+      }
+    }
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    tab,
+    apiBase,
+    selectedProjectId,
+    selectedRunId,
+    runInProgress,
+    runEventsRunId,
+    runEvents.length,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -656,6 +758,43 @@ export default function Home() {
                   </div>
                 </div>
 
+                <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">Continue Mode</div>
+                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    Paste existing text; the system extracts StoryState and continues from it.
+                  </div>
+                  <textarea
+                    value={continueText}
+                    onChange={(e) => setContinueText(e.target.value)}
+                    className="mt-3 h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                    placeholder="Paste your existing manuscript here..."
+                  />
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      disabled={!selectedProjectId || runInProgress || !continueText.trim()}
+                      onClick={() => {
+                        runPipeline("continue", {
+                          chapter_index: chapterIndex,
+                          source_text: continueText,
+                          research_query: researchQuery.trim() || undefined,
+                        }).catch((e) =>
+                          setRunError((e as Error).message),
+                        );
+                      }}
+                      className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    >
+                      Extract + Continue
+                    </button>
+                    <button
+                      disabled={!continueText}
+                      onClick={() => setContinueText("")}
+                      className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
                 <div className="mt-4">
                   <div className="mb-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
                     Markdown Editor
@@ -912,12 +1051,60 @@ export default function Home() {
               the backend runs.
             </p>
 
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <select
+                value={selectedRunId ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value || null;
+                  setSelectedRunId(v);
+                  setRunEvents([]);
+                }}
+                className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+              >
+                {runs.length === 0 ? (
+                  <option value="">No runs</option>
+                ) : (
+                  runs.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.kind} · {r.status} ·{" "}
+                      {new Date(r.created_at).toLocaleString()}
+                    </option>
+                  ))
+                )}
+              </select>
+              <button
+                onClick={() => setAgentsView("timeline")}
+                className={[
+                  "rounded-md px-3 py-2 text-sm",
+                  agentsView === "timeline"
+                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                ].join(" ")}
+              >
+                Timeline
+              </button>
+              <button
+                onClick={() => setAgentsView("graph")}
+                className={[
+                  "rounded-md px-3 py-2 text-sm",
+                  agentsView === "graph"
+                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                ].join(" ")}
+              >
+                Graph
+              </button>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                events: {runEvents.length}
+              </span>
+            </div>
+
             <div className="mt-6 rounded-lg border border-zinc-200 dark:border-zinc-800">
               {runEvents.length === 0 ? (
                 <div className="p-4 text-sm text-zinc-500 dark:text-zinc-400">
                   No run events yet. Run the demo pipeline in the Writing tab.
                 </div>
-              ) : (
+              ) : agentsView === "timeline" ? (
                 <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
                   {runEvents.map((e) => (
                     <li key={`${e.run_id}:${e.seq}`} className="p-3">
@@ -943,6 +1130,32 @@ export default function Home() {
                     </li>
                   ))}
                 </ul>
+              ) : (
+                <div className="p-4">
+                  <div className="text-sm font-medium">Execution Flow</div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {agentFlow.length === 0 ? (
+                      <div className="text-sm text-zinc-500 dark:text-zinc-400">
+                        No agents found in events.
+                      </div>
+                    ) : (
+                      agentFlow.map((a, idx) => (
+                        <div key={`${a}:${idx}`} className="flex items-center gap-2">
+                          <div className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-800 dark:bg-zinc-950">
+                            {a}
+                          </div>
+                          {idx < agentFlow.length - 1 ? (
+                            <span className="text-xs text-zinc-400">→</span>
+                          ) : null}
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
+                    This is a compressed view (consecutive duplicates removed).
+                  </div>
+                </div>
               )}
             </div>
           </section>
@@ -1013,6 +1226,176 @@ export default function Home() {
                         <option value="gemini">Gemini</option>
                       </select>
                     </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        GPT Model
+                      </span>
+                      <input
+                        defaultValue={getSettingsValue(
+                          "llm.openai.model",
+                          "gpt-4o-mini",
+                        )}
+                        onBlur={(e) =>
+                          saveProjectSettings({
+                            llm: { openai: { model: e.target.value } },
+                          }).catch((err) =>
+                            setSettingsError((err as Error).message),
+                          )
+                        }
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                      />
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        GPT Base URL
+                      </span>
+                      <input
+                        defaultValue={getSettingsValue(
+                          "llm.openai.base_url",
+                          "",
+                        )}
+                        onBlur={(e) =>
+                          saveProjectSettings({
+                            llm: { openai: { base_url: e.target.value } },
+                          }).catch((err) =>
+                            setSettingsError((err as Error).message),
+                          )
+                        }
+                        placeholder="Optional (leave empty to use api.txt/env)"
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                      />
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Gemini Model
+                      </span>
+                      <input
+                        defaultValue={getSettingsValue(
+                          "llm.gemini.model",
+                          "gemini-2.5-pro",
+                        )}
+                        onBlur={(e) =>
+                          saveProjectSettings({
+                            llm: { gemini: { model: e.target.value } },
+                          }).catch((err) =>
+                            setSettingsError((err as Error).message),
+                          )
+                        }
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                      />
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Gemini Base URL
+                      </span>
+                      <input
+                        defaultValue={getSettingsValue(
+                          "llm.gemini.base_url",
+                          "",
+                        )}
+                        onBlur={(e) =>
+                          saveProjectSettings({
+                            llm: { gemini: { base_url: e.target.value } },
+                          }).catch((err) =>
+                            setSettingsError((err as Error).message),
+                          )
+                        }
+                        placeholder="Optional (leave empty to use api.txt/env)"
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                      />
+                    </label>
+
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          Temperature
+                        </span>
+                        <input
+                          type="number"
+                          step="0.1"
+                          defaultValue={getSettingsValue("llm.temperature", "0.7")}
+                          onBlur={(e) =>
+                            saveProjectSettings({
+                              llm: { temperature: Number(e.target.value) },
+                            }).catch((err) =>
+                              setSettingsError((err as Error).message),
+                            )
+                          }
+                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        />
+                      </label>
+
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          Max Tokens
+                        </span>
+                        <input
+                          type="number"
+                          step="50"
+                          defaultValue={getSettingsValue("llm.max_tokens", "800")}
+                          onBlur={(e) =>
+                            saveProjectSettings({
+                              llm: { max_tokens: Number(e.target.value) },
+                            }).catch((err) =>
+                              setSettingsError((err as Error).message),
+                            )
+                          }
+                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          Chapter Words
+                        </span>
+                        <input
+                          type="number"
+                          step="100"
+                          defaultValue={getSettingsValue(
+                            "writing.chapter_words",
+                            "1200",
+                          )}
+                          onBlur={(e) =>
+                            saveProjectSettings({
+                              writing: {
+                                chapter_words: Number(e.target.value),
+                              },
+                            }).catch((err) =>
+                              setSettingsError((err as Error).message),
+                            )
+                          }
+                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        />
+                      </label>
+
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          Chapter Count
+                        </span>
+                        <input
+                          type="number"
+                          step="1"
+                          defaultValue={getSettingsValue(
+                            "writing.chapter_count",
+                            "10",
+                          )}
+                          onBlur={(e) =>
+                            saveProjectSettings({
+                              writing: { chapter_count: Number(e.target.value) },
+                            }).catch((err) =>
+                              setSettingsError((err as Error).message),
+                            )
+                          }
+                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        />
+                      </label>
+                    </div>
 
                     <label className="grid gap-1 text-sm">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
