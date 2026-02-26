@@ -60,6 +60,12 @@ export default function Home() {
     Array<{ id: number; title: string; content: string; score: number }>
   >([]);
   const [kbError, setKbError] = useState<string | null>(null);
+  const [webQuery, setWebQuery] = useState<string>("");
+  const [webResults, setWebResults] = useState<
+    Array<{ title: string; url: string; snippet: string }>
+  >([]);
+  const [webError, setWebError] = useState<string | null>(null);
+  const [webLoading, setWebLoading] = useState<boolean>(false);
 
   const apiBase = useMemo(() => {
     return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -289,6 +295,53 @@ export default function Home() {
       score: number;
     }>;
     setKbResults(data);
+  }
+
+  async function webSearch() {
+    if (!webQuery.trim()) return;
+    setWebError(null);
+    setWebLoading(true);
+    try {
+      const res = await fetch(
+        `${apiBase}/api/tools/web_search?q=${encodeURIComponent(webQuery)}&limit=6`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as Array<{
+        title: string;
+        url: string;
+        snippet: string;
+      }>;
+      setWebResults(data);
+    } finally {
+      setWebLoading(false);
+    }
+  }
+
+  async function importWebResultToKb(r: {
+    title: string;
+    url: string;
+    snippet: string;
+  }) {
+    if (!selectedProjectId) return;
+    setWebError(null);
+    const res = await fetch(`${apiBase}/api/projects/${selectedProjectId}/kb/chunks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: r.title,
+        tags: ["web_import"],
+        content: `${r.snippet}\n\nSource: ${r.url}`,
+        source_type: "web_import",
+      }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
   }
 
   return (
@@ -552,6 +605,78 @@ export default function Home() {
                       </div>
                     ) : null}
                   </div>
+                </div>
+
+                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">Web Search (Research)</div>
+                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    Uses a lightweight search tool. Results are not saved unless
+                    you import them into the local KB.
+                  </div>
+
+                  {!getSettingsBool("tools.web_search.enabled", true) ? (
+                    <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+                      Web search is disabled in Settings.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mt-3 flex items-center gap-2">
+                        <input
+                          value={webQuery}
+                          onChange={(e) => setWebQuery(e.target.value)}
+                          className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          placeholder="Search the web for research..."
+                        />
+                        <button
+                          disabled={!webQuery.trim() || webLoading}
+                          onClick={() => {
+                            webSearch().catch((e) =>
+                              setWebError((e as Error).message),
+                            );
+                          }}
+                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                        >
+                          {webLoading ? "..." : "Search"}
+                        </button>
+                      </div>
+
+                      {webError ? (
+                        <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                          {webError}
+                        </div>
+                      ) : null}
+
+                      {webResults.length > 0 ? (
+                        <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                          <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                            {webResults.map((r) => (
+                              <li key={r.url} className="p-3">
+                                <div className="font-medium">{r.title}</div>
+                                <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
+                                  {r.snippet}
+                                </div>
+                                <div className="mt-1 break-all text-[11px] text-zinc-500 dark:text-zinc-400">
+                                  {r.url}
+                                </div>
+                                <div className="mt-2">
+                                  <button
+                                    onClick={() => {
+                                      importWebResultToKb(r).catch((e) =>
+                                        setWebError((e as Error).message),
+                                      );
+                                    }}
+                                    className="rounded-md bg-zinc-900 px-2 py-1 text-xs text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                                  >
+                                    Import to KB
+                                  </button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
                 </div>
               </div>
             </div>
