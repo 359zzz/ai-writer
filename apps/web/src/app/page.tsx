@@ -71,14 +71,26 @@ export default function Home() {
   const [lang, setLang] = useState<Lang>(DEFAULT_UI_PREFS.lang);
   const [themes, setThemes] = useState<UiTheme[]>(DEFAULT_UI_PREFS.themes);
   const [themeId, setThemeId] = useState<string>(DEFAULT_UI_PREFS.theme_id);
+  const [uiBackground, setUiBackground] = useState(
+    DEFAULT_UI_PREFS.background,
+  );
+  const [brandLogoDataUrl, setBrandLogoDataUrl] = useState<string | null>(
+    DEFAULT_UI_PREFS.brand.logo_data_url,
+  );
 
   const [tab, setTab] = useState<TabKey>("writing");
   const [agentsView, setAgentsView] = useState<"timeline" | "graph">("timeline");
+  const [expandedEventKey, setExpandedEventKey] = useState<string | null>(null);
+  const [settingsPane, setSettingsPane] = useState<
+    "ui" | "model" | "project" | "export" | "debug"
+  >("ui");
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsError, setProjectsError] = useState<string | null>(null);
-  const [newProjectTitle, setNewProjectTitle] = useState<string>("My Novel");
+  const [newProjectTitle, setNewProjectTitle] = useState<string>(
+    DEFAULT_UI_PREFS.lang === "zh" ? "我的小说" : "My Novel",
+  );
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null,
   );
@@ -107,8 +119,12 @@ export default function Home() {
   const [chapterIndex, setChapterIndex] = useState<number>(1);
   const [researchQuery, setResearchQuery] = useState<string>("");
   const [continueText, setContinueText] = useState<string>("");
-  const [kbTitle, setKbTitle] = useState<string>("Lore");
-  const [kbTags, setKbTags] = useState<string>("lore");
+  const [kbTitle, setKbTitle] = useState<string>(
+    DEFAULT_UI_PREFS.lang === "zh" ? "设定" : "Lore",
+  );
+  const [kbTags, setKbTags] = useState<string>(
+    DEFAULT_UI_PREFS.lang === "zh" ? "设定" : "lore",
+  );
   const [kbContent, setKbContent] = useState<string>("");
   const [kbQuery, setKbQuery] = useState<string>("");
   const [kbResults, setKbResults] = useState<
@@ -143,6 +159,7 @@ export default function Home() {
       agent_finished: "Agent 结束",
       agent_output: "Agent 输出",
       tool_call: "工具调用",
+      tool_result: "工具结果",
       artifact: "产物",
     };
     return map[type] ?? type;
@@ -159,9 +176,28 @@ export default function Home() {
       LoreKeeper: "设定校对",
       Extractor: "抽取器",
       Researcher: "检索",
+      WebSearch: "联网搜索",
+      Retriever: "检索器",
     };
     const zh = map[agent];
     return zh ? `${zh}（${agent}）` : agent;
+  };
+
+  const agentColor = (agent: string | null): string => {
+    const a = (agent ?? "").trim();
+    const palette: Record<string, string> = {
+      Director: "#8B5CF6",
+      ConfigAutofill: "#22C55E",
+      Outliner: "#0EA5E9",
+      Writer: "#EF4444",
+      Editor: "#F59E0B",
+      LoreKeeper: "#10B981",
+      Extractor: "#6366F1",
+      Researcher: "#06B6D4",
+      WebSearch: "#64748B",
+      Retriever: "#64748B",
+    };
+    return palette[a] ?? "rgba(120,120,120,0.35)";
   };
 
   const formatRunStatus = (status: string): string => {
@@ -185,11 +221,69 @@ export default function Home() {
     return map[kind] ?? kind;
   };
 
+  const formatDurationMs = (ms: number): string => {
+    if (!Number.isFinite(ms) || ms <= 0) return "0s";
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+    const m = Math.floor(ms / 60_000);
+    const s = Math.round((ms % 60_000) / 1000);
+    return `${m}m${s}s`;
+  };
+
+  const clipText = (input: string, maxLen: number): string => {
+    const s = input.trim();
+    if (s.length <= maxLen) return s;
+    return `${s.slice(0, maxLen).trimEnd()}...`;
+  };
+
+  const fileToCompressedDataUrl = async (
+    file: File,
+    opts: { maxSize: number; quality: number },
+  ): Promise<string> => {
+    const readAsDataUrl = (f: File) =>
+      new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onerror = () => reject(new Error("file_read_failed"));
+        r.onload = () => resolve(String(r.result ?? ""));
+        r.readAsDataURL(f);
+      });
+
+    const raw = await readAsDataUrl(file);
+    try {
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("image_decode_failed"));
+        img.src = raw;
+      });
+
+      const maxSide = Math.max(img.width, img.height);
+      const scale =
+        maxSide > opts.maxSize ? opts.maxSize / Math.max(1, maxSide) : 1;
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return raw;
+      ctx.drawImage(img, 0, 0, w, h);
+
+      // Use JPEG for size control. (LocalStorage has a quota; keep images small.)
+      return canvas.toDataURL("image/jpeg", opts.quality);
+    } catch {
+      return raw;
+    }
+  };
+
   useEffect(() => {
     const prefs = loadUiPrefs();
     setLang(prefs.lang);
     setThemes(prefs.themes);
     setThemeId(prefs.theme_id);
+    setUiBackground(prefs.background);
+    setBrandLogoDataUrl(prefs.brand.logo_data_url);
     setUiLoaded(true);
   }, []);
 
@@ -201,11 +295,34 @@ export default function Home() {
 
   useEffect(() => {
     if (!uiLoaded) return;
-    saveUiPrefs({ version: 1, lang, theme_id: themeId, themes });
-  }, [uiLoaded, lang, themeId, themes]);
+    saveUiPrefs({
+      version: 2,
+      lang,
+      theme_id: themeId,
+      themes,
+      background: uiBackground,
+      brand: { logo_data_url: brandLogoDataUrl },
+    });
+  }, [uiLoaded, lang, themeId, themes, uiBackground, brandLogoDataUrl]);
 
   useEffect(() => {
     document.documentElement.lang = lang;
+  }, [lang]);
+
+  useEffect(() => {
+    // Avoid mixed-language defaults in inputs when toggling UI language.
+    setNewProjectTitle((prev) => {
+      if (prev !== "My Novel" && prev !== "我的小说") return prev;
+      return lang === "zh" ? "我的小说" : "My Novel";
+    });
+    setKbTitle((prev) => {
+      if (prev !== "Lore" && prev !== "设定") return prev;
+      return lang === "zh" ? "设定" : "Lore";
+    });
+    setKbTags((prev) => {
+      if (prev !== "lore" && prev !== "设定") return prev;
+      return lang === "zh" ? "设定" : "lore";
+    });
   }, [lang]);
 
   useEffect(() => {
@@ -297,6 +414,7 @@ export default function Home() {
     setRuns([]);
     setSelectedRunId(null);
     setRunEvents([]);
+    setExpandedEventKey(null);
   }, [selectedProjectId]);
 
   const agentFlow = useMemo(() => {
@@ -310,6 +428,64 @@ export default function Home() {
       }
     }
     return compressed;
+  }, [runEvents]);
+
+  const agentStats = useMemo(() => {
+    type Stats = {
+      total_ms: number;
+      starts: number;
+      finishes: number;
+      tool_calls: number;
+      tool_results: number;
+      outputs: number;
+      artifacts: number;
+    };
+    const stats: Record<string, Stats> = {};
+    const open: Record<string, number[]> = {};
+
+    for (const e of runEvents) {
+      const agent = typeof e.agent === "string" ? e.agent.trim() : "";
+      if (!agent) continue;
+      const st =
+        stats[agent] ??
+        (stats[agent] = {
+          total_ms: 0,
+          starts: 0,
+          finishes: 0,
+          tool_calls: 0,
+          tool_results: 0,
+          outputs: 0,
+          artifacts: 0,
+        });
+
+      if (e.type === "agent_started") {
+        const ts = Date.parse(e.ts);
+        if (Number.isFinite(ts)) (open[agent] ??= []).push(ts);
+        st.starts += 1;
+      } else if (e.type === "agent_finished") {
+        const ts = Date.parse(e.ts);
+        const startTs = (open[agent] ?? []).pop();
+        if (
+          Number.isFinite(ts) &&
+          typeof startTs === "number" &&
+          Number.isFinite(startTs) &&
+          ts >= startTs
+        ) {
+          st.total_ms += ts - startTs;
+        }
+        st.finishes += 1;
+      } else if (e.type === "tool_call") {
+        st.tool_calls += 1;
+      } else if (e.type === "tool_result") {
+        st.tool_results += 1;
+      } else if (e.type === "agent_output") {
+        st.outputs += 1;
+      } else if (e.type === "artifact") {
+        st.artifacts += 1;
+      }
+    }
+
+    return stats;
   }, [runEvents]);
 
   const runEventsRunId = useMemo(() => {
@@ -677,11 +853,35 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50">
-      <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
+    <div className="relative min-h-screen bg-[var(--ui-bg)] text-zinc-900">
+      {uiBackground.enabled && uiBackground.image_data_url ? (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-0 -z-10 overflow-hidden"
+        >
+          <div
+            className="absolute inset-0 bg-cover bg-center"
+            style={{
+              backgroundImage: `url(${uiBackground.image_data_url})`,
+              opacity: uiBackground.opacity,
+              filter: `blur(${uiBackground.blur_px}px)`,
+              transform: "scale(1.05)",
+            }}
+          />
+        </div>
+      ) : null}
+      <header className="sticky top-0 z-10 border-b border-zinc-200 bg-[var(--ui-surface)] backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-[var(--ui-accent)]" />
+            {brandLogoDataUrl ? (
+              <img
+                src={brandLogoDataUrl}
+                alt={tt("app_name")}
+                className="h-8 w-8 rounded-lg object-cover ring-1 ring-black/10"
+              />
+            ) : (
+              <div className="h-8 w-8 rounded-lg bg-[var(--ui-accent)]" />
+            )}
             <div className="leading-tight">
               <div className="text-sm font-semibold">{tt("app_name")}</div>
               <div className="text-xs text-zinc-500 dark:text-zinc-400">
@@ -761,7 +961,7 @@ export default function Home() {
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-8">
-        <div className="mb-6 rounded-xl border border-zinc-200 bg-white p-4 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="mb-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-4 text-sm dark:border-zinc-800">
           <div className="flex items-center justify-between gap-4">
             <div className="font-medium">{tt("backend")}</div>
             <div className="text-xs text-zinc-500 dark:text-zinc-400">
@@ -785,7 +985,7 @@ export default function Home() {
         </div>
 
         {tab === "writing" ? (
-          <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
+          <section className="rounded-xl border border-zinc-200 bg-transparent p-6 dark:border-zinc-800">
             <h1 className="text-lg font-semibold">{tt("writing")}</h1>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
               {tt("writing_desc")}
@@ -793,7 +993,7 @@ export default function Home() {
 
             <div className="mt-6 grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
               <div className="grid gap-6">
-                <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("projects")}</div>
                   <div className="mt-3 flex gap-2">
                     <input
@@ -850,7 +1050,7 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("outline_latest")}</div>
                   {selectedProjectId ? (
                     outlineChapters ? (
@@ -880,7 +1080,7 @@ export default function Home() {
                   )}
                 </div>
 
-                <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("chapters")}</div>
                   {!selectedProjectId ? (
                     <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
@@ -918,7 +1118,7 @@ export default function Home() {
               </div>
 
               <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-                <div className="min-w-0 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="min-w-0 rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm font-medium">{tt("markdown_editor")}</div>
                     <div className="flex items-center gap-1 rounded-md border border-zinc-200 bg-white p-1 text-xs dark:border-zinc-800 dark:bg-zinc-950">
@@ -978,7 +1178,7 @@ export default function Home() {
                 </div>
 
                 <div className="grid gap-6">
-                  <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("selected_project")}</div>
                     <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
                       {selectedProjectId ? (
@@ -1022,7 +1222,7 @@ export default function Home() {
                       </div>
                     ) : null}
 
-                    <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                    <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
                       <div className="text-sm font-medium">{tt("write_chapter")}</div>
                       <div className="mt-3 grid gap-2">
                         <label className="grid gap-1 text-sm">
@@ -1070,7 +1270,7 @@ export default function Home() {
                       </div>
                     </div>
 
-                    <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                    <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
                       <div className="text-sm font-medium">{tt("continue_mode")}</div>
                       <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
                         {tt("continue_desc")}
@@ -1108,7 +1308,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("export")}</div>
                     <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
                       {tt("export_desc")}
@@ -1146,7 +1346,7 @@ export default function Home() {
                     ) : null}
                   </div>
 
-                  <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("local_kb")}</div>
                     <div className="mt-2 grid gap-2">
                       <div className="grid gap-2 md:grid-cols-2">
@@ -1234,7 +1434,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("web_search")}</div>
                     <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
                       {tt("web_search_desc")}
@@ -1324,6 +1524,7 @@ export default function Home() {
                   const v = e.target.value || null;
                   setSelectedRunId(v);
                   setRunEvents([]);
+                  setExpandedEventKey(null);
                 }}
                 className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
               >
@@ -1372,49 +1573,155 @@ export default function Home() {
                 </div>
               ) : agentsView === "timeline" ? (
                 <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-                  {runEvents.map((e) => (
-                    <li key={`${e.run_id}:${e.seq}`} className="p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="font-medium">
-                          {e.seq}. {formatEventType(e.type)}
-                          {e.agent ? ` · ${formatAgentName(e.agent)}` : ""}
+                  {runEvents.map((e) => {
+                    const eventKey = `${e.run_id}:${e.seq}`;
+                    const d = e.data as Record<string, unknown>;
+                    const tool = typeof d.tool === "string" ? d.tool : null;
+                    const hits = typeof d.hits === "number" ? d.hits : null;
+                    const warnings = Array.isArray(d.warnings)
+                      ? (d.warnings.filter(
+                          (w): w is string => typeof w === "string",
+                        ) as string[])
+                      : [];
+                    const artifactType =
+                      typeof d.artifact_type === "string" ? d.artifact_type : null;
+                    const text = typeof d.text === "string" ? d.text : null;
+                    const expanded = expandedEventKey === eventKey;
+
+                    const detailPreview = (() => {
+                      // Prevent rendering multi-KB JSON / full chapter markdown in the timeline.
+                      const safe: Record<string, unknown> = { ...d };
+                      if (typeof safe.markdown === "string") {
+                        safe.markdown = clipText(safe.markdown, 1200);
+                      }
+                      if (typeof safe.text === "string") {
+                        safe.text = clipText(safe.text, 1200);
+                      }
+                      const raw = JSON.stringify(safe, null, 2);
+                      return clipText(raw, 4000);
+                    })();
+
+                    return (
+                      <li
+                        key={eventKey}
+                        className="border-l-4 p-3"
+                        style={{ borderLeftColor: agentColor(e.agent) }}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">
+                                {e.seq}. {formatEventType(e.type)}
+                              </span>
+                              {e.agent ? (
+                                <span
+                                  className="rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200"
+                                  style={{ borderColor: agentColor(e.agent) }}
+                                >
+                                  {formatAgentName(e.agent)}
+                                </span>
+                              ) : null}
+                              {tool ? (
+                                <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                                  tool: {tool}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          <div className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+                            {new Date(e.ts).toLocaleTimeString()}
+                          </div>
                         </div>
-                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                          {new Date(e.ts).toLocaleTimeString()}
-                        </div>
-                      </div>
-                      {"text" in e.data ? (
-                        <div className="mt-1 text-zinc-600 dark:text-zinc-300">
-                          {String(e.data.text)}
-                        </div>
-                      ) : null}
-                      {"artifact_type" in e.data ? (
-                        <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                          artifact: {String(e.data.artifact_type)}
-                        </div>
-                      ) : null}
-                    </li>
-                  ))}
+
+                        {text ? (
+                          <div className="mt-1 text-zinc-600 dark:text-zinc-300">
+                            {clipText(text, 520)}
+                          </div>
+                        ) : null}
+
+                        {hits !== null ? (
+                          <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                            hits: {hits}
+                          </div>
+                        ) : null}
+
+                        {warnings.length > 0 ? (
+                          <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                            {warnings.map((w, idx) => (
+                              <div key={idx}>{w}</div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {artifactType ? (
+                          <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                            artifact: {artifactType}
+                          </div>
+                        ) : null}
+
+                        {Object.keys(d).length > 0 ? (
+                          <div className="mt-2 flex items-center gap-2">
+                            <button
+                              onClick={() =>
+                                setExpandedEventKey((cur) =>
+                                  cur === eventKey ? null : eventKey,
+                                )
+                              }
+                              className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                            >
+                              {expanded
+                                ? lang === "zh"
+                                  ? "收起"
+                                  : "Hide"
+                                : lang === "zh"
+                                  ? "详情"
+                                  : "Details"}
+                            </button>
+                          </div>
+                        ) : null}
+
+                        {expanded ? (
+                          <pre className="mt-2 max-h-72 overflow-auto rounded-md border border-zinc-200 bg-white p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
+                            {detailPreview}
+                          </pre>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 <div className="p-4">
                   <div className="text-sm font-medium">{tt("execution_flow")}</div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <div className="mt-3 overflow-auto">
                     {agentFlow.length === 0 ? (
                       <div className="text-sm text-zinc-500 dark:text-zinc-400">
                         {tt("no_agents_in_events")}
                       </div>
                     ) : (
-                      agentFlow.map((a, idx) => (
-                        <div key={`${a}:${idx}`} className="flex items-center gap-2">
-                          <div className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-800 dark:bg-zinc-950">
-                            {formatAgentName(a)}
-                          </div>
-                          {idx < agentFlow.length - 1 ? (
-                            <span className="text-xs text-zinc-400">→</span>
-                          ) : null}
-                        </div>
-                      ))
+                      <div className="flex min-w-max items-center gap-2 pb-2">
+                        {agentFlow.map((a, idx) => {
+                          const st = agentStats[a];
+                          return (
+                            <div key={`${a}:${idx}`} className="flex items-center gap-2">
+                              <div
+                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                                style={{ borderColor: agentColor(a) }}
+                              >
+                                <div className="font-medium">{formatAgentName(a)}</div>
+                                {st ? (
+                                  <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                                    t={formatDurationMs(st.total_ms)} · tools={st.tool_calls} · artifacts={st.artifacts}
+                                  </div>
+                                ) : null}
+                              </div>
+                              {idx < agentFlow.length - 1 ? (
+                                <span className="text-xs text-zinc-400">→</span>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
 
@@ -1434,8 +1741,37 @@ export default function Home() {
               {tt("settings_desc")}
             </p>
 
-            <div className="mt-6 grid gap-6 md:grid-cols-2">
-              <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+            <div className="mt-6 grid gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
+              <aside className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-3 dark:border-zinc-800">
+                <div className="grid gap-1">
+                  {(
+                    [
+                      ["ui", tt("settings_nav_ui")],
+                      ["model", tt("settings_nav_model")],
+                      ["project", tt("settings_nav_project")],
+                      ["export", tt("settings_nav_export")],
+                      ["debug", tt("settings_nav_debug")],
+                    ] as const
+                  ).map(([k, label]) => (
+                    <button
+                      key={k}
+                      onClick={() => setSettingsPane(k)}
+                      className={[
+                        "w-full rounded-md px-3 py-2 text-left text-sm transition-colors",
+                        settingsPane === k
+                          ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                          : "text-zinc-700 hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </aside>
+
+              <div className="min-w-0 grid gap-6">
+                {settingsPane === "ui" ? (
+                  <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                 <div className="text-sm font-medium">{tt("ui_prefs")}</div>
                 <div className="mt-4 grid gap-3">
                   <label className="grid gap-1 text-sm">
@@ -1485,6 +1821,178 @@ export default function Home() {
                     </select>
                   </label>
 
+                  <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3 dark:border-zinc-800">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                        {tt("logo")}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="cursor-pointer rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900">
+                          {tt("upload_image")}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (!f) return;
+                              (async () => {
+                                const dataUrl = await fileToCompressedDataUrl(f, {
+                                  maxSize: 160,
+                                  quality: 0.85,
+                                });
+                                setBrandLogoDataUrl(dataUrl);
+                              })().catch(() => {});
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                        <button
+                          disabled={!brandLogoDataUrl}
+                          onClick={() => setBrandLogoDataUrl(null)}
+                          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                        >
+                          {tt("remove_image")}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex items-center gap-3">
+                      <div className="h-12 w-12 overflow-hidden rounded-lg ring-1 ring-black/10">
+                        {brandLogoDataUrl ? (
+                          <img
+                            src={brandLogoDataUrl}
+                            alt={tt("logo")}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="h-full w-full bg-[var(--ui-accent)]" />
+                        )}
+                      </div>
+                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                        {lang === "zh"
+                          ? "将显示在左上角（仅本机浏览器保存）。"
+                          : "Shown in the top-left (stored in this browser only)."}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3 dark:border-zinc-800">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                        {tt("background_image")}
+                      </div>
+                      <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+                        <span>
+                          {uiBackground.enabled ? tt("enabled") : tt("disabled")}
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={uiBackground.enabled}
+                          onChange={(e) =>
+                            setUiBackground((prev) => ({
+                              ...prev,
+                              enabled: e.target.checked,
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-3 grid gap-3">
+                      <div className="flex items-center gap-2">
+                        <label className="cursor-pointer rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900">
+                          {tt("upload_image")}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (!f) return;
+                              (async () => {
+                                const dataUrl = await fileToCompressedDataUrl(f, {
+                                  maxSize: 1920,
+                                  quality: 0.82,
+                                });
+                                setUiBackground((prev) => ({
+                                  ...prev,
+                                  enabled: true,
+                                  image_data_url: dataUrl,
+                                }));
+                              })().catch(() => {});
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                        <button
+                          disabled={!uiBackground.image_data_url}
+                          onClick={() =>
+                            setUiBackground((prev) => ({
+                              ...prev,
+                              enabled: false,
+                              image_data_url: null,
+                            }))
+                          }
+                          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                        >
+                          {tt("remove_image")}
+                        </button>
+                      </div>
+
+                      {uiBackground.image_data_url ? (
+                        <div className="h-20 overflow-hidden rounded-lg ring-1 ring-black/10">
+                          <div
+                            className="h-full w-full bg-cover bg-center"
+                            style={{
+                              backgroundImage: `url(${uiBackground.image_data_url})`,
+                              filter: `blur(${uiBackground.blur_px}px)`,
+                              opacity: uiBackground.opacity,
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {lang === "zh" ? "未设置背景图。" : "No background image set."}
+                        </div>
+                      )}
+
+                      <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                        {tt("opacity")}: {uiBackground.opacity.toFixed(2)}
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={uiBackground.opacity}
+                          onChange={(e) =>
+                            setUiBackground((prev) => ({
+                              ...prev,
+                              opacity: Number(e.target.value),
+                            }))
+                          }
+                        />
+                      </label>
+
+                      <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                        {tt("blur")}: {uiBackground.blur_px}px
+                        <input
+                          type="range"
+                          min={0}
+                          max={50}
+                          step={1}
+                          value={uiBackground.blur_px}
+                          onChange={(e) =>
+                            setUiBackground((prev) => ({
+                              ...prev,
+                              blur_px: Number(e.target.value),
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                  </div>
+
                   <div className="mt-2 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
                     <div className="flex items-center justify-between gap-2">
                       <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
@@ -1500,6 +2008,8 @@ export default function Home() {
                             const next: UiTheme = {
                               id,
                               name: lang === "zh" ? "自定义主题" : "Custom theme",
+                              bg: "#FFFFFF",
+                              surface: "#FFFFFF",
                               accent: "#22C55E",
                               accent_foreground: "#0B1020",
                             };
@@ -1537,10 +2047,20 @@ export default function Home() {
                           >
                             <div className="flex items-start justify-between gap-3">
                               <div className="flex min-w-0 items-center gap-2">
-                                <div
-                                  className="h-4 w-4 shrink-0 rounded-sm"
-                                  style={{ backgroundColor: th.accent }}
-                                />
+                                <div className="flex h-4 w-10 shrink-0 overflow-hidden rounded-sm ring-1 ring-black/10">
+                                  <div
+                                    className="h-full w-1/3"
+                                    style={{ backgroundColor: th.bg }}
+                                  />
+                                  <div
+                                    className="h-full w-1/3"
+                                    style={{ backgroundColor: th.surface }}
+                                  />
+                                  <div
+                                    className="h-full w-1/3"
+                                    style={{ backgroundColor: th.accent }}
+                                  />
+                                </div>
                                 <input
                                   value={th.name}
                                   onChange={(e) => {
@@ -1583,6 +2103,40 @@ export default function Home() {
                             </div>
 
                             <div className="mt-3 grid gap-2 md:grid-cols-2">
+                              <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                                {tt("theme_bg")}
+                                <input
+                                  type="color"
+                                  value={th.bg}
+                                  onChange={(e) => {
+                                    const v =
+                                      normalizeHexColor(e.target.value) ?? th.bg;
+                                    setThemes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === th.id ? { ...x, bg: v } : x,
+                                      ),
+                                    );
+                                  }}
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950"
+                                />
+                              </label>
+                              <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                                {tt("theme_surface")}
+                                <input
+                                  type="color"
+                                  value={th.surface}
+                                  onChange={(e) => {
+                                    const v =
+                                      normalizeHexColor(e.target.value) ?? th.surface;
+                                    setThemes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === th.id ? { ...x, surface: v } : x,
+                                      ),
+                                    );
+                                  }}
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950"
+                                />
+                              </label>
                               <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
                                 {tt("accent")}
                                 <input
@@ -1628,8 +2182,10 @@ export default function Home() {
                   </div>
                 </div>
               </div>
+                ) : null}
 
-              <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+              {settingsPane === "debug" ? (
+                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                 <div className="text-sm font-medium">{tt("secrets_status")}</div>
                 <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
                   {lang === "zh"
@@ -1665,9 +2221,11 @@ export default function Home() {
                   )}
                 </div>
               </div>
+              ) : null}
 
-              <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                <div className="text-sm font-medium">{tt("project_settings")}</div>
+              {settingsPane === "model" ? (
+              <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                <div className="text-sm font-medium">{tt("settings_nav_model")}</div>
                 <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
                   {tt("select_project_first")}
                 </div>
@@ -1913,6 +2471,136 @@ export default function Home() {
                     {lang === "zh" ? "未选择项目。" : "No project selected."}
                   </div>
                 )}
+              </div>
+              ) : null}
+
+              {settingsPane === "project" ? (
+                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">
+                    {tt("settings_nav_project")}
+                  </div>
+                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    {tt("select_project_first")}
+                  </div>
+
+                  {selectedProject ? (
+                    <div className="mt-4 grid gap-3">
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <label className="grid gap-1 text-sm">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {tt("chapter_words")}
+                          </span>
+                          <input
+                            type="number"
+                            step="100"
+                            defaultValue={getSettingsValue(
+                              "writing.chapter_words",
+                              "1200",
+                            )}
+                            onBlur={(e) =>
+                              saveProjectSettings({
+                                writing: {
+                                  chapter_words: Number(e.target.value),
+                                },
+                              }).catch((err) =>
+                                setSettingsError((err as Error).message),
+                              )
+                            }
+                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          />
+                        </label>
+
+                        <label className="grid gap-1 text-sm">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {tt("chapter_count")}
+                          </span>
+                          <input
+                            type="number"
+                            step="1"
+                            defaultValue={getSettingsValue(
+                              "writing.chapter_count",
+                              "10",
+                            )}
+                            onBlur={(e) =>
+                              saveProjectSettings({
+                                writing: {
+                                  chapter_count: Number(e.target.value),
+                                },
+                              }).catch((err) =>
+                                setSettingsError((err as Error).message),
+                              )
+                            }
+                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          />
+                        </label>
+                      </div>
+
+                      <label className="grid gap-1 text-sm">
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {tt("kb_mode")}
+                        </span>
+                        <select
+                          defaultValue={getSettingsValue("kb.mode", "weak")}
+                          onChange={(e) =>
+                            saveProjectSettings({
+                              kb: { mode: e.target.value },
+                            }).catch((err) =>
+                              setSettingsError((err as Error).message),
+                            )
+                          }
+                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        >
+                          <option value="weak">{tt("kb_weak")}</option>
+                          <option value="strong">{tt("kb_strong")}</option>
+                        </select>
+                      </label>
+
+                      {settingsError ? (
+                        <div className="text-sm text-red-600 dark:text-red-400">
+                          {settingsError}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+                      {lang === "zh" ? "未选择项目。" : "No project selected."}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {settingsPane === "export" ? (
+                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 text-sm dark:border-zinc-800">
+                  <div className="text-sm font-medium">
+                    {tt("settings_nav_export")}
+                  </div>
+                  <div className="mt-2 grid gap-2 text-zinc-600 dark:text-zinc-300">
+                    {lang === "zh" ? (
+                      <>
+                        <div>导出入口在「写作」页右侧面板。</div>
+                        <div>
+                          DOCX/EPUB/PDF 优先使用 <code>pandoc</code>{" "}
+                          与更漂亮模板；如果环境缺少依赖，会自动降级到基础导出。
+                        </div>
+                        <div>
+                          提示：若你希望 PDF 排版更好，通常需要额外安装 LaTeX 引擎（如 MiKTeX）。
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>Export controls live in the Writing tab (right panel).</div>
+                        <div>
+                          DOCX/EPUB/PDF prefer <code>pandoc</code> with nicer templates; when missing,
+                          the backend falls back to basic exporters.
+                        </div>
+                        <div>
+                          Tip: high-quality PDF output usually requires a LaTeX engine (e.g. MiKTeX).
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ) : null}
               </div>
             </div>
           </section>

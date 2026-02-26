@@ -135,3 +135,21 @@ Versioning policy (from v1.0.x onward):
   - Right: Runs + Export + Local KB + Web search
 - Markdown preview uses `react-markdown` + `remark-gfm` (tables/lists/code supported).
 - Outline view renders as a readable chapter list (prefers latest run artifact, falls back to project settings).
+
+### v1.2.0 (Strong Mode Evidence Chain + Export Templates + UI Polish)
+- Strong KB mode upgraded to **evidence-chain validation**:
+  - `ConfigAutofill` skips random autofill in `strong` mode (avoid hallucinated canon/settings).
+  - `Writer` is instructed to cite canon facts with inline `[KB#ID]` (IDs must come from local KB excerpts),
+    otherwise use `[[TBD]]` + add a **待确认 / To Confirm** list.
+  - `LoreKeeper` runs an evidence audit (LLM JSON) and emits an `evidence_report` artifact; unsafe canon claims are
+    sanitized into `[[TBD]]` via a minimal rewrite pass.
+- Export upgraded toward **pandoc-first + nicer templates**:
+  - DOCX/EPUB/PDF prefer `pandoc` with `--toc`, numbered sections, and explicit chapter page breaks (`\\newpage`).
+  - EPUB uses a project stylesheet: `apps/api/templates/export/epub.css`.
+  - DOCX uses an auto-generated `reference.docx` (fonts/headings) when possible.
+  - PDF uses pandoc when a LaTeX engine is present (falls back gracefully otherwise).
+- Settings upgraded with a left nav pane: UI / Model / Project / Export / Debug.
+- UI prefs expanded: theme now uses **bg + surface + accent**, plus local logo + background image (opacity/blur).
+- Agents collaboration page improved:
+  - Timeline shows tool calls/results, warnings, and expandable details.
+  - Graph view shows per-agent duration + tool/artifact counts.

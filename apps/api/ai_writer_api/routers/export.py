@@ -32,10 +32,79 @@ def _exports_dir() -> Path:
     return out
 
 
+def _templates_dir() -> Path:
+    api_root = Path(__file__).resolve().parents[2]  # .../apps/api
+    out = api_root / "templates" / "export"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def _ensure_reference_docx() -> Path | None:
+    """
+    Create a pandoc reference.docx for nicer default styling (fonts/headings).
+
+    This file is generated locally (not required for export to work).
+    """
+    try:
+        ref = _templates_dir() / "reference.docx"
+        if ref.exists():
+            return ref
+        from docx import Document
+        from docx.shared import Pt
+
+        doc = Document()
+
+        # Base font (Windows-friendly; OK if missing on non-Windows).
+        try:
+            normal = doc.styles["Normal"]
+            normal.font.name = "Microsoft YaHei"
+            normal.font.size = Pt(11)
+        except Exception:
+            pass
+
+        # Headings
+        for style_name, size in [("Heading 1", 18), ("Heading 2", 15), ("Heading 3", 13)]:
+            try:
+                s = doc.styles[style_name]
+                s.font.name = "Microsoft YaHei"
+                s.font.size = Pt(size)
+                s.font.bold = True
+            except Exception:
+                continue
+
+        # Ensure at least one paragraph exists.
+        doc.add_paragraph("")
+        doc.save(ref)
+        return ref
+    except Exception:
+        return None
+
+
+def _epub_css_path() -> Path:
+    return _templates_dir() / "epub.css"
+
+
 def _compile_markdown(project: Project, chapters: list[Chapter]) -> str:
-    parts: list[str] = [f"# {project.title}", ""]
-    for ch in chapters:
-        parts.append(f"\n\n# {ch.chapter_index}. {ch.title}".strip())
+    # Pandoc-friendly markdown with metadata + explicit page breaks.
+    # (DOCX/PDF can respect \\newpage; EPUB will simply ignore it.)
+    now_local = datetime.now().strftime("%Y-%m-%d")
+    safe_title = project.title.replace('"', "'")
+    parts: list[str] = [
+        "---",
+        f'title: \"{safe_title}\"',
+        f'date: \"{now_local}\"',
+        "lang: zh-CN",
+        "---",
+        "",
+        "\\newpage",
+        "",
+    ]
+    for idx, ch in enumerate(chapters):
+        if idx > 0:
+            parts.append("")
+            parts.append("\\newpage")
+            parts.append("")
+        parts.append(f"# {ch.chapter_index}. {ch.title}".strip())
         parts.append("")
         parts.append(ch.markdown.strip())
         parts.append("")
@@ -56,8 +125,52 @@ def _pandoc_available() -> bool:
     return shutil.which("pandoc") is not None
 
 
-def _export_with_pandoc(md_path: Path, out_path: Path) -> None:
-    cmd = ["pandoc", str(md_path), "-o", str(out_path)]
+def _pdf_engine() -> str | None:
+    # Prefer XeLaTeX for CJK when available.
+    for eng in ("xelatex", "lualatex", "pdflatex"):
+        if shutil.which(eng):
+            return eng
+    return None
+
+
+def _export_with_pandoc(md_path: Path, out_path: Path, fmt: ExportFormat) -> None:
+    cmd: list[str] = [
+        "pandoc",
+        str(md_path),
+        "-o",
+        str(out_path),
+        "--toc",
+        "--toc-depth=2",
+        "--number-sections",
+        "--standalone",
+    ]
+
+    if fmt == "docx":
+        ref = _ensure_reference_docx()
+        if ref:
+            cmd += ["--reference-doc", str(ref)]
+    elif fmt == "epub":
+        css = _epub_css_path()
+        if css.exists():
+            cmd += ["--css", str(css)]
+        # Split by top-level headers (chapters).
+        cmd += ["--split-level=1"]
+    elif fmt == "pdf":
+        eng = _pdf_engine()
+        if not eng:
+            raise RuntimeError("pdf_engine_missing")
+        cmd += [
+            "--pdf-engine",
+            eng,
+            "-V",
+            "geometry:margin=1in",
+            "-V",
+            "fontsize=12pt",
+            # Windows-friendly CJK default; ignored if font is missing.
+            "-V",
+            "mainfont=Microsoft YaHei",
+        ]
+
     subprocess.run(cmd, check=True, capture_output=True)
 
 
@@ -171,8 +284,15 @@ def export_project(project_id: str, payload: dict[str, Any]) -> FileResponse:
     out_path = out_dir / f"{base}.{fmt}"
 
     try:
-        if _pandoc_available() and fmt in ("docx", "epub"):
-            _export_with_pandoc(md_path, out_path)
+        if _pandoc_available():
+            try:
+                _export_with_pandoc(md_path, out_path, fmt)  # type: ignore[arg-type]
+            except RuntimeError as e:
+                # PDF requires extra tooling (LaTeX engine). Fall back gracefully.
+                if fmt == "pdf" and str(e) == "pdf_engine_missing":
+                    _export_pdf_basic(md_text, out_path)
+                else:
+                    raise
         elif fmt == "docx":
             _export_docx_basic(md_text, out_path)
         elif fmt == "epub":
@@ -189,4 +309,3 @@ def export_project(project_id: str, payload: dict[str, Any]) -> FileResponse:
         media_type="application/octet-stream",
         filename=out_path.name,
     )
-

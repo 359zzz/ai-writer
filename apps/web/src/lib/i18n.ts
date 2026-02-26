@@ -115,7 +115,22 @@ export type I18nKey =
   | "view_edit"
   | "view_preview"
   | "view_split"
-  | "preview_empty";
+  | "preview_empty"
+  | "theme_bg"
+  | "theme_surface"
+  | "logo"
+  | "background_image"
+  | "upload_image"
+  | "remove_image"
+  | "opacity"
+  | "blur"
+  | "enabled"
+  | "disabled"
+  | "settings_nav_ui"
+  | "settings_nav_model"
+  | "settings_nav_project"
+  | "settings_nav_export"
+  | "settings_nav_debug";
 
 const ZH: Record<I18nKey, string> = {
   app_name: "ai-writer",
@@ -233,6 +248,21 @@ const ZH: Record<I18nKey, string> = {
   view_preview: "预览",
   view_split: "分屏",
   preview_empty: "暂无内容",
+  theme_bg: "背景色",
+  theme_surface: "面板色",
+  logo: "Logo",
+  background_image: "背景图片",
+  upload_image: "上传图片",
+  remove_image: "移除图片",
+  opacity: "透明度",
+  blur: "虚化",
+  enabled: "启用",
+  disabled: "关闭",
+  settings_nav_ui: "界面偏好",
+  settings_nav_model: "模型与工具",
+  settings_nav_project: "项目设置",
+  settings_nav_export: "导出",
+  settings_nav_debug: "调试",
 };
 
 const EN: Record<I18nKey, string> = {
@@ -354,6 +384,21 @@ const EN: Record<I18nKey, string> = {
   view_preview: "Preview",
   view_split: "Split",
   preview_empty: "(empty)",
+  theme_bg: "Background",
+  theme_surface: "Surface",
+  logo: "Logo",
+  background_image: "Background image",
+  upload_image: "Upload",
+  remove_image: "Remove",
+  opacity: "Opacity",
+  blur: "Blur",
+  enabled: "Enabled",
+  disabled: "Disabled",
+  settings_nav_ui: "UI Preferences",
+  settings_nav_model: "Model & Tools",
+  settings_nav_project: "Project",
+  settings_nav_export: "Export",
+  settings_nav_debug: "Debug",
 };
 
 export function t(lang: Lang, key: I18nKey): string {

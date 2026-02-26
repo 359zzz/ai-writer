@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
@@ -179,49 +180,66 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             kb_mode = "weak"
 
         # Agent: ConfigAutofill
+        # - Weak mode: LLM can creatively fill missing fields.
+        # - Strong mode: avoid inventing canon/settings. (User should provide KB or explicit settings.)
         try:
-            yield emit("agent_started", "ConfigAutofill", {})
-            system = (
-                "You are ConfigAutofillAgent for a novel writing platform. "
-                "Given a partial project settings JSON, produce a JSON patch that fills missing fields only. "
-                "Do not overwrite user-provided fields. Output JSON only."
-            )
-            user = (
-                "CurrentSettingsJSON:\n"
-                f"{json_dumps(project.settings or {})}\n\n"
-                "Return a JSON object with keys you want to add. Keep it small and practical.\n"
-                "Suggested schema (only include what is missing):\n"
-                "{\n"
-                '  "story": {\n'
-                '    "genre": "...",\n'
-                '    "logline": "...",\n'
-                '    "style_guide": "...",\n'
-                '    "world": "...",\n'
-                '    "characters": [ {"name":"...","role":"...","personality":"...","goal":"..."} ]\n'
-                "  },\n"
-                '  "writing": { "chapter_count": 10, "chapter_words": 1200 }\n'
-                "}\n"
-            )
-            cfg = llm_cfg()
-            yield emit(
-                "tool_call",
-                "ConfigAutofill",
-                {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
-            )
-            autofill_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
-            patch = parse_json_loose(autofill_text)
-            if isinstance(patch, dict):
-                with get_session() as s4:
-                    p4 = s4.get(Project, project_id)
-                    if p4:
-                        p4.settings = deep_merge(p4.settings or {}, patch)  # type: ignore[assignment]
-                        p4.updated_at = _now_utc()
-                        s4.add(p4)
-                        s4.commit()
-                        s4.refresh(p4)
-                        project.settings = p4.settings
-            yield emit("agent_output", "ConfigAutofill", {"patch_keys": list(patch.keys()) if isinstance(patch, dict) else []})
-            yield emit("agent_finished", "ConfigAutofill", {})
+            yield emit("agent_started", "ConfigAutofill", {"kb_mode": kb_mode})
+            if kb_mode == "strong":
+                yield emit(
+                    "agent_output",
+                    "ConfigAutofill",
+                    {
+                        "skipped": True,
+                        "reason": "strong_kb_mode_no_random_autofill",
+                    },
+                )
+                yield emit("agent_finished", "ConfigAutofill", {})
+            else:
+                system = (
+                    "You are ConfigAutofillAgent for a novel writing platform. "
+                    "Given a partial project settings JSON, produce a JSON patch that fills missing fields only. "
+                    "Do not overwrite user-provided fields. Output JSON only."
+                )
+                user = (
+                    "CurrentSettingsJSON:\n"
+                    f"{json_dumps(project.settings or {})}\n\n"
+                    "Return a JSON object with keys you want to add. Keep it small and practical.\n"
+                    "Suggested schema (only include what is missing):\n"
+                    "{\n"
+                    '  "story": {\n'
+                    '    "genre": "...",\n'
+                    '    "logline": "...",\n'
+                    '    "style_guide": "...",\n'
+                    '    "world": "...",\n'
+                    '    "characters": [ {"name":"...","role":"...","personality":"...","goal":"..."} ]\n'
+                    "  },\n"
+                    '  "writing": { "chapter_count": 10, "chapter_words": 1200 }\n'
+                    "}\n"
+                )
+                cfg = llm_cfg()
+                yield emit(
+                    "tool_call",
+                    "ConfigAutofill",
+                    {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
+                )
+                autofill_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
+                patch = parse_json_loose(autofill_text)
+                if isinstance(patch, dict):
+                    with get_session() as s4:
+                        p4 = s4.get(Project, project_id)
+                        if p4:
+                            p4.settings = deep_merge(p4.settings or {}, patch)  # type: ignore[assignment]
+                            p4.updated_at = _now_utc()
+                            s4.add(p4)
+                            s4.commit()
+                            s4.refresh(p4)
+                            project.settings = p4.settings
+                yield emit(
+                    "agent_output",
+                    "ConfigAutofill",
+                    {"patch_keys": list(patch.keys()) if isinstance(patch, dict) else []},
+                )
+                yield emit("agent_finished", "ConfigAutofill", {})
         except LLMError as e:
             msg = str(e)
             yield emit("run_error", "ConfigAutofill", {"error": msg})
@@ -415,8 +433,19 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             system = (
                 "You are WriterAgent. Write a novel chapter in Markdown. "
                 "Respect the provided story settings and local KB excerpts. "
-                "If in strong canon-locked mode and you must introduce unknown canon facts, mark them as [[TBD]]."
             )
+            if kb_mode == "strong":
+                system += (
+                    "Strong KB mode (canon-locked): "
+                    "When stating canon facts (world rules, history, geography, character backstory/status), "
+                    "add inline evidence citations in the form [KB#ID]. "
+                    "Only cite IDs that appear in the provided Local KB excerpts. "
+                    "If a needed canon fact is not supported by Local KB, do NOT invent it; use [[TBD]] and add it "
+                    "to a '## 待确认 / To Confirm' list at the end. "
+                    "Do NOT treat web research results as canon unless the user explicitly confirms and it is in KB."
+                )
+            else:
+                system += "If some details are missing, you may creatively fill gaps in a consistent way."
             user_parts = [
                 f"Story settings:\n{json_dumps(story)}",
                 f"Writing targets: chapter_words≈{chapter_words}, chapter_index={chapter_index}",
@@ -465,7 +494,10 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         edited_text = writer_text
         try:
             yield emit("agent_started", "Editor", {})
-            system = "You are EditorAgent. Polish the chapter while keeping meaning. Output Markdown only."
+            system = (
+                "You are EditorAgent. Polish the chapter while keeping meaning. Output Markdown only. "
+                "Do NOT remove evidence citations like [KB#123] or placeholders like [[TBD]]."
+            )
             user = (
                 "Polish this Markdown chapter. Keep it concise; do not add new plot points.\n\n"
                 f"{writer_text}\n"
@@ -482,19 +514,197 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         except Exception:
             edited_text = writer_text
 
-        # Agent: LoreKeeper (minimal verifier)
+        # Agent: LoreKeeper (evidence audit + canon guard)
         yield emit("agent_started", "LoreKeeper", {"kb_mode": kb_mode})
         tbd_count = edited_text.count("[[TBD]]")
+        cited_ids: list[int] = []
         warnings: list[str] = []
-        if kb_mode == "strong" and tbd_count > 0:
-            warnings.append(
-                "Strong KB mode: found [[TBD]] markers. Add local KB facts or confirm canon before finalizing."
-            )
+        evidence_report: dict[str, Any] | None = None
+        to_confirm: list[str] = []
+        unsafe_claims: list[str] = []
+        rewritten = False
+
+        if kb_mode == "strong":
+            cited_ids = sorted({int(m.group(1)) for m in re.finditer(r"\[KB#(\d+)\]", edited_text)})
+            kb_text = ""
+            if kb_context:
+                kb_text = "\n\n".join(
+                    f"[KB#{k['id']}] {k.get('title','')}\n{k.get('content','')}" for k in kb_context
+                )
+
+            kb_ids_available = {
+                int(k.get("id")) for k in kb_context if isinstance(k, dict) and isinstance(k.get("id"), int)
+            }
+            if kb_ids_available and not cited_ids:
+                warnings.append("Strong KB mode: no [KB#...] citations found in chapter.")
+            if kb_ids_available:
+                invalid_cited = [i for i in cited_ids if i not in kb_ids_available]
+                if invalid_cited:
+                    warnings.append(
+                        f"Strong KB mode: found citations not in provided KB context: {invalid_cited[:5]}"
+                    )
+
+            # Evidence audit (JSON output)
+            try:
+                system = (
+                    "You are LoreKeeperAgent. Audit a chapter for Strong KB mode evidence. "
+                    "You will be given Local KB excerpts with IDs and a chapter markdown. "
+                    "Identify canon claims not supported by the Local KB excerpts. "
+                    "Return JSON only."
+                )
+                user = (
+                    "Local KB excerpts:\n"
+                    f"{kb_text[:6000]}\n\n"
+                    "ChapterMarkdown:\n"
+                    f"{edited_text[:12000]}\n\n"
+                    "Return JSON with this schema:\n"
+                    "{\n"
+                    '  "supported_claims": [ {"claim":"...","kb_ids":[123]} ],\n'
+                    '  "needs_confirmation": [ {"claim":"...","marked_tbd": true} ],\n'
+                    '  "unsafe_claims": [ {"claim":"...","reason":"..."} ]\n'
+                    "}\n"
+                    "Rules:\n"
+                    "- Prefer short, atomic claims.\n"
+                    "- If a claim is not supported by KB, put it in needs_confirmation.\n"
+                    "- If it is not supported AND the chapter does NOT visibly mark it as [[TBD]], "
+                    "also put it in unsafe_claims.\n"
+                )
+                cfg = llm_cfg()
+                yield emit(
+                    "tool_call",
+                    "LoreKeeper",
+                    {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
+                )
+                evidence_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
+                parsed = parse_json_loose(evidence_text)
+                if isinstance(parsed, dict):
+                    evidence_report = parsed
+            except Exception as e:
+                warnings.append(f"evidence_audit_failed:{type(e).__name__}")
+
+            if isinstance(evidence_report, dict):
+                nc_raw = evidence_report.get("needs_confirmation")
+                if isinstance(nc_raw, list):
+                    for item in nc_raw:
+                        if not isinstance(item, dict):
+                            continue
+                        c = item.get("claim")
+                        if isinstance(c, str) and c.strip():
+                            to_confirm.append(c.strip())
+
+                unsafe_raw = evidence_report.get("unsafe_claims")
+                if isinstance(unsafe_raw, list):
+                    for item in unsafe_raw:
+                        if not isinstance(item, dict):
+                            continue
+                        c = item.get("claim")
+                        if isinstance(c, str) and c.strip():
+                            unsafe_claims.append(c.strip())
+
+                # Keep only KB ids that exist in the provided context (best-effort sanitization).
+                supp_raw = evidence_report.get("supported_claims")
+                if isinstance(supp_raw, list):
+                    cleaned: list[dict[str, Any]] = []
+                    for item in supp_raw:
+                        if not isinstance(item, dict):
+                            continue
+                        claim = item.get("claim")
+                        kb_ids = item.get("kb_ids")
+                        if not isinstance(claim, str) or not claim.strip():
+                            continue
+                        ids: list[int] = []
+                        if isinstance(kb_ids, list):
+                            for x in kb_ids:
+                                try:
+                                    xi = int(x)
+                                except Exception:
+                                    continue
+                                if kb_ids_available and xi not in kb_ids_available:
+                                    continue
+                                ids.append(xi)
+                        cleaned.append({"claim": claim.strip(), "kb_ids": ids})
+                    evidence_report["supported_claims"] = cleaned
+
+            if tbd_count > 0:
+                warnings.append("Strong KB mode: found [[TBD]] markers (missing canon facts).")
+            if to_confirm:
+                warnings.append(f"Strong KB mode: needs_confirmation={len(to_confirm)}")
+
+            if unsafe_claims:
+                warnings.append(
+                    f"Strong KB mode: unsafe_claims={len(unsafe_claims)} (sanitizing to [[TBD]])."
+                )
+                # Sanitize via a minimal rewrite pass (does not invent facts; only redacts/asserts TBD).
+                try:
+                    system2 = (
+                        "You are LoreKeeperAgent. Rewrite a chapter Markdown to comply with Strong KB mode. "
+                        "Replace each unsafe canon claim with [[TBD]] or neutral phrasing that does NOT assert canon. "
+                        "Append/refresh a '## 待确认 / To Confirm' section listing all missing facts. "
+                        "Do not add new plot points. Output Markdown only."
+                    )
+                    claims = "\n".join(
+                        f"- {c}" for c in (unsafe_claims + to_confirm)[:20] if isinstance(c, str) and c.strip()
+                    )
+                    user2 = (
+                        "Unsafe canon claims:\n"
+                        f"{claims}\n\n"
+                        "ChapterMarkdown:\n"
+                        f"{edited_text}\n"
+                    )
+                    cfg = llm_cfg()
+                    yield emit(
+                        "tool_call",
+                        "LoreKeeper",
+                        {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
+                    )
+                    sanitized = await generate_text(system_prompt=system2, user_prompt=user2, cfg=cfg)
+                    if isinstance(sanitized, str) and sanitized.strip():
+                        edited_text = sanitized
+                        rewritten = True
+                        tbd_count = edited_text.count("[[TBD]]")
+                except Exception as e:
+                    warnings.append(f"sanitize_failed:{type(e).__name__}")
+
+            # If we didn't rewrite, still append a to-confirm list when needed.
+            if to_confirm and ("To Confirm" not in edited_text and "待确认" not in edited_text):
+                unique: list[str] = []
+                seen: set[str] = set()
+                for c in to_confirm:
+                    if c in seen:
+                        continue
+                    seen.add(c)
+                    unique.append(c)
+                if unique:
+                    edited_text = (
+                        edited_text.rstrip()
+                        + "\n\n---\n\n## 待确认 / To Confirm\n"
+                        + "\n".join(f"- {c}" for c in unique[:20])
+                        + "\n"
+                    )
+
+        else:
+            # Weak mode: keep a light warning only.
+            if tbd_count > 0:
+                warnings.append("Found [[TBD]] markers.")
+
         yield emit(
             "agent_output",
             "LoreKeeper",
-            {"tbd_count": tbd_count, "warnings": warnings},
+            {
+                "tbd_count": tbd_count,
+                "warnings": warnings,
+                "rewritten": rewritten,
+                "citations": cited_ids,
+                "to_confirm_count": len(to_confirm),
+                "unsafe_count": len(unsafe_claims),
+            },
         )
+        if evidence_report is not None:
+            yield emit(
+                "artifact",
+                "LoreKeeper",
+                {"artifact_type": "evidence_report", "report": evidence_report},
+            )
         yield emit("agent_finished", "LoreKeeper", {})
 
         # Persist Chapter + add to KB as manuscript chunk
