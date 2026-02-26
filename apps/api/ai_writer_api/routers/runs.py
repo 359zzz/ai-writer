@@ -482,6 +482,21 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         except Exception:
             edited_text = writer_text
 
+        # Agent: LoreKeeper (minimal verifier)
+        yield emit("agent_started", "LoreKeeper", {"kb_mode": kb_mode})
+        tbd_count = edited_text.count("[[TBD]]")
+        warnings: list[str] = []
+        if kb_mode == "strong" and tbd_count > 0:
+            warnings.append(
+                "Strong KB mode: found [[TBD]] markers. Add local KB facts or confirm canon before finalizing."
+            )
+        yield emit(
+            "agent_output",
+            "LoreKeeper",
+            {"tbd_count": tbd_count, "warnings": warnings},
+        )
+        yield emit("agent_finished", "LoreKeeper", {})
+
         # Persist Chapter + add to KB as manuscript chunk
         chapter_title = f"Chapter {chapter_index}"
         for ln in edited_text.splitlines():

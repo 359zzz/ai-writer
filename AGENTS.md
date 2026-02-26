@@ -83,12 +83,12 @@ Build a local, single-user, web-based **multi-agent collaborative novel writing 
 - Trace persisted + Agents tab shows timeline
 
 ### v0.4.0 (Local KB)
-- Upload local docs/snippets -> chunk -> index (SQLite FTS)
-- KB search tool + citations returned to agents
+- Local KB chunks stored in SQLite + FTS5 search
+- UI to add KB notes/snippets + search
 
 ### v0.5.0 (Web Search Tool)
 - DuckDuckGo-based web search tool (with URL + snippet)
-- Optional page fetch/extraction
+- UI can import selected web results into local KB (manual, explicit)
 
 ### v0.6.0 (Writing Workflow)
 - Outline generation + chapter writing + editor pass
@@ -97,9 +97,20 @@ Build a local, single-user, web-based **multi-agent collaborative novel writing 
 ### v0.7.0 (Export)
 - Markdown export -> docx/epub/pdf pipeline (prefer pandoc; fallbacks as needed)
 
+### v0.8.0 (Polish + Settings)
+- Continue mode UI (paste text → extract + continue)
+- Agents tab: run history selector + timeline + compressed graph view
+- Settings: visual editing of provider, model, base_url, temperature, max tokens, chapter targets
+
 ### v1.0.0 (MVP Complete)
 - Writing workspace usable end-to-end
 - Multi-agent collaboration visualization (timeline + basic graph)
 - Strong/Weak KB dependency implemented + verifier behavior
 - Documentation + safe API test script
 
+#### Known Limitations (v1.0.0)
+- Some OpenAI-compatible gateways may return empty `message.content` for certain reasoning-heavy models (e.g. Gemini 2.5 Pro via some proxies).
+  - Workaround: switch provider to GPT, or choose a non-reasoning Gemini model (e.g. Flash) in Settings.
+- Export quality varies by environment:
+  - DOCX/EPUB use pandoc when available; otherwise a basic fallback converter is used.
+  - PDF fallback is plain-text oriented.
