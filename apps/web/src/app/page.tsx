@@ -855,7 +855,7 @@ export default function Home() {
   const showBgImage = uiBackground.enabled && Boolean(uiBackground.image_data_url);
 
   return (
-    <div className="relative min-h-screen bg-[var(--ui-bg)] text-zinc-900">
+    <div className="relative min-h-screen bg-[var(--ui-bg)] text-[var(--ui-text)]">
       {showBgImage ? (
         <div
           aria-hidden
@@ -922,14 +922,14 @@ export default function Home() {
               </nav>
 
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-white/70 p-1 text-xs dark:border-zinc-800 dark:bg-zinc-950/70">
+                <div className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-[var(--ui-control)] p-1 text-xs text-[var(--ui-control-text)]">
                   <button
                     onClick={() => setLang("zh")}
                     className={[
                       "rounded-md px-2 py-1 transition-colors",
                       lang === "zh"
                         ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                        : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
+                        : "opacity-80 hover:bg-[var(--ui-bg)]",
                     ].join(" ")}
                   >
                     中文
@@ -940,21 +940,21 @@ export default function Home() {
                       "rounded-md px-2 py-1 transition-colors",
                       lang === "en"
                         ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                        : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
+                        : "opacity-80 hover:bg-[var(--ui-bg)]",
                     ].join(" ")}
                   >
                     EN
                   </button>
                 </div>
 
-                <select
-                  value={themeId}
-                  onChange={(e) => setThemeId(e.target.value)}
-                  className="rounded-lg border border-zinc-200 bg-white/70 px-2 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-950/70"
-                  aria-label={tt("theme")}
-                >
-                  {themes.map((th) => (
-                    <option key={th.id} value={th.id}>
+              <select
+                value={themeId}
+                onChange={(e) => setThemeId(e.target.value)}
+                className="rounded-lg border border-zinc-200 bg-[var(--ui-control)] px-2 py-2 text-xs text-[var(--ui-control-text)]"
+                aria-label={tt("theme")}
+              >
+                {themes.map((th) => (
+                  <option key={th.id} value={th.id}>
                       {th.name}
                     </option>
                   ))}
@@ -968,11 +968,11 @@ export default function Home() {
         <div className="mb-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-4 text-sm dark:border-zinc-800">
           <div className="flex items-center justify-between gap-4">
             <div className="font-medium">{tt("backend")}</div>
-            <div className="text-xs text-zinc-500 dark:text-zinc-400">
+            <div className="text-xs text-[var(--ui-muted)]">
               {apiBase}
             </div>
           </div>
-          <div className="mt-2 text-zinc-700 dark:text-zinc-200">
+          <div className="mt-2 text-[var(--ui-text)]">
             {health ? (
               <span>
                 {tt("ok")} ({health.service ?? "unknown"}
@@ -991,7 +991,7 @@ export default function Home() {
         {tab === "writing" ? (
           <section className="rounded-xl border border-zinc-200 bg-transparent p-6 dark:border-zinc-800">
             <h1 className="text-lg font-semibold">{tt("writing")}</h1>
-            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+            <p className="mt-2 text-sm text-[var(--ui-muted)]">
               {tt("writing_desc")}
             </p>
 
@@ -1003,7 +1003,7 @@ export default function Home() {
                     <input
                       value={newProjectTitle}
                       onChange={(e) => setNewProjectTitle(e.target.value)}
-                      className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                      className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                       placeholder={tt("project_title_placeholder")}
                     />
                     <button
@@ -1026,7 +1026,7 @@ export default function Home() {
 
                   <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
                     {projects.length === 0 ? (
-                      <div className="p-3 text-sm text-zinc-500 dark:text-zinc-400">
+                      <div className="p-3 text-sm text-[var(--ui-muted)]">
                         {tt("no_projects")}
                       </div>
                     ) : (
@@ -1065,7 +1065,7 @@ export default function Home() {
                               {ch.index}. {ch.title}
                             </div>
                             {ch.summary ? (
-                              <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
+                              <div className="mt-1 text-xs text-[var(--ui-muted)]">
                                 {ch.summary}
                               </div>
                             ) : null}
@@ -1073,7 +1073,7 @@ export default function Home() {
                         ))}
                       </ol>
                     ) : (
-                      <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                      <div className="mt-2 text-sm text-[var(--ui-muted)]">
                         {tt("no_outline")}
                       </div>
                     )
@@ -1108,7 +1108,7 @@ export default function Home() {
                                   setGeneratedMarkdown(ch.markdown);
                                   setEditorView("split");
                                 }}
-                                className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                                className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
                               >
                                 {tt("open")}
                               </button>
@@ -1125,7 +1125,7 @@ export default function Home() {
                 <div className="min-w-0 rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm font-medium">{tt("markdown_editor")}</div>
-                    <div className="flex items-center gap-1 rounded-md border border-zinc-200 bg-white p-1 text-xs dark:border-zinc-800 dark:bg-zinc-950">
+                    <div className="flex items-center gap-1 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1 text-xs text-[var(--ui-control-text)]">
                       {(
                         [
                           ["edit", tt("view_edit")],
@@ -1140,7 +1140,7 @@ export default function Home() {
                             "rounded-md px-2 py-1 transition-colors",
                             editorView === k
                               ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                              : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
+                              : "opacity-80 hover:bg-[var(--ui-bg)]",
                           ].join(" ")}
                         >
                           {label}
@@ -1153,11 +1153,11 @@ export default function Home() {
                     <textarea
                       value={generatedMarkdown}
                       onChange={(e) => setGeneratedMarkdown(e.target.value)}
-                      className="mt-3 h-[70vh] min-h-[520px] w-full rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                      className="mt-3 h-[70vh] min-h-[520px] w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 font-mono text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                       placeholder={tt("generated_markdown_placeholder")}
                     />
                   ) : editorView === "preview" ? (
-                    <div className="mt-3 h-[70vh] min-h-[520px] overflow-auto rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                    <div className="mt-3 h-[70vh] min-h-[520px] overflow-auto rounded-md border border-zinc-200 bg-[var(--ui-control)] p-4 text-[var(--ui-control-text)]">
                       <MarkdownPreview
                         markdown={generatedMarkdown}
                         emptyLabel={tt("preview_empty")}
@@ -1168,10 +1168,10 @@ export default function Home() {
                       <textarea
                         value={generatedMarkdown}
                         onChange={(e) => setGeneratedMarkdown(e.target.value)}
-                        className="h-[70vh] min-h-[520px] w-full rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                        className="h-[70vh] min-h-[520px] w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 font-mono text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                         placeholder={tt("generated_markdown_placeholder")}
                       />
-                      <div className="h-[70vh] min-h-[520px] overflow-auto rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                      <div className="h-[70vh] min-h-[520px] overflow-auto rounded-md border border-zinc-200 bg-[var(--ui-control)] p-4 text-[var(--ui-control-text)]">
                         <MarkdownPreview
                           markdown={generatedMarkdown}
                           emptyLabel={tt("preview_empty")}
@@ -1184,7 +1184,7 @@ export default function Home() {
                 <div className="grid gap-6">
                   <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("selected_project")}</div>
-                    <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+                    <div className="mt-2 text-sm text-[var(--ui-muted)]">
                       {selectedProjectId ? (
                         <span>
                           {tt("project_id")}: {selectedProjectId}
@@ -1212,11 +1212,11 @@ export default function Home() {
                             setRunError((e as Error).message),
                           );
                         }}
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                       >
                         {tt("generate_outline")}
                       </button>
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="text-xs text-[var(--ui-muted)]">
                         {tt("streams_to_agents")}
                       </span>
                     </div>
@@ -1230,7 +1230,7 @@ export default function Home() {
                       <div className="text-sm font-medium">{tt("write_chapter")}</div>
                       <div className="mt-3 grid gap-2">
                         <label className="grid gap-1 text-sm">
-                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          <span className="text-xs text-[var(--ui-muted)]">
                             {tt("chapter_index")}
                           </span>
                           <input
@@ -1238,17 +1238,17 @@ export default function Home() {
                             min={1}
                             value={chapterIndex}
                             onChange={(e) => setChapterIndex(Number(e.target.value))}
-                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                           />
                         </label>
                         <label className="grid gap-1 text-sm">
-                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          <span className="text-xs text-[var(--ui-muted)]">
                             {tt("research_query_optional")}
                           </span>
                           <input
                             value={researchQuery}
                             onChange={(e) => setResearchQuery(e.target.value)}
-                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                             placeholder={tt("research_query_placeholder")}
                           />
                         </label>
@@ -1268,7 +1268,7 @@ export default function Home() {
                         >
                           {tt("write_chapter_llm")}
                         </button>
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        <span className="text-xs text-[var(--ui-muted)]">
                           {tt("uses_settings")}
                         </span>
                       </div>
@@ -1276,13 +1276,13 @@ export default function Home() {
 
                     <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
                       <div className="text-sm font-medium">{tt("continue_mode")}</div>
-                      <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      <div className="mt-2 text-xs text-[var(--ui-muted)]">
                         {tt("continue_desc")}
                       </div>
                       <textarea
                         value={continueText}
                         onChange={(e) => setContinueText(e.target.value)}
-                        className="mt-3 h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                        className="mt-3 h-24 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                         placeholder={tt("paste_manuscript")}
                       />
                       <div className="mt-3 flex items-center gap-2">
@@ -1304,7 +1304,7 @@ export default function Home() {
                         <button
                           disabled={!continueText}
                           onClick={() => setContinueText("")}
-                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                         >
                           {tt("clear")}
                         </button>
@@ -1314,7 +1314,7 @@ export default function Home() {
 
                   <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("export")}</div>
-                    <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    <div className="mt-2 text-xs text-[var(--ui-muted)]">
                       {tt("export_desc")}
                     </div>
                     <div className="mt-3 flex items-center gap-2">
@@ -1325,7 +1325,7 @@ export default function Home() {
                             e.target.value as "docx" | "epub" | "pdf",
                           )
                         }
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                       >
                         <option value="docx">DOCX</option>
                         <option value="epub">EPUB</option>
@@ -1357,20 +1357,20 @@ export default function Home() {
                         <input
                           value={kbTitle}
                           onChange={(e) => setKbTitle(e.target.value)}
-                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                           placeholder={tt("kb_chunk_title_placeholder")}
                         />
                         <input
                           value={kbTags}
                           onChange={(e) => setKbTags(e.target.value)}
-                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                           placeholder={tt("kb_chunk_tags_placeholder")}
                         />
                       </div>
                       <textarea
                         value={kbContent}
                         onChange={(e) => setKbContent(e.target.value)}
-                        className="h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                        className="h-24 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                         placeholder={tt("kb_chunk_content_placeholder")}
                       />
                       <div className="flex items-center gap-2">
@@ -1385,7 +1385,7 @@ export default function Home() {
                         >
                           {tt("save_to_kb")}
                         </button>
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        <span className="text-xs text-[var(--ui-muted)]">
                           {tt("stored_locally")}
                         </span>
                       </div>
@@ -1394,7 +1394,7 @@ export default function Home() {
                         <input
                           value={kbQuery}
                           onChange={(e) => setKbQuery(e.target.value)}
-                          className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                           placeholder={`${tt("search_kb")}...`}
                         />
                         <button
@@ -1404,7 +1404,7 @@ export default function Home() {
                               setKbError((e as Error).message),
                             );
                           }}
-                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                         >
                           {tt("search_kb")}
                         </button>
@@ -1424,10 +1424,10 @@ export default function Home() {
                                 <div className="font-medium">
                                   {r.title || `Chunk #${r.id}`}
                                 </div>
-                                <div className="mt-1 line-clamp-3 text-xs text-zinc-600 dark:text-zinc-300">
+                                <div className="mt-1 line-clamp-3 text-xs text-[var(--ui-muted)]">
                                   {r.content}
                                 </div>
-                                <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                                <div className="mt-1 text-[11px] text-[var(--ui-muted)]">
                                   {tt("score")}: {r.score.toFixed(2)}
                                 </div>
                               </li>
@@ -1440,12 +1440,12 @@ export default function Home() {
 
                   <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("web_search")}</div>
-                    <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    <div className="mt-2 text-xs text-[var(--ui-muted)]">
                       {tt("web_search_desc")}
                     </div>
 
                     {!getSettingsBool("tools.web_search.enabled", true) ? (
-                      <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+                      <div className="mt-3 text-sm text-[var(--ui-muted)]">
                         {tt("web_search_disabled")}
                       </div>
                     ) : (
@@ -1454,7 +1454,7 @@ export default function Home() {
                           <input
                             value={webQuery}
                             onChange={(e) => setWebQuery(e.target.value)}
-                            className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                            className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                             placeholder={tt("web_search_placeholder")}
                           />
                           <button
@@ -1464,7 +1464,7 @@ export default function Home() {
                                 setWebError((e as Error).message),
                               );
                             }}
-                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                           >
                             {webLoading ? "..." : tt("search")}
                           </button>
@@ -1482,10 +1482,10 @@ export default function Home() {
                               {webResults.map((r) => (
                                 <li key={r.url} className="p-3">
                                   <div className="font-medium">{r.title}</div>
-                                  <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
+                                  <div className="mt-1 text-xs text-[var(--ui-muted)]">
                                     {r.snippet}
                                   </div>
-                                  <div className="mt-1 break-all text-[11px] text-zinc-500 dark:text-zinc-400">
+                                  <div className="mt-1 break-all text-[11px] text-[var(--ui-muted)]">
                                     {r.url}
                                   </div>
                                   <div className="mt-2">
@@ -1515,9 +1515,9 @@ export default function Home() {
         ) : null}
 
         {tab === "agents" ? (
-          <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
+          <section className="rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-6">
             <h1 className="text-lg font-semibold">{tt("agents")}</h1>
-            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+            <p className="mt-2 text-sm text-[var(--ui-muted)]">
               {tt("agents_desc")}
             </p>
 
@@ -1530,7 +1530,7 @@ export default function Home() {
                   setRunEvents([]);
                   setExpandedEventKey(null);
                 }}
-                className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
               >
                 {runs.length === 0 ? (
                   <option value="">{tt("no_runs")}</option>
@@ -1549,7 +1549,7 @@ export default function Home() {
                   "rounded-md px-3 py-2 text-sm",
                   agentsView === "timeline"
                     ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                    : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                    : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
                 ].join(" ")}
               >
                 {tt("timeline")}
@@ -1560,19 +1560,19 @@ export default function Home() {
                   "rounded-md px-3 py-2 text-sm",
                   agentsView === "graph"
                     ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                    : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                    : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
                 ].join(" ")}
               >
                 {tt("graph")}
               </button>
-              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+              <span className="text-xs text-[var(--ui-muted)]">
                 {tt("events")}: {runEvents.length}
               </span>
             </div>
 
             <div className="mt-6 rounded-lg border border-zinc-200 dark:border-zinc-800">
               {runEvents.length === 0 ? (
-                <div className="p-4 text-sm text-zinc-500 dark:text-zinc-400">
+                <div className="p-4 text-sm text-[var(--ui-muted)]">
                   {tt("no_events")}
                 </div>
               ) : agentsView === "timeline" ? (
@@ -1619,33 +1619,33 @@ export default function Home() {
                               </span>
                               {e.agent ? (
                                 <span
-                                  className="rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200"
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-0.5 text-xs text-[var(--ui-control-text)]"
                                   style={{ borderColor: agentColor(e.agent) }}
                                 >
                                   {formatAgentName(e.agent)}
                                 </span>
                               ) : null}
                               {tool ? (
-                                <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                                <span className="text-xs text-[var(--ui-muted)]">
                                   tool: {tool}
                                 </span>
                               ) : null}
                             </div>
                           </div>
 
-                          <div className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+                          <div className="shrink-0 text-xs text-[var(--ui-muted)]">
                             {new Date(e.ts).toLocaleTimeString()}
                           </div>
                         </div>
 
                         {text ? (
-                          <div className="mt-1 text-zinc-600 dark:text-zinc-300">
+                          <div className="mt-1 text-[var(--ui-text)]">
                             {clipText(text, 520)}
                           </div>
                         ) : null}
 
                         {hits !== null ? (
-                          <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          <div className="mt-1 text-xs text-[var(--ui-muted)]">
                             hits: {hits}
                           </div>
                         ) : null}
@@ -1659,7 +1659,7 @@ export default function Home() {
                         ) : null}
 
                         {artifactType ? (
-                          <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          <div className="mt-1 text-xs text-[var(--ui-muted)]">
                             artifact: {artifactType}
                           </div>
                         ) : null}
@@ -1672,7 +1672,7 @@ export default function Home() {
                                   cur === eventKey ? null : eventKey,
                                 )
                               }
-                              className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
                             >
                               {expanded
                                 ? lang === "zh"
@@ -1686,7 +1686,7 @@ export default function Home() {
                         ) : null}
 
                         {expanded ? (
-                          <pre className="mt-2 max-h-72 overflow-auto rounded-md border border-zinc-200 bg-white p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
+                          <pre className="mt-2 max-h-72 overflow-auto rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)]">
                             {detailPreview}
                           </pre>
                         ) : null}
@@ -1699,7 +1699,7 @@ export default function Home() {
                   <div className="text-sm font-medium">{tt("execution_flow")}</div>
                   <div className="mt-3 overflow-auto">
                     {agentFlow.length === 0 ? (
-                      <div className="text-sm text-zinc-500 dark:text-zinc-400">
+                      <div className="text-sm text-[var(--ui-muted)]">
                         {tt("no_agents_in_events")}
                       </div>
                     ) : (
@@ -1709,12 +1709,12 @@ export default function Home() {
                           return (
                             <div key={`${a}:${idx}`} className="flex items-center gap-2">
                               <div
-                                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                                className="rounded-lg border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)]"
                                 style={{ borderColor: agentColor(a) }}
                               >
                                 <div className="font-medium">{formatAgentName(a)}</div>
                                 {st ? (
-                                  <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                                  <div className="mt-1 text-[11px] text-[var(--ui-muted)]">
                                     t={formatDurationMs(st.total_ms)} · tools={st.tool_calls} · artifacts={st.artifacts}
                                   </div>
                                 ) : null}
@@ -1729,7 +1729,7 @@ export default function Home() {
                     )}
                   </div>
 
-                  <div className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
+                  <div className="mt-4 text-xs text-[var(--ui-muted)]">
                     {tt("compressed_view")}
                   </div>
                 </div>
@@ -1739,9 +1739,9 @@ export default function Home() {
         ) : null}
 
         {tab === "settings" ? (
-          <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
+          <section className="rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-6">
             <h1 className="text-lg font-semibold">{tt("settings")}</h1>
-            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+            <p className="mt-2 text-sm text-[var(--ui-muted)]">
               {tt("settings_desc")}
             </p>
 
@@ -1779,7 +1779,7 @@ export default function Home() {
                 <div className="text-sm font-medium">{tt("ui_prefs")}</div>
                 <div className="mt-4 grid gap-3">
                   <label className="grid gap-1 text-sm">
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                    <span className="text-xs text-[var(--ui-muted)]">
                       {tt("language")}
                     </span>
                     <div className="flex items-center gap-1">
@@ -1789,7 +1789,7 @@ export default function Home() {
                           "rounded-md px-3 py-2 text-sm transition-colors",
                           lang === "zh"
                             ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                            : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                            : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
                         ].join(" ")}
                       >
                         中文
@@ -1800,7 +1800,7 @@ export default function Home() {
                           "rounded-md px-3 py-2 text-sm transition-colors",
                           lang === "en"
                             ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                            : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                            : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
                         ].join(" ")}
                       >
                         EN
@@ -1809,13 +1809,13 @@ export default function Home() {
                   </label>
 
                   <label className="grid gap-1 text-sm">
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                    <span className="text-xs text-[var(--ui-muted)]">
                       {tt("theme")}
                     </span>
                     <select
                       value={themeId}
                       onChange={(e) => setThemeId(e.target.value)}
-                      className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                     >
                       {themes.map((th) => (
                         <option key={th.id} value={th.id}>
@@ -1825,13 +1825,13 @@ export default function Home() {
                     </select>
                   </label>
 
-                  <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3 dark:border-zinc-800">
+                  <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3">
                     <div className="flex items-center justify-between gap-3">
-                      <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                      <div className="text-xs font-medium text-[var(--ui-muted)]">
                         {tt("logo")}
                       </div>
                       <div className="flex items-center gap-2">
-                        <label className="cursor-pointer rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900">
+                        <label className="cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]">
                           {tt("upload_image")}
                           <input
                             type="file"
@@ -1854,7 +1854,7 @@ export default function Home() {
                         <button
                           disabled={!brandLogoDataUrl}
                           onClick={() => setBrandLogoDataUrl(null)}
-                          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                         >
                           {tt("remove_image")}
                         </button>
@@ -1873,7 +1873,7 @@ export default function Home() {
                           <div className="h-full w-full bg-[var(--ui-accent)]" />
                         )}
                       </div>
-                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                      <div className="text-xs text-[var(--ui-muted)]">
                         {lang === "zh"
                           ? "将显示在左上角（仅本机浏览器保存）。"
                           : "Shown in the top-left (stored in this browser only)."}
@@ -1881,12 +1881,12 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3 dark:border-zinc-800">
+                  <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3">
                     <div className="flex items-center justify-between gap-3">
-                      <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                      <div className="text-xs font-medium text-[var(--ui-muted)]">
                         {tt("background_image")}
                       </div>
-                      <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+                      <label className="flex items-center gap-2 text-xs text-[var(--ui-muted)]">
                         <span>
                           {uiBackground.enabled ? tt("enabled") : tt("disabled")}
                         </span>
@@ -1905,7 +1905,7 @@ export default function Home() {
 
                     <div className="mt-3 grid gap-3">
                       <div className="flex items-center gap-2">
-                        <label className="cursor-pointer rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900">
+                        <label className="cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]">
                           {tt("upload_image")}
                           <input
                             type="file"
@@ -1938,7 +1938,7 @@ export default function Home() {
                               image_data_url: null,
                             }))
                           }
-                          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                         >
                           {tt("remove_image")}
                         </button>
@@ -1956,12 +1956,12 @@ export default function Home() {
                           />
                         </div>
                       ) : (
-                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                        <div className="text-xs text-[var(--ui-muted)]">
                           {lang === "zh" ? "未设置背景图。" : "No background image set."}
                         </div>
                       )}
 
-                      <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
                         {tt("opacity")}: {uiBackground.opacity.toFixed(2)}
                         <input
                           type="range"
@@ -1978,7 +1978,7 @@ export default function Home() {
                         />
                       </label>
 
-                      <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
                         {tt("blur")}: {uiBackground.blur_px}px
                         <input
                           type="range"
@@ -1999,7 +1999,7 @@ export default function Home() {
 
                   <div className="mt-2 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                      <div className="text-xs font-medium text-[var(--ui-muted)]">
                         {tt("theme_manage")}
                       </div>
                       <div className="flex items-center gap-2">
@@ -2014,13 +2014,17 @@ export default function Home() {
                               name: lang === "zh" ? "自定义主题" : "Custom theme",
                               bg: "#FFFFFF",
                               surface: "#FFFFFF",
+                              text: "#0B1020",
+                              muted: "#52525B",
+                              control: "#FFFFFF",
+                              control_text: "#0B1020",
                               accent: "#22C55E",
                               accent_foreground: "#0B1020",
                             };
                             setThemes((prev) => [...prev, next]);
                             setThemeId(id);
                           }}
-                          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
                         >
                           {tt("add_theme")}
                         </button>
@@ -2029,7 +2033,7 @@ export default function Home() {
                             setThemes(DEFAULT_THEMES);
                             setThemeId(DEFAULT_THEMES[0]?.id ?? "dawn");
                           }}
-                          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
                         >
                           {tt("reset_themes")}
                         </button>
@@ -2075,7 +2079,7 @@ export default function Home() {
                                       ),
                                     );
                                   }}
-                                  className="w-full min-w-0 rounded-md border border-zinc-200 bg-white px-2 py-1 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                                  className="w-full min-w-0 rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-sm text-[var(--ui-control-text)]"
                                   aria-label={tt("theme_name")}
                                 />
                               </div>
@@ -2083,7 +2087,7 @@ export default function Home() {
                               <div className="flex items-center gap-2">
                                 <button
                                   onClick={() => setThemeId(th.id)}
-                                  className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
                                 >
                                   {tt("theme")}
                                 </button>
@@ -2099,7 +2103,7 @@ export default function Home() {
                                       return ensured;
                                     });
                                   }}
-                                  className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                                 >
                                   {tt("delete_theme")}
                                 </button>
@@ -2107,7 +2111,7 @@ export default function Home() {
                             </div>
 
                             <div className="mt-3 grid gap-2 md:grid-cols-2">
-                              <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                              <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
                                 {tt("theme_bg")}
                                 <input
                                   type="color"
@@ -2121,10 +2125,10 @@ export default function Home() {
                                       ),
                                     );
                                   }}
-                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950"
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1"
                                 />
                               </label>
-                              <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                              <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
                                 {tt("theme_surface")}
                                 <input
                                   type="color"
@@ -2138,10 +2142,81 @@ export default function Home() {
                                       ),
                                     );
                                   }}
-                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950"
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1"
                                 />
                               </label>
-                              <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                              <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
+                                {tt("theme_text")}
+                                <input
+                                  type="color"
+                                  value={th.text}
+                                  onChange={(e) => {
+                                    const v =
+                                      normalizeHexColor(e.target.value) ?? th.text;
+                                    setThemes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === th.id ? { ...x, text: v } : x,
+                                      ),
+                                    );
+                                  }}
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1"
+                                />
+                              </label>
+                              <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
+                                {tt("theme_muted")}
+                                <input
+                                  type="color"
+                                  value={th.muted}
+                                  onChange={(e) => {
+                                    const v =
+                                      normalizeHexColor(e.target.value) ?? th.muted;
+                                    setThemes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === th.id ? { ...x, muted: v } : x,
+                                      ),
+                                    );
+                                  }}
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1"
+                                />
+                              </label>
+                              <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
+                                {tt("theme_control")}
+                                <input
+                                  type="color"
+                                  value={th.control}
+                                  onChange={(e) => {
+                                    const v =
+                                      normalizeHexColor(e.target.value) ?? th.control;
+                                    setThemes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === th.id ? { ...x, control: v } : x,
+                                      ),
+                                    );
+                                  }}
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1"
+                                />
+                              </label>
+                              <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
+                                {tt("theme_control_text")}
+                                <input
+                                  type="color"
+                                  value={th.control_text}
+                                  onChange={(e) => {
+                                    const v =
+                                      normalizeHexColor(e.target.value) ??
+                                      th.control_text;
+                                    setThemes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === th.id
+                                          ? { ...x, control_text: v }
+                                          : x,
+                                      ),
+                                    );
+                                  }}
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1"
+                                />
+                              </label>
+                              <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
                                 {tt("accent")}
                                 <input
                                   type="color"
@@ -2155,10 +2230,10 @@ export default function Home() {
                                       ),
                                     );
                                   }}
-                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950"
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1"
                                 />
                               </label>
-                              <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                              <label className="grid gap-1 text-xs text-[var(--ui-muted)]">
                                 {tt("accent_text")}
                                 <input
                                   type="color"
@@ -2175,7 +2250,7 @@ export default function Home() {
                                       ),
                                     );
                                   }}
-                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950"
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1"
                                 />
                               </label>
                             </div>
@@ -2230,14 +2305,14 @@ export default function Home() {
               {settingsPane === "model" ? (
               <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                 <div className="text-sm font-medium">{tt("settings_nav_model")}</div>
-                <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                <div className="mt-2 text-xs text-[var(--ui-muted)]">
                   {tt("select_project_first")}
                 </div>
 
                 {selectedProject ? (
                   <div className="mt-4 grid gap-3">
                     <label className="grid gap-1 text-sm">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="text-xs text-[var(--ui-muted)]">
                         {tt("provider")}
                       </span>
                       <select
@@ -2249,7 +2324,7 @@ export default function Home() {
                             setSettingsError((err as Error).message),
                           )
                         }
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                       >
                         <option value="openai">{tt("gpt_provider")}</option>
                         <option value="gemini">{tt("gemini_provider")}</option>
@@ -2257,7 +2332,7 @@ export default function Home() {
                     </label>
 
                     <label className="grid gap-1 text-sm">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="text-xs text-[var(--ui-muted)]">
                         {tt("gpt_model")}
                       </span>
                       <input
@@ -2272,12 +2347,12 @@ export default function Home() {
                             setSettingsError((err as Error).message),
                           )
                         }
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                       />
                     </label>
 
                     <label className="grid gap-1 text-sm">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="text-xs text-[var(--ui-muted)]">
                         {tt("gpt_base_url")}
                       </span>
                       <input
@@ -2293,12 +2368,12 @@ export default function Home() {
                           )
                         }
                         placeholder={tt("optional_use_api_txt")}
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                       />
                     </label>
 
                     <label className="grid gap-1 text-sm">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="text-xs text-[var(--ui-muted)]">
                         {tt("gemini_model")}
                       </span>
                       <input
@@ -2313,12 +2388,12 @@ export default function Home() {
                             setSettingsError((err as Error).message),
                           )
                         }
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                       />
                     </label>
 
                     <label className="grid gap-1 text-sm">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="text-xs text-[var(--ui-muted)]">
                         {tt("gemini_base_url")}
                       </span>
                       <input
@@ -2334,13 +2409,13 @@ export default function Home() {
                           )
                         }
                         placeholder={tt("optional_use_api_txt")}
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                       />
                     </label>
 
                     <div className="grid gap-2 md:grid-cols-2">
                       <label className="grid gap-1 text-sm">
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        <span className="text-xs text-[var(--ui-muted)]">
                           {tt("temperature")}
                         </span>
                         <input
@@ -2354,12 +2429,12 @@ export default function Home() {
                               setSettingsError((err as Error).message),
                             )
                           }
-                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                         />
                       </label>
 
                       <label className="grid gap-1 text-sm">
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        <span className="text-xs text-[var(--ui-muted)]">
                           {tt("max_tokens")}
                         </span>
                         <input
@@ -2373,14 +2448,14 @@ export default function Home() {
                               setSettingsError((err as Error).message),
                             )
                           }
-                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                         />
                       </label>
                     </div>
 
                     <div className="grid gap-2 md:grid-cols-2">
                       <label className="grid gap-1 text-sm">
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        <span className="text-xs text-[var(--ui-muted)]">
                           {tt("chapter_words")}
                         </span>
                         <input
@@ -2399,12 +2474,12 @@ export default function Home() {
                               setSettingsError((err as Error).message),
                             )
                           }
-                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                         />
                       </label>
 
                       <label className="grid gap-1 text-sm">
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        <span className="text-xs text-[var(--ui-muted)]">
                           {tt("chapter_count")}
                         </span>
                         <input
@@ -2421,13 +2496,13 @@ export default function Home() {
                               setSettingsError((err as Error).message),
                             )
                           }
-                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                         />
                       </label>
                     </div>
 
                     <label className="grid gap-1 text-sm">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="text-xs text-[var(--ui-muted)]">
                         {tt("kb_mode")}
                       </span>
                       <select
@@ -2439,7 +2514,7 @@ export default function Home() {
                             setSettingsError((err as Error).message),
                           )
                         }
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                       >
                         <option value="weak">{tt("kb_weak")}</option>
                         <option value="strong">{tt("kb_strong")}</option>
@@ -2471,7 +2546,7 @@ export default function Home() {
                     ) : null}
                   </div>
                 ) : (
-                  <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+                  <div className="mt-3 text-sm text-[var(--ui-muted)]">
                     {lang === "zh" ? "未选择项目。" : "No project selected."}
                   </div>
                 )}
@@ -2483,7 +2558,7 @@ export default function Home() {
                   <div className="text-sm font-medium">
                     {tt("settings_nav_project")}
                   </div>
-                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  <div className="mt-2 text-xs text-[var(--ui-muted)]">
                     {tt("select_project_first")}
                   </div>
 
@@ -2491,7 +2566,7 @@ export default function Home() {
                     <div className="mt-4 grid gap-3">
                       <div className="grid gap-2 md:grid-cols-2">
                         <label className="grid gap-1 text-sm">
-                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          <span className="text-xs text-[var(--ui-muted)]">
                             {tt("chapter_words")}
                           </span>
                           <input
@@ -2510,12 +2585,12 @@ export default function Home() {
                                 setSettingsError((err as Error).message),
                               )
                             }
-                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                           />
                         </label>
 
                         <label className="grid gap-1 text-sm">
-                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          <span className="text-xs text-[var(--ui-muted)]">
                             {tt("chapter_count")}
                           </span>
                           <input
@@ -2534,13 +2609,13 @@ export default function Home() {
                                 setSettingsError((err as Error).message),
                               )
                             }
-                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                           />
                         </label>
                       </div>
 
                       <label className="grid gap-1 text-sm">
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        <span className="text-xs text-[var(--ui-muted)]">
                           {tt("kb_mode")}
                         </span>
                         <select
@@ -2552,7 +2627,7 @@ export default function Home() {
                               setSettingsError((err as Error).message),
                             )
                           }
-                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                         >
                           <option value="weak">{tt("kb_weak")}</option>
                           <option value="strong">{tt("kb_strong")}</option>
@@ -2566,7 +2641,7 @@ export default function Home() {
                       ) : null}
                     </div>
                   ) : (
-                    <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+                    <div className="mt-3 text-sm text-[var(--ui-muted)]">
                       {lang === "zh" ? "未选择项目。" : "No project selected."}
                     </div>
                   )}
@@ -2578,7 +2653,7 @@ export default function Home() {
                   <div className="text-sm font-medium">
                     {tt("settings_nav_export")}
                   </div>
-                  <div className="mt-2 grid gap-2 text-zinc-600 dark:text-zinc-300">
+                  <div className="mt-2 grid gap-2 text-[var(--ui-muted)]">
                     {lang === "zh" ? (
                       <>
                         <div>导出入口在「写作」页右侧面板。</div>

@@ -118,6 +118,10 @@ export type I18nKey =
   | "preview_empty"
   | "theme_bg"
   | "theme_surface"
+  | "theme_text"
+  | "theme_muted"
+  | "theme_control"
+  | "theme_control_text"
   | "logo"
   | "background_image"
   | "upload_image"
@@ -250,6 +254,10 @@ const ZH: Record<I18nKey, string> = {
   preview_empty: "暂无内容",
   theme_bg: "背景色",
   theme_surface: "面板色",
+  theme_text: "普通文字",
+  theme_muted: "辅助文字",
+  theme_control: "框底色",
+  theme_control_text: "框内文字",
   logo: "Logo",
   background_image: "背景图片",
   upload_image: "上传图片",
@@ -386,6 +394,10 @@ const EN: Record<I18nKey, string> = {
   preview_empty: "(empty)",
   theme_bg: "Background",
   theme_surface: "Surface",
+  theme_text: "Text",
+  theme_muted: "Muted text",
+  theme_control: "Control bg",
+  theme_control_text: "Control text",
   logo: "Logo",
   background_image: "Background image",
   upload_image: "Upload",

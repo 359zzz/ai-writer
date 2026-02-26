@@ -14,6 +14,26 @@ export type UiTheme = {
    */
   surface: string;
   /**
+   * Primary foreground text color used across the app.
+   * Format: "#RRGGBB"
+   */
+  text: string;
+  /**
+   * Secondary/muted text color used for labels/hints.
+   * Format: "#RRGGBB"
+   */
+  muted: string;
+  /**
+   * Control background color (inputs/selects/textareas/buttons).
+   * Format: "#RRGGBB"
+   */
+  control: string;
+  /**
+   * Foreground text color inside controls.
+   * Format: "#RRGGBB"
+   */
+  control_text: string;
+  /**
    * Primary UI accent used for active tabs and primary actions.
    * Format: "#RRGGBB"
    */
@@ -55,6 +75,10 @@ export const DEFAULT_THEMES: UiTheme[] = [
     // Revert to the original v1.x palette (accent-driven, neutral background).
     bg: "#FAFAFA",
     surface: "#FFFFFF",
+    text: "#0B1020",
+    muted: "#52525B",
+    control: "#FFFFFF",
+    control_text: "#0B1020",
     accent: "#F97316",
     accent_foreground: "#FFFFFF",
   },
@@ -63,6 +87,10 @@ export const DEFAULT_THEMES: UiTheme[] = [
     name: "辉月",
     bg: "#FAFAFA",
     surface: "#FFFFFF",
+    text: "#0B1020",
+    muted: "#52525B",
+    control: "#FFFFFF",
+    control_text: "#0B1020",
     accent: "#6366F1",
     accent_foreground: "#FFFFFF",
   },
@@ -71,16 +99,24 @@ export const DEFAULT_THEMES: UiTheme[] = [
     name: "冰痕",
     bg: "#FAFAFA",
     surface: "#FFFFFF",
+    text: "#0B1020",
+    muted: "#52525B",
+    control: "#FFFFFF",
+    control_text: "#0B1020",
     accent: "#06B6D4",
     accent_foreground: "#0B1020",
   },
 ];
 
+type UiThemeCore = Pick<
+  UiTheme,
+  "id" | "bg" | "surface" | "accent" | "accent_foreground"
+>;
+
 // Legacy defaults shipped in v1.2.0 (kept for automatic migration only).
-const LEGACY_THEMES_V120: UiTheme[] = [
+const LEGACY_THEMES_V120: UiThemeCore[] = [
   {
     id: "dawn",
-    name: "破晓",
     bg: "#FFFFFF",
     surface: "#FFF4CC",
     accent: "#EF4444",
@@ -88,7 +124,6 @@ const LEGACY_THEMES_V120: UiTheme[] = [
   },
   {
     id: "moon",
-    name: "辉月",
     bg: "#F3F4FF",
     surface: "#E0E7FF",
     accent: "#6366F1",
@@ -96,7 +131,6 @@ const LEGACY_THEMES_V120: UiTheme[] = [
   },
   {
     id: "ice",
-    name: "冰痕",
     bg: "#F0FDFF",
     surface: "#CCFBF1",
     accent: "#06B6D4",
@@ -104,7 +138,7 @@ const LEGACY_THEMES_V120: UiTheme[] = [
   },
 ];
 
-function themesMatchByIdAndColors(a: UiTheme[], b: UiTheme[]): boolean {
+function themesMatchByIdAndColors(a: UiThemeCore[], b: UiThemeCore[]): boolean {
   if (a.length !== b.length) return false;
   const map = new Map(b.map((t) => [t.id, t] as const));
   for (const t of a) {
@@ -121,7 +155,14 @@ function themesMatchByIdAndColors(a: UiTheme[], b: UiTheme[]): boolean {
 function maybeMigrateLegacyDefaults(themes: UiTheme[]): UiTheme[] {
   // If the user never customized themes (still the v1.2.0 built-ins), adopt the
   // reverted "classic" defaults so the UI updates automatically.
-  if (themesMatchByIdAndColors(themes, LEGACY_THEMES_V120)) return DEFAULT_THEMES;
+  const core = themes.map((t) => ({
+    id: t.id,
+    bg: t.bg,
+    surface: t.surface,
+    accent: t.accent,
+    accent_foreground: t.accent_foreground,
+  }));
+  if (themesMatchByIdAndColors(core, LEGACY_THEMES_V120)) return DEFAULT_THEMES;
   return themes;
 }
 
@@ -166,6 +207,43 @@ export function normalizeHexColor(input: string): string | null {
   return null;
 }
 
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const v = normalizeHexColor(hex);
+  if (!v) return null;
+  const r = Number.parseInt(v.slice(1, 3), 16);
+  const g = Number.parseInt(v.slice(3, 5), 16);
+  const b = Number.parseInt(v.slice(5, 7), 16);
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
+  return { r, g, b };
+}
+
+function relativeLuminance(hex: string): number | null {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return null;
+  const toLinear = (c: number) => {
+    const x = c / 255;
+    return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+  };
+  const r = toLinear(rgb.r);
+  const g = toLinear(rgb.g);
+  const b = toLinear(rgb.b);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function pickReadableText(bgHex: string): string {
+  const lum = relativeLuminance(bgHex);
+  // A simple heuristic; good enough for auto-defaults and migrations.
+  if (lum !== null && lum < 0.45) return "#FFFFFF";
+  return "#0B1020";
+}
+
+function defaultMutedForText(textHex: string): string {
+  // Keep muted readable on both light and dark themes.
+  const lum = relativeLuminance(textHex);
+  if (lum !== null && lum < 0.45) return "#A1A1AA";
+  return "#52525B";
+}
+
 type UiThemeV1 = {
   id: string;
   name: string;
@@ -197,6 +275,15 @@ function coerceThemeV2(raw: unknown): UiTheme | null {
   const bg = typeof raw.bg === "string" ? normalizeHexColor(raw.bg) : null;
   const surface =
     typeof raw.surface === "string" ? normalizeHexColor(raw.surface) : null;
+  const text = typeof raw.text === "string" ? normalizeHexColor(raw.text) : null;
+  const muted =
+    typeof raw.muted === "string" ? normalizeHexColor(raw.muted) : null;
+  const control =
+    typeof raw.control === "string" ? normalizeHexColor(raw.control) : null;
+  const controlText =
+    typeof raw.control_text === "string"
+      ? normalizeHexColor(raw.control_text)
+      : null;
   const accent =
     typeof raw.accent === "string" ? normalizeHexColor(raw.accent) : null;
   const accentFg =
@@ -205,7 +292,24 @@ function coerceThemeV2(raw: unknown): UiTheme | null {
       : null;
 
   if (!id || !name || !bg || !surface || !accent || !accentFg) return null;
-  return { id, name, bg, surface, accent, accent_foreground: accentFg };
+
+  const finalText = text ?? pickReadableText(surface);
+  const finalMuted = muted ?? defaultMutedForText(finalText);
+  const finalControl = control ?? surface;
+  const finalControlText = controlText ?? pickReadableText(finalControl);
+
+  return {
+    id,
+    name,
+    bg,
+    surface,
+    text: finalText,
+    muted: finalMuted,
+    control: finalControl,
+    control_text: finalControlText,
+    accent,
+    accent_foreground: accentFg,
+  };
 }
 
 function coerceBackground(raw: unknown): UiBackgroundPrefs {
@@ -273,6 +377,10 @@ export function coerceUiPrefs(raw: unknown): UiPrefs {
             name: t.name,
             bg: "#FAFAFA",
             surface: "#FFFFFF",
+            text: pickReadableText("#FFFFFF"),
+            muted: defaultMutedForText(pickReadableText("#FFFFFF")),
+            control: "#FFFFFF",
+            control_text: pickReadableText("#FFFFFF"),
             accent: t.accent,
             accent_foreground: t.accent_foreground,
           }))
@@ -334,6 +442,13 @@ export function applyUiTheme(theme: UiTheme): void {
   if (typeof document === "undefined") return;
   document.documentElement.style.setProperty("--ui-bg", theme.bg);
   document.documentElement.style.setProperty("--ui-surface", theme.surface);
+  document.documentElement.style.setProperty("--ui-text", theme.text);
+  document.documentElement.style.setProperty("--ui-muted", theme.muted);
+  document.documentElement.style.setProperty("--ui-control", theme.control);
+  document.documentElement.style.setProperty(
+    "--ui-control-text",
+    theme.control_text,
+  );
   document.documentElement.style.setProperty("--ui-accent", theme.accent);
   document.documentElement.style.setProperty(
     "--ui-accent-foreground",

@@ -162,3 +162,7 @@ Versioning policy (from v1.0.x onward):
 ### v1.2.2 (UI Contrast + Background Image Fix)
 - Fixed UI background image not showing: background layer now renders behind content reliably (z-index/stacking fix).
 - Prevented OS-level dark mode from causing low-contrast text (Tailwind `dark:` variants are now class-based; app stays visually consistent until we add an explicit dark-mode toggle).
+
+### v1.2.3 (Theme: Text + Control Colors)
+- Theme system expanded with more tokens: normal text color + muted text + control (input/button) background + control text.
+- UI controls now use theme tokens so custom themes won't create "black boxes with unreadable text".

@@ -6,6 +6,10 @@
   /* UI theme tokens (defaults match the built-in "破晓" preset). */
   --ui-bg: #fafafa;
   --ui-surface: #ffffff;
+  --ui-text: #0b1020;
+  --ui-muted: #52525b;
+  --ui-control: #ffffff;
+  --ui-control-text: #0b1020;
   --ui-accent: #f97316;
   --ui-accent-foreground: #ffffff;
 }
