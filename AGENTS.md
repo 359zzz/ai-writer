@@ -1,0 +1,105 @@
+# ai-writer (Personal, Public)
+
+This file is the stable "project brain" for Codex/agents.
+
+It is intentionally split into:
+1) **North Star** (overall architecture + non-negotiable constraints; do not change lightly)
+2) **Versioned Iteration Notes** (update per version as we iterate)
+
+---
+
+## 1) North Star (Do Not Change Lightly)
+
+### 1.1 Product Goal
+Build a local, single-user, web-based **multi-agent collaborative novel writing platform** with:
+- A modern, easy-to-use web UI with **tab switching**: `Writing` / `Agent Collaboration` / `Settings`.
+- User-defined story settings (characters, outline, lore, style, length, chapters, etc.) where **all fields are optional**.
+  - Missing fields are **autofilled by LLM** (random/creative), without overwriting fields the user already set.
+- A **local-only knowledge base** (KB) for project lore/style/reference and already-written chapters.
+- Optional **web search** as an external research tool (not automatically persisted into KB unless user chooses).
+- Strong/Weak KB dependency modes:
+  - **Weak**: KB preferred; model can creatively fill gaps.
+  - **Strong (canon-locked)**: world/canon facts must come from local KB + user config + existing manuscript.
+    If missing, ask questions or create "to-confirm" items instead of inventing canon.
+- "Continue writing" mode: ingest existing text, extract StoryState (characters/world/timeline/outline/style),
+  then continue from that state.
+- Export: Markdown writing inside app, with export options: **DOCX / EPUB / PDF**.
+
+### 1.2 Constraints / Safety
+- Never commit secrets. `api.txt`, `.env*` are ignored by git.
+- During any automated tests that call real LLM APIs: **do not generate more than 500 Chinese characters / ~500 words**
+  (keep prompts short and ask for short outputs).
+- Do not log API keys. Settings UI must never reveal full keys.
+
+### 1.3 Architecture (Monorepo)
+- `apps/api`: FastAPI backend (SSE streaming, orchestration, storage)
+- `apps/web`: Next.js frontend (Writing/Agents/Settings)
+- `scripts`: one-click local dev scripts (Windows PowerShell)
+- Storage:
+  - SQLite for persistent app data (projects, chapters, settings, traces, KB chunks)
+  - Local filesystem for exports
+
+### 1.4 Multi-Agent Orchestration (MVP principle)
+- Use a **Supervisor/Orchestrator** pattern:
+  - Director orchestrates worker agents.
+  - Workers: ConfigAutofill, Outliner, Writer, LoreKeeper(Verifier), Editor, Extractor.
+- Every run produces a **trace** (events with timestamps) persisted to DB and displayed in the UI:
+  - agent start/end
+  - tool calls (KB search / web search)
+  - partial outputs (when streaming)
+  - final artifacts (outline/chapter/story state)
+
+### 1.5 KB + Web Search (Operational Definition)
+- Local KB is the canonical source for story facts/style when `Strong` mode is enabled.
+- Web search is an **external research tool**:
+  - Allowed in both modes when enabled
+  - Never auto-writes into KB; user can explicitly import curated results.
+
+### 1.6 One-Click Local Run
+- Primary entrypoint: `scripts/dev.ps1`
+  - Creates/uses Python 3.11 venv for backend
+  - Installs backend deps (pip)
+  - Installs frontend deps (npm)
+  - Runs API + Web concurrently
+
+---
+
+## 2) Versioned Iteration Notes (Update Per Release)
+
+### v0.0.0 (Scaffold)
+- Repo scaffold created: monorepo folders, gitignore, basic docs.
+- Dev scripts added.
+
+### v0.1.0 (API + Web Hello World)
+- Backend FastAPI with `/api/health`
+- Frontend Next.js with tabs + health check display
+
+### v0.2.0 (Projects + Settings)
+- SQLite persistence for projects + settings
+- Settings UI to select provider/model + KB mode + web search toggle
+
+### v0.3.0 (Runs + Multi-Agent Trace)
+- "Run" endpoint + SSE stream
+- Trace persisted + Agents tab shows timeline
+
+### v0.4.0 (Local KB)
+- Upload local docs/snippets -> chunk -> index (SQLite FTS)
+- KB search tool + citations returned to agents
+
+### v0.5.0 (Web Search Tool)
+- DuckDuckGo-based web search tool (with URL + snippet)
+- Optional page fetch/extraction
+
+### v0.6.0 (Writing Workflow)
+- Outline generation + chapter writing + editor pass
+- Continue mode: extract StoryState from existing text
+
+### v0.7.0 (Export)
+- Markdown export -> docx/epub/pdf pipeline (prefer pandoc; fallbacks as needed)
+
+### v1.0.0 (MVP Complete)
+- Writing workspace usable end-to-end
+- Multi-agent collaboration visualization (timeline + basic graph)
+- Strong/Weak KB dependency implemented + verifier behavior
+- Documentation + safe API test script
+
