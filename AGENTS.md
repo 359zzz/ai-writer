@@ -153,3 +153,8 @@ Versioning policy (from v1.0.x onward):
 - Agents collaboration page improved:
   - Timeline shows tool calls/results, warnings, and expandable details.
   - Graph view shows per-agent duration + tool/artifact counts.
+
+### v1.2.1 (Theme Defaults: Classic Palette Restored)
+- Restored built-in theme colors to the original v1.x palette (e.g. `破晓` accent back to orange `#F97316`).
+- Default UI background/surface reverted to a more neutral "classic" look (`#FAFAFA` / `#FFFFFF`).
+- Added a small migration: users still on the untouched v1.2.0 default themes auto-upgrade to the classic defaults.

@@ -52,6 +52,35 @@ export const DEFAULT_THEMES: UiTheme[] = [
   {
     id: "dawn",
     name: "破晓",
+    // Revert to the original v1.x palette (accent-driven, neutral background).
+    bg: "#FAFAFA",
+    surface: "#FFFFFF",
+    accent: "#F97316",
+    accent_foreground: "#FFFFFF",
+  },
+  {
+    id: "moon",
+    name: "辉月",
+    bg: "#FAFAFA",
+    surface: "#FFFFFF",
+    accent: "#6366F1",
+    accent_foreground: "#FFFFFF",
+  },
+  {
+    id: "ice",
+    name: "冰痕",
+    bg: "#FAFAFA",
+    surface: "#FFFFFF",
+    accent: "#06B6D4",
+    accent_foreground: "#0B1020",
+  },
+];
+
+// Legacy defaults shipped in v1.2.0 (kept for automatic migration only).
+const LEGACY_THEMES_V120: UiTheme[] = [
+  {
+    id: "dawn",
+    name: "破晓",
     bg: "#FFFFFF",
     surface: "#FFF4CC",
     accent: "#EF4444",
@@ -74,6 +103,27 @@ export const DEFAULT_THEMES: UiTheme[] = [
     accent_foreground: "#0B1020",
   },
 ];
+
+function themesMatchByIdAndColors(a: UiTheme[], b: UiTheme[]): boolean {
+  if (a.length !== b.length) return false;
+  const map = new Map(b.map((t) => [t.id, t] as const));
+  for (const t of a) {
+    const other = map.get(t.id);
+    if (!other) return false;
+    if (t.bg !== other.bg) return false;
+    if (t.surface !== other.surface) return false;
+    if (t.accent !== other.accent) return false;
+    if (t.accent_foreground !== other.accent_foreground) return false;
+  }
+  return true;
+}
+
+function maybeMigrateLegacyDefaults(themes: UiTheme[]): UiTheme[] {
+  // If the user never customized themes (still the v1.2.0 built-ins), adopt the
+  // reverted "classic" defaults so the UI updates automatically.
+  if (themesMatchByIdAndColors(themes, LEGACY_THEMES_V120)) return DEFAULT_THEMES;
+  return themes;
+}
 
 export const DEFAULT_UI_PREFS: UiPrefs = {
   version: 2,
@@ -187,7 +237,9 @@ export function coerceUiPrefs(raw: unknown): UiPrefs {
     const lang = isLang(raw.lang) ? raw.lang : DEFAULT_UI_PREFS.lang;
     const themesRaw = Array.isArray(raw.themes) ? raw.themes : [];
     const themes = themesRaw.map(coerceThemeV2).filter(Boolean) as UiTheme[];
-    const finalThemes = themes.length > 0 ? themes : DEFAULT_THEMES;
+    const finalThemes = maybeMigrateLegacyDefaults(
+      themes.length > 0 ? themes : DEFAULT_THEMES,
+    );
 
     const themeId =
       typeof raw.theme_id === "string"
@@ -219,7 +271,7 @@ export function coerceUiPrefs(raw: unknown): UiPrefs {
         ? themesV1.map((t) => ({
             id: t.id,
             name: t.name,
-            bg: "#FFFFFF",
+            bg: "#FAFAFA",
             surface: "#FFFFFF",
             accent: t.accent,
             accent_foreground: t.accent_foreground,
