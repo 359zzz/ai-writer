@@ -80,6 +80,11 @@ export default function Home() {
   >([]);
   const [webError, setWebError] = useState<string | null>(null);
   const [webLoading, setWebLoading] = useState<boolean>(false);
+  const [exportFormat, setExportFormat] = useState<"docx" | "epub" | "pdf">(
+    "docx",
+  );
+  const [exporting, setExporting] = useState<boolean>(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const apiBase = useMemo(() => {
     return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -393,6 +398,42 @@ export default function Home() {
     }
   }
 
+  async function exportProject() {
+    if (!selectedProjectId) return;
+    setExportError(null);
+    setExporting(true);
+    try {
+      const res = await fetch(
+        `${apiBase}/api/projects/${selectedProjectId}/export`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ format: exportFormat }),
+        },
+      );
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const cd = res.headers.get("content-disposition") ?? "";
+      const m = /filename=\"?([^\";]+)\"?/i.exec(cd);
+      const filename = m?.[1] ?? `export.${exportFormat}`;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50">
       <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
@@ -661,6 +702,42 @@ export default function Home() {
                       </ul>
                     </div>
                   )}
+                </div>
+
+                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">Export</div>
+                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    Export all chapters to DOCX/EPUB/PDF. Uses pandoc when available, with fallbacks.
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <select
+                      value={exportFormat}
+                      onChange={(e) =>
+                        setExportFormat(e.target.value as "docx" | "epub" | "pdf")
+                      }
+                      className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                    >
+                      <option value="docx">DOCX</option>
+                      <option value="epub">EPUB</option>
+                      <option value="pdf">PDF</option>
+                    </select>
+                    <button
+                      disabled={exporting || chapters.length === 0}
+                      onClick={() => {
+                        exportProject().catch((e) =>
+                          setExportError((e as Error).message),
+                        );
+                      }}
+                      className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    >
+                      {exporting ? "Exporting..." : "Export"}
+                    </button>
+                  </div>
+                  {exportError ? (
+                    <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                      {exportError}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
