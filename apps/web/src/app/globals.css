@@ -3,6 +3,9 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* UI accent is theme-driven (defaults match the built-in "破晓" preset). */
+  --ui-accent: #f97316;
+  --ui-accent-foreground: #ffffff;
 }
 
 @theme inline {

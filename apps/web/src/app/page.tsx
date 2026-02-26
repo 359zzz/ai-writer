@@ -2,6 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { t, type I18nKey, type Lang } from "@/lib/i18n";
+import {
+  DEFAULT_THEMES,
+  DEFAULT_UI_PREFS,
+  applyUiTheme,
+  loadUiPrefs,
+  normalizeHexColor,
+  saveUiPrefs,
+  type UiTheme,
+} from "@/lib/uiPrefs";
+
 type TabKey = "writing" | "agents" | "settings";
 
 type Health = {
@@ -48,6 +59,11 @@ type RunItem = {
 };
 
 export default function Home() {
+  const [uiLoaded, setUiLoaded] = useState<boolean>(false);
+  const [lang, setLang] = useState<Lang>(DEFAULT_UI_PREFS.lang);
+  const [themes, setThemes] = useState<UiTheme[]>(DEFAULT_UI_PREFS.themes);
+  const [themeId, setThemeId] = useState<string>(DEFAULT_UI_PREFS.theme_id);
+
   const [tab, setTab] = useState<TabKey>("writing");
   const [agentsView, setAgentsView] = useState<"timeline" | "graph">("timeline");
   const [health, setHealth] = useState<Health | null>(null);
@@ -103,6 +119,31 @@ export default function Home() {
   const apiBase = useMemo(() => {
     return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
   }, []);
+
+  const tt = (key: I18nKey) => t(lang, key);
+
+  useEffect(() => {
+    const prefs = loadUiPrefs();
+    setLang(prefs.lang);
+    setThemes(prefs.themes);
+    setThemeId(prefs.theme_id);
+    setUiLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    const active = themes.find((th) => th.id === themeId) ?? themes[0];
+    if (!active) return;
+    applyUiTheme(active);
+  }, [themeId, themes]);
+
+  useEffect(() => {
+    if (!uiLoaded) return;
+    saveUiPrefs({ version: 1, lang, theme_id: themeId, themes });
+  }, [uiLoaded, lang, themeId, themes]);
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
 
   useEffect(() => {
     let cancelled = false;
@@ -541,47 +582,89 @@ export default function Home() {
       <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-zinc-900 dark:bg-zinc-100" />
+            <div className="h-8 w-8 rounded-lg bg-[var(--ui-accent)]" />
             <div className="leading-tight">
-              <div className="text-sm font-semibold">ai-writer</div>
+              <div className="text-sm font-semibold">{tt("app_name")}</div>
               <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                Multi-agent novel workspace (MVP)
+                {tt("app_tagline")}
               </div>
             </div>
           </div>
 
-          <nav className="flex items-center gap-2">
-            {(
-              [
-                ["writing", "Writing"],
-                ["agents", "Agent Collaboration"],
-                ["settings", "Settings"],
-              ] as const
-            ).map(([k, label]) => {
-              const active = tab === k;
-              return (
+          <div className="flex items-center gap-3">
+            <nav className="flex items-center gap-2">
+              {(
+                [
+                  ["writing", tt("tab_writing")],
+                  ["agents", tt("tab_agents")],
+                  ["settings", tt("tab_settings")],
+                ] as const
+              ).map(([k, label]) => {
+                const active = tab === k;
+                return (
+                  <button
+                    key={k}
+                    onClick={() => setTab(k)}
+                    className={[
+                      "rounded-lg px-3 py-2 text-sm transition-colors",
+                      active
+                        ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                        : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
+                    ].join(" ")}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-white/70 p-1 text-xs dark:border-zinc-800 dark:bg-zinc-950/70">
                 <button
-                  key={k}
-                  onClick={() => setTab(k)}
+                  onClick={() => setLang("zh")}
                   className={[
-                    "rounded-lg px-3 py-2 text-sm transition-colors",
-                    active
-                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    "rounded-md px-2 py-1 transition-colors",
+                    lang === "zh"
+                      ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
                       : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
                   ].join(" ")}
                 >
-                  {label}
+                  中文
                 </button>
-              );
-            })}
-          </nav>
+                <button
+                  onClick={() => setLang("en")}
+                  className={[
+                    "rounded-md px-2 py-1 transition-colors",
+                    lang === "en"
+                      ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                      : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
+                  ].join(" ")}
+                >
+                  EN
+                </button>
+              </div>
+
+              <select
+                value={themeId}
+                onChange={(e) => setThemeId(e.target.value)}
+                className="rounded-lg border border-zinc-200 bg-white/70 px-2 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-950/70"
+                aria-label={tt("theme")}
+              >
+                {themes.map((th) => (
+                  <option key={th.id} value={th.id}>
+                    {th.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-8">
         <div className="mb-6 rounded-xl border border-zinc-200 bg-white p-4 text-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div className="flex items-center justify-between gap-4">
-            <div className="font-medium">Backend</div>
+            <div className="font-medium">{tt("backend")}</div>
             <div className="text-xs text-zinc-500 dark:text-zinc-400">
               {apiBase}
             </div>
@@ -589,36 +672,35 @@ export default function Home() {
           <div className="mt-2 text-zinc-700 dark:text-zinc-200">
             {health ? (
               <span>
-                OK ({health.service ?? "unknown"}
+                {tt("ok")} ({health.service ?? "unknown"}
                 {health.version ? ` v${health.version}` : ""})
               </span>
             ) : healthError ? (
               <span className="text-red-600 dark:text-red-400">
-                Unreachable: {healthError}
+                {tt("unreachable")}: {healthError}
               </span>
             ) : (
-              <span>Checking...</span>
+              <span>{tt("checking")}</span>
             )}
           </div>
         </div>
 
         {tab === "writing" ? (
           <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-            <h1 className="text-lg font-semibold">Writing</h1>
+            <h1 className="text-lg font-semibold">{tt("writing")}</h1>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-              This is the Notion-like writing workspace (coming next). For now,
-              it is a placeholder.
+              {tt("writing_desc")}
             </p>
 
             <div className="mt-6 grid gap-6 md:grid-cols-2">
               <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                <div className="text-sm font-medium">Projects</div>
+                <div className="text-sm font-medium">{tt("projects")}</div>
                 <div className="mt-3 flex gap-2">
                   <input
                     value={newProjectTitle}
                     onChange={(e) => setNewProjectTitle(e.target.value)}
                     className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                    placeholder="Project title"
+                    placeholder={tt("project_title_placeholder")}
                   />
                   <button
                     onClick={() => {
@@ -626,9 +708,9 @@ export default function Home() {
                         setProjectsError((e as Error).message),
                       );
                     }}
-                    className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90"
                   >
-                    Create
+                    {tt("create")}
                   </button>
                 </div>
 
@@ -641,7 +723,7 @@ export default function Home() {
                 <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
                   {projects.length === 0 ? (
                     <div className="p-3 text-sm text-zinc-500 dark:text-zinc-400">
-                      No projects yet.
+                      {tt("no_projects")}
                     </div>
                   ) : (
                     <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
@@ -669,12 +751,14 @@ export default function Home() {
               </div>
 
               <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                <div className="text-sm font-medium">Selected Project</div>
+                <div className="text-sm font-medium">{tt("selected_project")}</div>
                 <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
                   {selectedProjectId ? (
-                    <span>Project ID: {selectedProjectId}</span>
+                    <span>
+                      {tt("project_id")}: {selectedProjectId}
+                    </span>
                   ) : (
-                    <span>None</span>
+                    <span>{tt("none")}</span>
                   )}
                 </div>
                 <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -685,9 +769,9 @@ export default function Home() {
                         setRunError((e as Error).message),
                       );
                     }}
-                    className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
                   >
-                    {runInProgress ? "Running..." : "Run Demo Pipeline"}
+                    {runInProgress ? tt("running") : tt("run_demo")}
                   </button>
                   <button
                     disabled={!selectedProjectId || runInProgress}
@@ -698,10 +782,10 @@ export default function Home() {
                     }}
                     className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
                   >
-                    Generate Outline
+                    {tt("generate_outline")}
                   </button>
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                    Streams events and updates the Agents tab.
+                    {tt("streams_to_agents")}
                   </span>
                 </div>
                 {runError ? (
@@ -711,11 +795,11 @@ export default function Home() {
                 ) : null}
 
                 <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">Write Chapter</div>
+                  <div className="text-sm font-medium">{tt("write_chapter")}</div>
                   <div className="mt-3 grid gap-2 md:grid-cols-2">
                     <label className="grid gap-1 text-sm">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Chapter Index
+                        {tt("chapter_index")}
                       </span>
                       <input
                         type="number"
@@ -727,7 +811,7 @@ export default function Home() {
                     </label>
                     <label className="grid gap-1 text-sm">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Research Query (optional)
+                        {tt("research_query_optional")}
                       </span>
                       <input
                         value={researchQuery}
@@ -748,26 +832,26 @@ export default function Home() {
                           setRunError((e as Error).message),
                         );
                       }}
-                      className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
                     >
-                      Write Chapter (LLM)
+                      {tt("write_chapter_llm")}
                     </button>
                     <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                      Uses Settings → provider/model + local KB + optional web search.
+                      {tt("uses_settings")}
                     </span>
                   </div>
                 </div>
 
                 <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">Continue Mode</div>
+                  <div className="text-sm font-medium">{tt("continue_mode")}</div>
                   <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                    Paste existing text; the system extracts StoryState and continues from it.
+                    {tt("continue_desc")}
                   </div>
                   <textarea
                     value={continueText}
                     onChange={(e) => setContinueText(e.target.value)}
                     className="mt-3 h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
-                    placeholder="Paste your existing manuscript here..."
+                    placeholder={tt("paste_manuscript")}
                   />
                   <div className="mt-3 flex items-center gap-2">
                     <button
@@ -781,23 +865,23 @@ export default function Home() {
                           setRunError((e as Error).message),
                         );
                       }}
-                      className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
                     >
-                      Extract + Continue
+                      {tt("extract_continue")}
                     </button>
                     <button
                       disabled={!continueText}
                       onClick={() => setContinueText("")}
                       className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
                     >
-                      Clear
+                      {tt("clear")}
                     </button>
                   </div>
                 </div>
 
                 <div className="mt-4">
                   <div className="mb-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    Markdown Editor
+                    {tt("markdown_editor")}
                   </div>
                   <textarea
                     value={generatedMarkdown}
@@ -808,17 +892,17 @@ export default function Home() {
                 </div>
 
                 <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">Outline (latest)</div>
+                  <div className="text-sm font-medium">{tt("outline_latest")}</div>
                   <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-zinc-950 p-3 text-xs text-zinc-50">
-                    {outline ? JSON.stringify(outline, null, 2) : "No outline yet."}
+                    {outline ? JSON.stringify(outline, null, 2) : tt("no_outline")}
                   </pre>
                 </div>
 
                 <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">Chapters</div>
+                  <div className="text-sm font-medium">{tt("chapters")}</div>
                   {chapters.length === 0 ? (
                     <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-                      No chapters yet.
+                      {tt("no_chapters")}
                     </div>
                   ) : (
                     <div className="mt-3 max-h-48 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
@@ -833,7 +917,7 @@ export default function Home() {
                                 onClick={() => setGeneratedMarkdown(ch.markdown)}
                                 className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
                               >
-                                Open
+                                {tt("open")}
                               </button>
                             </div>
                           </li>
@@ -844,9 +928,9 @@ export default function Home() {
                 </div>
 
                 <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">Export</div>
+                  <div className="text-sm font-medium">{tt("export")}</div>
                   <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                    Export all chapters to DOCX/EPUB/PDF. Uses pandoc when available, with fallbacks.
+                    {tt("export_desc")}
                   </div>
                   <div className="mt-3 flex items-center gap-2">
                     <select
@@ -867,9 +951,9 @@ export default function Home() {
                           setExportError((e as Error).message),
                         );
                       }}
-                      className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
                     >
-                      {exporting ? "Exporting..." : "Export"}
+                      {exporting ? tt("exporting") : tt("export")}
                     </button>
                   </div>
                   {exportError ? (
@@ -880,7 +964,7 @@ export default function Home() {
                 </div>
 
                 <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">Local Knowledge Base</div>
+                  <div className="text-sm font-medium">{tt("local_kb")}</div>
                   <div className="mt-2 grid gap-2">
                     <div className="grid gap-2 md:grid-cols-2">
                       <input
@@ -910,12 +994,12 @@ export default function Home() {
                             setKbError((e as Error).message),
                           );
                         }}
-                        className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                        className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
                       >
-                        Save to KB
+                        {tt("save_to_kb")}
                       </button>
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Stored locally (SQLite FTS).
+                        {tt("stored_locally")}
                       </span>
                     </div>
 
@@ -924,7 +1008,7 @@ export default function Home() {
                         value={kbQuery}
                         onChange={(e) => setKbQuery(e.target.value)}
                         className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                        placeholder="Search KB..."
+                        placeholder={`${tt("search_kb")}...`}
                       />
                       <button
                         disabled={!kbQuery.trim()}
@@ -935,7 +1019,7 @@ export default function Home() {
                         }}
                         className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
                       >
-                        Search
+                        {tt("search_kb")}
                       </button>
                     </div>
 
@@ -968,15 +1052,14 @@ export default function Home() {
                 </div>
 
                 <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">Web Search (Research)</div>
+                  <div className="text-sm font-medium">{tt("web_search")}</div>
                   <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                    Uses a lightweight search tool. Results are not saved unless
-                    you import them into the local KB.
+                    {tt("web_search_desc")}
                   </div>
 
                   {!getSettingsBool("tools.web_search.enabled", true) ? (
                     <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
-                      Web search is disabled in Settings.
+                      {tt("web_search_disabled")}
                     </div>
                   ) : (
                     <>
@@ -985,7 +1068,11 @@ export default function Home() {
                           value={webQuery}
                           onChange={(e) => setWebQuery(e.target.value)}
                           className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                          placeholder="Search the web for research..."
+                          placeholder={
+                            lang === "zh"
+                              ? "输入联网检索关键词..."
+                              : "Search the web for research..."
+                          }
                         />
                         <button
                           disabled={!webQuery.trim() || webLoading}
@@ -996,7 +1083,7 @@ export default function Home() {
                           }}
                           className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
                         >
-                          {webLoading ? "..." : "Search"}
+                          {webLoading ? "..." : lang === "zh" ? "搜索" : "Search"}
                         </button>
                       </div>
 
@@ -1025,9 +1112,9 @@ export default function Home() {
                                         setWebError((e as Error).message),
                                       );
                                     }}
-                                    className="rounded-md bg-zinc-900 px-2 py-1 text-xs text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                                    className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
                                   >
-                                    Import to KB
+                                    {tt("import_to_kb")}
                                   </button>
                                 </div>
                               </li>
@@ -1045,10 +1132,9 @@ export default function Home() {
 
         {tab === "agents" ? (
           <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-            <h1 className="text-lg font-semibold">Agent Collaboration</h1>
+            <h1 className="text-lg font-semibold">{tt("agents")}</h1>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-              This tab will visualize multi-agent traces (timeline + graph) from
-              the backend runs.
+              {tt("agents_desc")}
             </p>
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -1077,32 +1163,32 @@ export default function Home() {
                 className={[
                   "rounded-md px-3 py-2 text-sm",
                   agentsView === "timeline"
-                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
                     : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
                 ].join(" ")}
               >
-                Timeline
+                {tt("timeline")}
               </button>
               <button
                 onClick={() => setAgentsView("graph")}
                 className={[
                   "rounded-md px-3 py-2 text-sm",
                   agentsView === "graph"
-                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
                     : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
                 ].join(" ")}
               >
-                Graph
+                {tt("graph")}
               </button>
               <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                events: {runEvents.length}
+                {tt("events")}: {runEvents.length}
               </span>
             </div>
 
             <div className="mt-6 rounded-lg border border-zinc-200 dark:border-zinc-800">
               {runEvents.length === 0 ? (
                 <div className="p-4 text-sm text-zinc-500 dark:text-zinc-400">
-                  No run events yet. Run the demo pipeline in the Writing tab.
+                  {tt("no_events")}
                 </div>
               ) : agentsView === "timeline" ? (
                 <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
@@ -1132,7 +1218,7 @@ export default function Home() {
                 </ul>
               ) : (
                 <div className="p-4">
-                  <div className="text-sm font-medium">Execution Flow</div>
+                  <div className="text-sm font-medium">{tt("execution_flow")}</div>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {agentFlow.length === 0 ? (
                       <div className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -1153,7 +1239,7 @@ export default function Home() {
                   </div>
 
                   <div className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
-                    This is a compressed view (consecutive duplicates removed).
+                    {tt("compressed_view")}
                   </div>
                 </div>
               )}
@@ -1163,32 +1249,233 @@ export default function Home() {
 
         {tab === "settings" ? (
           <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-            <h1 className="text-lg font-semibold">Settings</h1>
+            <h1 className="text-lg font-semibold">{tt("settings")}</h1>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-              Model/provider selection (GPT vs Gemini), KB mode, web search, and
-              other runtime settings will live here.
+              {tt("settings_desc")}
             </p>
 
             <div className="mt-6 grid gap-6 md:grid-cols-2">
               <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                <div className="text-sm font-medium">Secrets Status</div>
+                <div className="text-sm font-medium">{tt("ui_prefs")}</div>
+                <div className="mt-4 grid gap-3">
+                  <label className="grid gap-1 text-sm">
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {tt("language")}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setLang("zh")}
+                        className={[
+                          "rounded-md px-3 py-2 text-sm transition-colors",
+                          lang === "zh"
+                            ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                            : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                        ].join(" ")}
+                      >
+                        中文
+                      </button>
+                      <button
+                        onClick={() => setLang("en")}
+                        className={[
+                          "rounded-md px-3 py-2 text-sm transition-colors",
+                          lang === "en"
+                            ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                            : "border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                        ].join(" ")}
+                      >
+                        EN
+                      </button>
+                    </div>
+                  </label>
+
+                  <label className="grid gap-1 text-sm">
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {tt("theme")}
+                    </span>
+                    <select
+                      value={themeId}
+                      onChange={(e) => setThemeId(e.target.value)}
+                      className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                    >
+                      {themes.map((th) => (
+                        <option key={th.id} value={th.id}>
+                          {th.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div className="mt-2 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                        {tt("theme_manage")}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            // Add a new theme preset ("category") that the user can rename/recolor.
+                            const id =
+                              globalThis.crypto?.randomUUID?.() ??
+                              `theme_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+                            const next: UiTheme = {
+                              id,
+                              name: lang === "zh" ? "自定义主题" : "Custom theme",
+                              accent: "#22C55E",
+                              accent_foreground: "#0B1020",
+                            };
+                            setThemes((prev) => [...prev, next]);
+                            setThemeId(id);
+                          }}
+                          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                        >
+                          {tt("add_theme")}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setThemes(DEFAULT_THEMES);
+                            setThemeId(DEFAULT_THEMES[0]?.id ?? "dawn");
+                          }}
+                          className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                        >
+                          {tt("reset_themes")}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid gap-3">
+                      {themes.map((th) => {
+                        const active = th.id === themeId;
+                        return (
+                          <div
+                            key={th.id}
+                            className={[
+                              "rounded-md border p-3",
+                              active
+                                ? "border-[var(--ui-accent)]"
+                                : "border-zinc-200 dark:border-zinc-800",
+                            ].join(" ")}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <div
+                                  className="h-4 w-4 shrink-0 rounded-sm"
+                                  style={{ backgroundColor: th.accent }}
+                                />
+                                <input
+                                  value={th.name}
+                                  onChange={(e) => {
+                                    const name = e.target.value;
+                                    setThemes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === th.id ? { ...x, name } : x,
+                                      ),
+                                    );
+                                  }}
+                                  className="w-full min-w-0 rounded-md border border-zinc-200 bg-white px-2 py-1 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                                  aria-label={tt("theme_name")}
+                                />
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => setThemeId(th.id)}
+                                  className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                                >
+                                  {tt("theme")}
+                                </button>
+                                <button
+                                  disabled={themes.length <= 1}
+                                  onClick={() => {
+                                    setThemes((prev) => {
+                                      const next = prev.filter((x) => x.id !== th.id);
+                                      const ensured = next.length > 0 ? next : DEFAULT_THEMES;
+                                      setThemeId((cur) =>
+                                        cur === th.id ? ensured[0]!.id : cur,
+                                      );
+                                      return ensured;
+                                    });
+                                  }}
+                                  className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                                >
+                                  {tt("delete_theme")}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="mt-3 grid gap-2 md:grid-cols-2">
+                              <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                                Accent
+                                <input
+                                  type="color"
+                                  value={th.accent}
+                                  onChange={(e) => {
+                                    const v =
+                                      normalizeHexColor(e.target.value) ?? th.accent;
+                                    setThemes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === th.id ? { ...x, accent: v } : x,
+                                      ),
+                                    );
+                                  }}
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950"
+                                />
+                              </label>
+                              <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                                Accent Text
+                                <input
+                                  type="color"
+                                  value={th.accent_foreground}
+                                  onChange={(e) => {
+                                    const v =
+                                      normalizeHexColor(e.target.value) ??
+                                      th.accent_foreground;
+                                    setThemes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === th.id
+                                          ? { ...x, accent_foreground: v }
+                                          : x,
+                                      ),
+                                    );
+                                  }}
+                                  className="h-9 w-full cursor-pointer rounded-md border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="text-sm font-medium">{tt("secrets_status")}</div>
                 <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                  Keys are loaded from environment variables or local{" "}
+                  {lang === "zh"
+                    ? "密钥来自环境变量或本地"
+                    : "Keys are loaded from environment variables or local"}{" "}
                   <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] dark:bg-zinc-800">
                     api.txt
                   </code>{" "}
-                  (never shown in UI).
+                  {lang === "zh"
+                    ? "（不会在 UI 中显示完整密钥）。"
+                    : "(never shown in UI)."}
                 </div>
                 <div className="mt-3 space-y-2 text-sm">
                   {secretsStatus ? (
                     <>
                       <div>
-                        GPT key:{" "}
-                        {secretsStatus.openai_api_key_present ? "present" : "missing"}
+                        {tt("gpt_key")}:{" "}
+                        {secretsStatus.openai_api_key_present
+                          ? tt("present")
+                          : tt("missing")}
                       </div>
                       <div>
-                        Gemini key:{" "}
-                        {secretsStatus.gemini_api_key_present ? "present" : "missing"}
+                        {tt("gemini_key")}:{" "}
+                        {secretsStatus.gemini_api_key_present
+                          ? tt("present")
+                          : tt("missing")}
                       </div>
                     </>
                   ) : (
@@ -1200,16 +1487,16 @@ export default function Home() {
               </div>
 
               <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                <div className="text-sm font-medium">Project Settings</div>
+                <div className="text-sm font-medium">{tt("project_settings")}</div>
                 <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                  Select a project first in the Writing tab.
+                  {tt("select_project_first")}
                 </div>
 
                 {selectedProject ? (
                   <div className="mt-4 grid gap-3">
                     <label className="grid gap-1 text-sm">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Provider
+                        {tt("provider")}
                       </span>
                       <select
                         defaultValue={getSettingsValue("llm.provider", "openai")}
@@ -1222,14 +1509,14 @@ export default function Home() {
                         }
                         className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
                       >
-                        <option value="openai">GPT (OpenAI-compatible)</option>
-                        <option value="gemini">Gemini</option>
+                        <option value="openai">{tt("gpt_provider")}</option>
+                        <option value="gemini">{tt("gemini_provider")}</option>
                       </select>
                     </label>
 
                     <label className="grid gap-1 text-sm">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        GPT Model
+                        {tt("gpt_model")}
                       </span>
                       <input
                         defaultValue={getSettingsValue(
@@ -1249,7 +1536,7 @@ export default function Home() {
 
                     <label className="grid gap-1 text-sm">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        GPT Base URL
+                        {tt("gpt_base_url")}
                       </span>
                       <input
                         defaultValue={getSettingsValue(
@@ -1263,14 +1550,14 @@ export default function Home() {
                             setSettingsError((err as Error).message),
                           )
                         }
-                        placeholder="Optional (leave empty to use api.txt/env)"
+                        placeholder={tt("optional_use_api_txt")}
                         className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
                       />
                     </label>
 
                     <label className="grid gap-1 text-sm">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Gemini Model
+                        {tt("gemini_model")}
                       </span>
                       <input
                         defaultValue={getSettingsValue(
@@ -1290,7 +1577,7 @@ export default function Home() {
 
                     <label className="grid gap-1 text-sm">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Gemini Base URL
+                        {tt("gemini_base_url")}
                       </span>
                       <input
                         defaultValue={getSettingsValue(
@@ -1304,7 +1591,7 @@ export default function Home() {
                             setSettingsError((err as Error).message),
                           )
                         }
-                        placeholder="Optional (leave empty to use api.txt/env)"
+                        placeholder={tt("optional_use_api_txt")}
                         className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
                       />
                     </label>
@@ -1312,7 +1599,7 @@ export default function Home() {
                     <div className="grid gap-2 md:grid-cols-2">
                       <label className="grid gap-1 text-sm">
                         <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          Temperature
+                          {tt("temperature")}
                         </span>
                         <input
                           type="number"
@@ -1331,7 +1618,7 @@ export default function Home() {
 
                       <label className="grid gap-1 text-sm">
                         <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          Max Tokens
+                          {tt("max_tokens")}
                         </span>
                         <input
                           type="number"
@@ -1352,7 +1639,7 @@ export default function Home() {
                     <div className="grid gap-2 md:grid-cols-2">
                       <label className="grid gap-1 text-sm">
                         <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          Chapter Words
+                          {tt("chapter_words")}
                         </span>
                         <input
                           type="number"
@@ -1376,7 +1663,7 @@ export default function Home() {
 
                       <label className="grid gap-1 text-sm">
                         <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          Chapter Count
+                          {tt("chapter_count")}
                         </span>
                         <input
                           type="number"
@@ -1399,7 +1686,7 @@ export default function Home() {
 
                     <label className="grid gap-1 text-sm">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        KB Mode
+                        {tt("kb_mode")}
                       </span>
                       <select
                         defaultValue={getSettingsValue("kb.mode", "weak")}
@@ -1412,13 +1699,13 @@ export default function Home() {
                         }
                         className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
                       >
-                        <option value="weak">Weak (prefer KB)</option>
-                        <option value="strong">Strong (canon-locked)</option>
+                        <option value="weak">{tt("kb_weak")}</option>
+                        <option value="strong">{tt("kb_strong")}</option>
                       </select>
                     </label>
 
                     <label className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
-                      <span>Web Search Tool</span>
+                      <span>{tt("web_search_tool")}</span>
                       <input
                         type="checkbox"
                         defaultChecked={getSettingsBool(
@@ -1443,7 +1730,7 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
-                    No project selected.
+                    {lang === "zh" ? "未选择项目。" : "No project selected."}
                   </div>
                 )}
               </div>
