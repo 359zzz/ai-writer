@@ -39,6 +39,19 @@ export default function Home() {
   );
   const [secretsStatus, setSecretsStatus] = useState<SecretsStatus | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [runEvents, setRunEvents] = useState<
+    Array<{
+      run_id: string;
+      seq: number;
+      ts: string;
+      type: string;
+      agent: string | null;
+      data: Record<string, unknown>;
+    }>
+  >([]);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [runInProgress, setRunInProgress] = useState<boolean>(false);
+  const [generatedMarkdown, setGeneratedMarkdown] = useState<string>("");
 
   const apiBase = useMemo(() => {
     return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -164,6 +177,70 @@ export default function Home() {
     }
     const updated = (await res.json()) as Project;
     setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+  }
+
+  async function runDemoPipeline() {
+    if (!selectedProjectId) return;
+    setRunError(null);
+    setRunInProgress(true);
+    setRunEvents([]);
+
+    const res = await fetch(
+      `${apiBase}/api/projects/${selectedProjectId}/runs/stream`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "demo" }),
+      },
+    );
+    if (!res.ok || !res.body) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE blocks separated by blank lines.
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part
+          .split("\n")
+          .map((l) => l.trim())
+          .find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        const jsonText = line.replace(/^data:\s*/, "");
+        try {
+          const evt = JSON.parse(jsonText) as {
+            run_id: string;
+            seq: number;
+            ts: string;
+            type: string;
+            agent: string | null;
+            data: Record<string, unknown>;
+          };
+          setRunEvents((prev) => [...prev, evt]);
+          if (
+            evt.type === "artifact" &&
+            evt.agent === "Writer" &&
+            evt.data.artifact_type === "chapter_markdown" &&
+            typeof evt.data.markdown === "string"
+          ) {
+            setGeneratedMarkdown(evt.data.markdown);
+          }
+        } catch {
+          // ignore partial/bad events
+        }
+      }
+    }
+    setRunInProgress(false);
   }
 
   return (
@@ -307,8 +384,38 @@ export default function Home() {
                     <span>None</span>
                   )}
                 </div>
-                <div className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
-                  Next: settings + outline + chapters.
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <button
+                    disabled={!selectedProjectId || runInProgress}
+                    onClick={() => {
+                      runDemoPipeline().catch((e) =>
+                        setRunError((e as Error).message),
+                      );
+                    }}
+                    className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                  >
+                    {runInProgress ? "Running..." : "Run Demo Pipeline"}
+                  </button>
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                    Streams events and updates the Agents tab.
+                  </span>
+                </div>
+                {runError ? (
+                  <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                    {runError}
+                  </div>
+                ) : null}
+
+                <div className="mt-4">
+                  <div className="mb-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Latest Markdown (demo)
+                  </div>
+                  <textarea
+                    value={generatedMarkdown}
+                    onChange={(e) => setGeneratedMarkdown(e.target.value)}
+                    className="h-40 w-full rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                    placeholder="Generated markdown will appear here..."
+                  />
                 </div>
               </div>
             </div>
@@ -322,6 +429,40 @@ export default function Home() {
               This tab will visualize multi-agent traces (timeline + graph) from
               the backend runs.
             </p>
+
+            <div className="mt-6 rounded-lg border border-zinc-200 dark:border-zinc-800">
+              {runEvents.length === 0 ? (
+                <div className="p-4 text-sm text-zinc-500 dark:text-zinc-400">
+                  No run events yet. Run the demo pipeline in the Writing tab.
+                </div>
+              ) : (
+                <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                  {runEvents.map((e) => (
+                    <li key={`${e.run_id}:${e.seq}`} className="p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-medium">
+                          {e.seq}. {e.type}
+                          {e.agent ? ` · ${e.agent}` : ""}
+                        </div>
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {new Date(e.ts).toLocaleTimeString()}
+                        </div>
+                      </div>
+                      {"text" in e.data ? (
+                        <div className="mt-1 text-zinc-600 dark:text-zinc-300">
+                          {String(e.data.text)}
+                        </div>
+                      ) : null}
+                      {"artifact_type" in e.data ? (
+                        <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          artifact: {String(e.data.artifact_type)}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </section>
         ) : null}
 
