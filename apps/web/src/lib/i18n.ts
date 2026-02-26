@@ -111,7 +111,11 @@ export type I18nKey =
   | "no_agents_in_events"
   | "score"
   | "accent"
-  | "accent_text";
+  | "accent_text"
+  | "view_edit"
+  | "view_preview"
+  | "view_split"
+  | "preview_empty";
 
 const ZH: Record<I18nKey, string> = {
   app_name: "ai-writer",
@@ -225,6 +229,10 @@ const ZH: Record<I18nKey, string> = {
   score: "相关度",
   accent: "强调色",
   accent_text: "强调色文字",
+  view_edit: "编辑",
+  view_preview: "预览",
+  view_split: "分屏",
+  preview_empty: "暂无内容",
 };
 
 const EN: Record<I18nKey, string> = {
@@ -342,6 +350,10 @@ const EN: Record<I18nKey, string> = {
   score: "score",
   accent: "Accent",
   accent_text: "Accent text",
+  view_edit: "Edit",
+  view_preview: "Preview",
+  view_split: "Split",
+  preview_empty: "(empty)",
 };
 
 export function t(lang: Lang, key: I18nKey): string {

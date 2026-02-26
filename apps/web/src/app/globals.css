@@ -27,3 +27,80 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Basic Markdown preview styling (Notion-ish, lightweight). */
+.md-preview {
+  line-height: 1.7;
+  font-size: 0.95rem;
+  word-break: break-word;
+}
+
+.md-preview h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0.75rem 0 0.5rem;
+}
+.md-preview h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 0.75rem 0 0.4rem;
+}
+.md-preview h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0.6rem 0 0.35rem;
+}
+.md-preview p {
+  margin: 0.5rem 0;
+}
+.md-preview ul,
+.md-preview ol {
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
+}
+.md-preview li {
+  margin: 0.2rem 0;
+}
+.md-preview a {
+  color: var(--ui-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md-preview blockquote {
+  border-left: 3px solid rgba(120, 120, 120, 0.35);
+  padding-left: 0.75rem;
+  margin: 0.75rem 0;
+  opacity: 0.9;
+}
+.md-preview pre {
+  background: #0b1020;
+  color: #e5e7eb;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  overflow: auto;
+  font-size: 0.85rem;
+}
+.md-preview code {
+  background: rgba(120, 120, 120, 0.15);
+  padding: 0.1rem 0.25rem;
+  border-radius: 0.25rem;
+  font-size: 0.9em;
+}
+.md-preview pre code {
+  background: transparent;
+  padding: 0;
+}
+.md-preview table {
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  width: 100%;
+}
+.md-preview th,
+.md-preview td {
+  border: 1px solid rgba(120, 120, 120, 0.35);
+  padding: 0.4rem 0.55rem;
+}
+.md-preview th {
+  background: rgba(120, 120, 120, 0.15);
+  text-align: left;
+}

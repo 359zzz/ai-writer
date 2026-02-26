@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { MarkdownPreview } from "@/components/MarkdownPreview";
 import { t, type I18nKey, type Lang } from "@/lib/i18n";
 import {
   DEFAULT_THEMES,
@@ -58,6 +59,13 @@ type RunItem = {
   error: string | null;
 };
 
+type OutlineChapter = {
+  index: number;
+  title: string;
+  summary?: string;
+  goal?: string;
+};
+
 export default function Home() {
   const [uiLoaded, setUiLoaded] = useState<boolean>(false);
   const [lang, setLang] = useState<Lang>(DEFAULT_UI_PREFS.lang);
@@ -91,6 +99,9 @@ export default function Home() {
   const [runError, setRunError] = useState<string | null>(null);
   const [runInProgress, setRunInProgress] = useState<boolean>(false);
   const [generatedMarkdown, setGeneratedMarkdown] = useState<string>("");
+  const [editorView, setEditorView] = useState<"split" | "edit" | "preview">(
+    "split",
+  );
   const [outline, setOutline] = useState<unknown>(null);
   const [chapters, setChapters] = useState<ChapterItem[]>([]);
   const [chapterIndex, setChapterIndex] = useState<number>(1);
@@ -245,6 +256,42 @@ export default function Home() {
     if (!selectedProjectId) return null;
     return projects.find((p) => p.id === selectedProjectId) ?? null;
   }, [projects, selectedProjectId]);
+
+  const outlineChapters = useMemo((): OutlineChapter[] | null => {
+    const coerce = (raw: unknown): OutlineChapter[] | null => {
+      if (!Array.isArray(raw)) return null;
+      const out: OutlineChapter[] = [];
+      for (const item of raw) {
+        if (typeof item !== "object" || item === null) continue;
+        const rec = item as Record<string, unknown>;
+        const idx = Number(rec.index);
+        const title = typeof rec.title === "string" ? rec.title : "";
+        if (!Number.isFinite(idx) || !title.trim()) continue;
+        out.push({
+          index: idx,
+          title: title.trim(),
+          summary: typeof rec.summary === "string" ? rec.summary : undefined,
+          goal: typeof rec.goal === "string" ? rec.goal : undefined,
+        });
+      }
+      return out.length > 0 ? out : null;
+    };
+
+    // Prefer the latest outline artifact from the last run (if present).
+    if (outline && typeof outline === "object") {
+      const o = outline as Record<string, unknown>;
+      const fromRun = coerce(o.chapters);
+      if (fromRun) return fromRun;
+    }
+
+    // Fallback to the persisted project settings (story.outline).
+    const settings = selectedProject?.settings as Record<string, unknown> | undefined;
+    const story = settings?.story as Record<string, unknown> | undefined;
+    const fromSettings = coerce(story?.outline);
+    if (fromSettings) return fromSettings;
+
+    return null;
+  }, [outline, selectedProject]);
 
   useEffect(() => {
     setRuns([]);
@@ -744,220 +791,107 @@ export default function Home() {
               {tt("writing_desc")}
             </p>
 
-            <div className="mt-6 grid gap-6 md:grid-cols-2">
-              <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                <div className="text-sm font-medium">{tt("projects")}</div>
-                <div className="mt-3 flex gap-2">
-                  <input
-                    value={newProjectTitle}
-                    onChange={(e) => setNewProjectTitle(e.target.value)}
-                    className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                    placeholder={tt("project_title_placeholder")}
-                  />
-                  <button
-                    onClick={() => {
-                      createProject().catch((e) =>
-                        setProjectsError((e as Error).message),
-                      );
-                    }}
-                    className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90"
-                  >
-                    {tt("create")}
-                  </button>
-                </div>
-
-                {projectsError ? (
-                  <div className="mt-3 text-sm text-red-600 dark:text-red-400">
-                    {projectsError}
+            <div className="mt-6 grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+              <div className="grid gap-6">
+                <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">{tt("projects")}</div>
+                  <div className="mt-3 flex gap-2">
+                    <input
+                      value={newProjectTitle}
+                      onChange={(e) => setNewProjectTitle(e.target.value)}
+                      className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                      placeholder={tt("project_title_placeholder")}
+                    />
+                    <button
+                      onClick={() => {
+                        createProject().catch((e) =>
+                          setProjectsError((e as Error).message),
+                        );
+                      }}
+                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90"
+                    >
+                      {tt("create")}
+                    </button>
                   </div>
-                ) : null}
 
-                <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
-                  {projects.length === 0 ? (
-                    <div className="p-3 text-sm text-zinc-500 dark:text-zinc-400">
-                      {tt("no_projects")}
+                  {projectsError ? (
+                    <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                      {projectsError}
                     </div>
-                  ) : (
-                    <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                      {projects.map((p) => {
-                        const active = p.id === selectedProjectId;
-                        return (
-                          <li key={p.id}>
-                            <button
-                              onClick={() => setSelectedProjectId(p.id)}
-                              className={[
-                                "w-full px-3 py-2 text-left text-sm",
-                                active
-                                  ? "bg-zinc-100 dark:bg-zinc-800"
-                                  : "hover:bg-zinc-50 dark:hover:bg-zinc-900",
-                              ].join(" ")}
-                            >
-                              {p.title}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
-              </div>
+                  ) : null}
 
-              <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                <div className="text-sm font-medium">{tt("selected_project")}</div>
-                <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-                  {selectedProjectId ? (
-                    <span>
-                      {tt("project_id")}: {selectedProjectId}
-                    </span>
-                  ) : (
-                    <span>{tt("none")}</span>
-                  )}
-                </div>
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  <button
-                    disabled={!selectedProjectId || runInProgress}
-                    onClick={() => {
-                      runPipeline("demo").catch((e) =>
-                        setRunError((e as Error).message),
-                      );
-                    }}
-                    className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
-                  >
-                    {runInProgress ? tt("running") : tt("run_demo")}
-                  </button>
-                  <button
-                    disabled={!selectedProjectId || runInProgress}
-                    onClick={() => {
-                      runPipeline("outline").catch((e) =>
-                        setRunError((e as Error).message),
-                      );
-                    }}
-                    className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
-                  >
-                    {tt("generate_outline")}
-                  </button>
-                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                    {tt("streams_to_agents")}
-                  </span>
-                </div>
-                {runError ? (
-                  <div className="mt-3 text-sm text-red-600 dark:text-red-400">
-                    {runError}
-                  </div>
-                ) : null}
-
-                <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">{tt("write_chapter")}</div>
-                  <div className="mt-3 grid gap-2 md:grid-cols-2">
-                    <label className="grid gap-1 text-sm">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        {tt("chapter_index")}
-                      </span>
-                      <input
-                        type="number"
-                        min={1}
-                        value={chapterIndex}
-                        onChange={(e) => setChapterIndex(Number(e.target.value))}
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                      />
-                    </label>
-                    <label className="grid gap-1 text-sm">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        {tt("research_query_optional")}
-                      </span>
-                      <input
-                        value={researchQuery}
-                        onChange={(e) => setResearchQuery(e.target.value)}
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                        placeholder={tt("research_query_placeholder")}
-                      />
-                    </label>
-                  </div>
-                  <div className="mt-3 flex items-center gap-2">
-                    <button
-                      disabled={!selectedProjectId || runInProgress}
-                      onClick={() => {
-                        runPipeline("chapter", {
-                          chapter_index: chapterIndex,
-                          research_query: researchQuery.trim() || undefined,
-                        }).catch((e) =>
-                          setRunError((e as Error).message),
-                        );
-                      }}
-                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
-                    >
-                      {tt("write_chapter_llm")}
-                    </button>
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                      {tt("uses_settings")}
-                    </span>
+                  <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                    {projects.length === 0 ? (
+                      <div className="p-3 text-sm text-zinc-500 dark:text-zinc-400">
+                        {tt("no_projects")}
+                      </div>
+                    ) : (
+                      <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                        {projects.map((p) => {
+                          const active = p.id === selectedProjectId;
+                          return (
+                            <li key={p.id}>
+                              <button
+                                onClick={() => setSelectedProjectId(p.id)}
+                                className={[
+                                  "w-full px-3 py-2 text-left text-sm",
+                                  active
+                                    ? "bg-zinc-100 dark:bg-zinc-800"
+                                    : "hover:bg-zinc-50 dark:hover:bg-zinc-900",
+                                ].join(" ")}
+                              >
+                                {p.title}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
                   </div>
                 </div>
 
-                <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">{tt("continue_mode")}</div>
-                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                    {tt("continue_desc")}
-                  </div>
-                  <textarea
-                    value={continueText}
-                    onChange={(e) => setContinueText(e.target.value)}
-                    className="mt-3 h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
-                    placeholder={tt("paste_manuscript")}
-                  />
-                  <div className="mt-3 flex items-center gap-2">
-                    <button
-                      disabled={!selectedProjectId || runInProgress || !continueText.trim()}
-                      onClick={() => {
-                        runPipeline("continue", {
-                          chapter_index: chapterIndex,
-                          source_text: continueText,
-                          research_query: researchQuery.trim() || undefined,
-                        }).catch((e) =>
-                          setRunError((e as Error).message),
-                        );
-                      }}
-                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
-                    >
-                      {tt("extract_continue")}
-                    </button>
-                    <button
-                      disabled={!continueText}
-                      onClick={() => setContinueText("")}
-                      className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
-                    >
-                      {tt("clear")}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-4">
-                  <div className="mb-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    {tt("markdown_editor")}
-                  </div>
-                  <textarea
-                    value={generatedMarkdown}
-                    onChange={(e) => setGeneratedMarkdown(e.target.value)}
-                    className="h-40 w-full rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-950"
-                    placeholder={tt("generated_markdown_placeholder")}
-                  />
-                </div>
-
-                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("outline_latest")}</div>
-                  <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-zinc-950 p-3 text-xs text-zinc-50">
-                    {outline ? JSON.stringify(outline, null, 2) : tt("no_outline")}
-                  </pre>
+                  {selectedProjectId ? (
+                    outlineChapters ? (
+                      <ol className="mt-3 space-y-2 text-sm">
+                        {outlineChapters.map((ch) => (
+                          <li key={ch.index} className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
+                            <div className="font-medium">
+                              {ch.index}. {ch.title}
+                            </div>
+                            {ch.summary ? (
+                              <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
+                                {ch.summary}
+                              </div>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ol>
+                    ) : (
+                      <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                        {tt("no_outline")}
+                      </div>
+                    )
+                  ) : (
+                    <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                      {tt("select_project_first")}
+                    </div>
+                  )}
                 </div>
 
-                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("chapters")}</div>
-                  {chapters.length === 0 ? (
+                  {!selectedProjectId ? (
+                    <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                      {tt("select_project_first")}
+                    </div>
+                  ) : chapters.length === 0 ? (
                     <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
                       {tt("no_chapters")}
                     </div>
                   ) : (
-                    <div className="mt-3 max-h-48 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                    <div className="mt-3 max-h-80 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
                       <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
                         {chapters.map((ch) => (
                           <li key={ch.id} className="p-3">
@@ -966,7 +900,10 @@ export default function Home() {
                                 {ch.chapter_index}. {ch.title}
                               </div>
                               <button
-                                onClick={() => setGeneratedMarkdown(ch.markdown)}
+                                onClick={() => {
+                                  setGeneratedMarkdown(ch.markdown);
+                                  setEditorView("split");
+                                }}
                                 className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
                               >
                                 {tt("open")}
@@ -978,200 +915,395 @@ export default function Home() {
                     </div>
                   )}
                 </div>
+              </div>
 
-                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">{tt("export")}</div>
-                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                    {tt("export_desc")}
-                  </div>
-                  <div className="mt-3 flex items-center gap-2">
-                    <select
-                      value={exportFormat}
-                      onChange={(e) =>
-                        setExportFormat(e.target.value as "docx" | "epub" | "pdf")
-                      }
-                      className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                    >
-                      <option value="docx">DOCX</option>
-                      <option value="epub">EPUB</option>
-                      <option value="pdf">PDF</option>
-                    </select>
-                    <button
-                      disabled={exporting || chapters.length === 0}
-                      onClick={() => {
-                        exportProject().catch((e) =>
-                          setExportError((e as Error).message),
-                        );
-                      }}
-                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
-                    >
-                      {exporting ? tt("exporting") : tt("export")}
-                    </button>
-                  </div>
-                  {exportError ? (
-                    <div className="mt-3 text-sm text-red-600 dark:text-red-400">
-                      {exportError}
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="min-w-0 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm font-medium">{tt("markdown_editor")}</div>
+                    <div className="flex items-center gap-1 rounded-md border border-zinc-200 bg-white p-1 text-xs dark:border-zinc-800 dark:bg-zinc-950">
+                      {(
+                        [
+                          ["edit", tt("view_edit")],
+                          ["preview", tt("view_preview")],
+                          ["split", tt("view_split")],
+                        ] as const
+                      ).map(([k, label]) => (
+                        <button
+                          key={k}
+                          onClick={() => setEditorView(k)}
+                          className={[
+                            "rounded-md px-2 py-1 transition-colors",
+                            editorView === k
+                              ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                              : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
+                          ].join(" ")}
+                        >
+                          {label}
+                        </button>
+                      ))}
                     </div>
-                  ) : null}
+                  </div>
+
+                  {editorView === "edit" ? (
+                    <textarea
+                      value={generatedMarkdown}
+                      onChange={(e) => setGeneratedMarkdown(e.target.value)}
+                      className="mt-3 h-[70vh] min-h-[520px] w-full rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                      placeholder={tt("generated_markdown_placeholder")}
+                    />
+                  ) : editorView === "preview" ? (
+                    <div className="mt-3 h-[70vh] min-h-[520px] overflow-auto rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                      <MarkdownPreview
+                        markdown={generatedMarkdown}
+                        emptyLabel={tt("preview_empty")}
+                      />
+                    </div>
+                  ) : (
+                    <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                      <textarea
+                        value={generatedMarkdown}
+                        onChange={(e) => setGeneratedMarkdown(e.target.value)}
+                        className="h-[70vh] min-h-[520px] w-full rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                        placeholder={tt("generated_markdown_placeholder")}
+                      />
+                      <div className="h-[70vh] min-h-[520px] overflow-auto rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                        <MarkdownPreview
+                          markdown={generatedMarkdown}
+                          emptyLabel={tt("preview_empty")}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">{tt("local_kb")}</div>
-                  <div className="mt-2 grid gap-2">
-                    <div className="grid gap-2 md:grid-cols-2">
-                      <input
-                        value={kbTitle}
-                        onChange={(e) => setKbTitle(e.target.value)}
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                        placeholder={tt("kb_chunk_title_placeholder")}
-                      />
-                      <input
-                        value={kbTags}
-                        onChange={(e) => setKbTags(e.target.value)}
-                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                        placeholder={tt("kb_chunk_tags_placeholder")}
-                      />
+                <div className="grid gap-6">
+                  <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                    <div className="text-sm font-medium">{tt("selected_project")}</div>
+                    <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+                      {selectedProjectId ? (
+                        <span>
+                          {tt("project_id")}: {selectedProjectId}
+                        </span>
+                      ) : (
+                        <span>{tt("none")}</span>
+                      )}
                     </div>
-                    <textarea
-                      value={kbContent}
-                      onChange={(e) => setKbContent(e.target.value)}
-                      className="h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
-                      placeholder={tt("kb_chunk_content_placeholder")}
-                    />
-                    <div className="flex items-center gap-2">
+                    <div className="mt-4 flex flex-wrap items-center gap-2">
                       <button
-                        disabled={!kbContent.trim()}
+                        disabled={!selectedProjectId || runInProgress}
                         onClick={() => {
-                          addKbChunk().catch((e) =>
-                            setKbError((e as Error).message),
+                          runPipeline("demo").catch((e) =>
+                            setRunError((e as Error).message),
                           );
                         }}
                         className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
                       >
-                        {tt("save_to_kb")}
+                        {runInProgress ? tt("running") : tt("run_demo")}
                       </button>
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        {tt("stored_locally")}
-                      </span>
-                    </div>
-
-                    <div className="mt-2 flex items-center gap-2">
-                      <input
-                        value={kbQuery}
-                        onChange={(e) => setKbQuery(e.target.value)}
-                        className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                        placeholder={`${tt("search_kb")}...`}
-                      />
                       <button
-                        disabled={!kbQuery.trim()}
+                        disabled={!selectedProjectId || runInProgress}
                         onClick={() => {
-                          searchKb().catch((e) =>
-                            setKbError((e as Error).message),
+                          runPipeline("outline").catch((e) =>
+                            setRunError((e as Error).message),
                           );
                         }}
                         className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
                       >
-                        {tt("search_kb")}
+                        {tt("generate_outline")}
+                      </button>
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        {tt("streams_to_agents")}
+                      </span>
+                    </div>
+                    {runError ? (
+                      <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                        {runError}
+                      </div>
+                    ) : null}
+
+                    <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                      <div className="text-sm font-medium">{tt("write_chapter")}</div>
+                      <div className="mt-3 grid gap-2">
+                        <label className="grid gap-1 text-sm">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {tt("chapter_index")}
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={chapterIndex}
+                            onChange={(e) => setChapterIndex(Number(e.target.value))}
+                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          />
+                        </label>
+                        <label className="grid gap-1 text-sm">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {tt("research_query_optional")}
+                          </span>
+                          <input
+                            value={researchQuery}
+                            onChange={(e) => setResearchQuery(e.target.value)}
+                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                            placeholder={tt("research_query_placeholder")}
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          disabled={!selectedProjectId || runInProgress}
+                          onClick={() => {
+                            runPipeline("chapter", {
+                              chapter_index: chapterIndex,
+                              research_query: researchQuery.trim() || undefined,
+                            }).catch((e) =>
+                              setRunError((e as Error).message),
+                            );
+                          }}
+                          className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                        >
+                          {tt("write_chapter_llm")}
+                        </button>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {tt("uses_settings")}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                      <div className="text-sm font-medium">{tt("continue_mode")}</div>
+                      <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                        {tt("continue_desc")}
+                      </div>
+                      <textarea
+                        value={continueText}
+                        onChange={(e) => setContinueText(e.target.value)}
+                        className="mt-3 h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                        placeholder={tt("paste_manuscript")}
+                      />
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          disabled={!selectedProjectId || runInProgress || !continueText.trim()}
+                          onClick={() => {
+                            runPipeline("continue", {
+                              chapter_index: chapterIndex,
+                              source_text: continueText,
+                              research_query: researchQuery.trim() || undefined,
+                            }).catch((e) =>
+                              setRunError((e as Error).message),
+                            );
+                          }}
+                          className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                        >
+                          {tt("extract_continue")}
+                        </button>
+                        <button
+                          disabled={!continueText}
+                          onClick={() => setContinueText("")}
+                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                        >
+                          {tt("clear")}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                    <div className="text-sm font-medium">{tt("export")}</div>
+                    <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      {tt("export_desc")}
+                    </div>
+                    <div className="mt-3 flex items-center gap-2">
+                      <select
+                        value={exportFormat}
+                        onChange={(e) =>
+                          setExportFormat(
+                            e.target.value as "docx" | "epub" | "pdf",
+                          )
+                        }
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                      >
+                        <option value="docx">DOCX</option>
+                        <option value="epub">EPUB</option>
+                        <option value="pdf">PDF</option>
+                      </select>
+                      <button
+                        disabled={exporting || chapters.length === 0}
+                        onClick={() => {
+                          exportProject().catch((e) =>
+                            setExportError((e as Error).message),
+                          );
+                        }}
+                        className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                      >
+                        {exporting ? tt("exporting") : tt("export")}
                       </button>
                     </div>
-
-                    {kbError ? (
-                      <div className="text-sm text-red-600 dark:text-red-400">
-                        {kbError}
-                      </div>
-                    ) : null}
-
-                    {kbResults.length > 0 ? (
-                      <div className="mt-2 max-h-48 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
-                        <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-                          {kbResults.map((r) => (
-                            <li key={r.id} className="p-3">
-                              <div className="font-medium">
-                                {r.title || `Chunk #${r.id}`}
-                              </div>
-                              <div className="mt-1 line-clamp-3 text-xs text-zinc-600 dark:text-zinc-300">
-                                {r.content}
-                              </div>
-                              <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-                                {tt("score")}: {r.score.toFixed(2)}
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
+                    {exportError ? (
+                      <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                        {exportError}
                       </div>
                     ) : null}
                   </div>
-                </div>
 
-                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">{tt("web_search")}</div>
-                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                    {tt("web_search_desc")}
-                  </div>
-
-                  {!getSettingsBool("tools.web_search.enabled", true) ? (
-                    <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
-                      {tt("web_search_disabled")}
-                    </div>
-                  ) : (
-                    <>
-                      <div className="mt-3 flex items-center gap-2">
+                  <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                    <div className="text-sm font-medium">{tt("local_kb")}</div>
+                    <div className="mt-2 grid gap-2">
+                      <div className="grid gap-2 md:grid-cols-2">
                         <input
-                          value={webQuery}
-                          onChange={(e) => setWebQuery(e.target.value)}
+                          value={kbTitle}
+                          onChange={(e) => setKbTitle(e.target.value)}
+                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          placeholder={tt("kb_chunk_title_placeholder")}
+                        />
+                        <input
+                          value={kbTags}
+                          onChange={(e) => setKbTags(e.target.value)}
+                          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                          placeholder={tt("kb_chunk_tags_placeholder")}
+                        />
+                      </div>
+                      <textarea
+                        value={kbContent}
+                        onChange={(e) => setKbContent(e.target.value)}
+                        className="h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                        placeholder={tt("kb_chunk_content_placeholder")}
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          disabled={!kbContent.trim()}
+                          onClick={() => {
+                            addKbChunk().catch((e) =>
+                              setKbError((e as Error).message),
+                            );
+                          }}
+                          className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                        >
+                          {tt("save_to_kb")}
+                        </button>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          {tt("stored_locally")}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 flex items-center gap-2">
+                        <input
+                          value={kbQuery}
+                          onChange={(e) => setKbQuery(e.target.value)}
                           className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                          placeholder={tt("web_search_placeholder")}
+                          placeholder={`${tt("search_kb")}...`}
                         />
                         <button
-                          disabled={!webQuery.trim() || webLoading}
+                          disabled={!kbQuery.trim()}
                           onClick={() => {
-                            webSearch().catch((e) =>
-                              setWebError((e as Error).message),
+                            searchKb().catch((e) =>
+                              setKbError((e as Error).message),
                             );
                           }}
                           className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
                         >
-                          {webLoading ? "..." : tt("search")}
+                          {tt("search_kb")}
                         </button>
                       </div>
 
-                      {webError ? (
-                        <div className="mt-3 text-sm text-red-600 dark:text-red-400">
-                          {webError}
+                      {kbError ? (
+                        <div className="text-sm text-red-600 dark:text-red-400">
+                          {kbError}
                         </div>
                       ) : null}
 
-                      {webResults.length > 0 ? (
-                        <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                      {kbResults.length > 0 ? (
+                        <div className="mt-2 max-h-48 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
                           <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-                            {webResults.map((r) => (
-                              <li key={r.url} className="p-3">
-                                <div className="font-medium">{r.title}</div>
-                                <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
-                                  {r.snippet}
+                            {kbResults.map((r) => (
+                              <li key={r.id} className="p-3">
+                                <div className="font-medium">
+                                  {r.title || `Chunk #${r.id}`}
                                 </div>
-                                <div className="mt-1 break-all text-[11px] text-zinc-500 dark:text-zinc-400">
-                                  {r.url}
+                                <div className="mt-1 line-clamp-3 text-xs text-zinc-600 dark:text-zinc-300">
+                                  {r.content}
                                 </div>
-                                <div className="mt-2">
-                                  <button
-                                    onClick={() => {
-                                      importWebResultToKb(r).catch((e) =>
-                                        setWebError((e as Error).message),
-                                      );
-                                    }}
-                                    className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
-                                  >
-                                    {tt("import_to_kb")}
-                                  </button>
+                                <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                                  {tt("score")}: {r.score.toFixed(2)}
                                 </div>
                               </li>
                             ))}
                           </ul>
                         </div>
                       ) : null}
-                    </>
-                  )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                    <div className="text-sm font-medium">{tt("web_search")}</div>
+                    <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      {tt("web_search_desc")}
+                    </div>
+
+                    {!getSettingsBool("tools.web_search.enabled", true) ? (
+                      <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+                        {tt("web_search_disabled")}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="mt-3 flex items-center gap-2">
+                          <input
+                            value={webQuery}
+                            onChange={(e) => setWebQuery(e.target.value)}
+                            className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                            placeholder={tt("web_search_placeholder")}
+                          />
+                          <button
+                            disabled={!webQuery.trim() || webLoading}
+                            onClick={() => {
+                              webSearch().catch((e) =>
+                                setWebError((e as Error).message),
+                              );
+                            }}
+                            className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                          >
+                            {webLoading ? "..." : tt("search")}
+                          </button>
+                        </div>
+
+                        {webError ? (
+                          <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                            {webError}
+                          </div>
+                        ) : null}
+
+                        {webResults.length > 0 ? (
+                          <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                            <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                              {webResults.map((r) => (
+                                <li key={r.url} className="p-3">
+                                  <div className="font-medium">{r.title}</div>
+                                  <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
+                                    {r.snippet}
+                                  </div>
+                                  <div className="mt-1 break-all text-[11px] text-zinc-500 dark:text-zinc-400">
+                                    {r.url}
+                                  </div>
+                                  <div className="mt-2">
+                                    <button
+                                      onClick={() => {
+                                        importWebResultToKb(r).catch((e) =>
+                                          setWebError((e as Error).message),
+                                        );
+                                      }}
+                                      className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
+                                    >
+                                      {tt("import_to_kb")}
+                                    </button>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

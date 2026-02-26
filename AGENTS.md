@@ -127,3 +127,11 @@ Versioning policy (from v1.0.x onward):
 - Added Simplified Chinese README (`README.zh-CN.md`) and language links in `README.md`.
 - Fixed remaining English placeholders in editors under Chinese mode.
 - Agents tab: front-end-only Chinese mapping for common event types / agent names.
+
+### v1.1.0 (Writing: Notion-like 3-Column Workspace)
+- Writing tab upgraded to a 3-column layout:
+  - Left: Projects + Outline + Chapters
+  - Center: Markdown editor + live preview (edit/preview/split)
+  - Right: Runs + Export + Local KB + Web search
+- Markdown preview uses `react-markdown` + `remark-gfm` (tables/lists/code supported).
+- Outline view renders as a readable chapter list (prefers latest run artifact, falls back to project settings).
