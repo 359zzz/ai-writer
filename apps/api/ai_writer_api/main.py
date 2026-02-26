@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .db import init_db
 from .routers.kb import router as kb_router
+from .routers.chapters import router as chapters_router
 from .routers.projects import router as projects_router
 from .routers.runs import router as runs_router
 from .routers.secrets import router as secrets_router
@@ -38,4 +39,5 @@ app.include_router(projects_router)
 app.include_router(runs_router)
 app.include_router(secrets_router)
 app.include_router(kb_router)
+app.include_router(chapters_router)
 app.include_router(tools_router)

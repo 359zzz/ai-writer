@@ -53,6 +53,16 @@ class KBChunk(SQLModel, table=True):
     created_at: datetime = Field(default_factory=now_utc)
 
 
+class Chapter(SQLModel, table=True):
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(foreign_key="project.id", index=True)
+    chapter_index: int = Field(index=True)
+    title: str = Field(default="")
+    markdown: str
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
+
+
 class ProjectCreate(SQLModel):
     title: str
 

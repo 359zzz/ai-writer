@@ -27,6 +27,16 @@ type SecretsStatus = {
   gemini_base_url_present: boolean;
 };
 
+type ChapterItem = {
+  id: string;
+  project_id: string;
+  chapter_index: number;
+  title: string;
+  markdown: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export default function Home() {
   const [tab, setTab] = useState<TabKey>("writing");
   const [health, setHealth] = useState<Health | null>(null);
@@ -52,6 +62,10 @@ export default function Home() {
   const [runError, setRunError] = useState<string | null>(null);
   const [runInProgress, setRunInProgress] = useState<boolean>(false);
   const [generatedMarkdown, setGeneratedMarkdown] = useState<string>("");
+  const [outline, setOutline] = useState<unknown>(null);
+  const [chapters, setChapters] = useState<ChapterItem[]>([]);
+  const [chapterIndex, setChapterIndex] = useState<number>(1);
+  const [researchQuery, setResearchQuery] = useState<string>("");
   const [kbTitle, setKbTitle] = useState<string>("Lore");
   const [kbTags, setKbTags] = useState<string>("lore");
   const [kbContent, setKbContent] = useState<string>("");
@@ -119,6 +133,31 @@ export default function Home() {
     if (!selectedProjectId) return null;
     return projects.find((p) => p.id === selectedProjectId) ?? null;
   }, [projects, selectedProjectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      if (!selectedProjectId) {
+        setChapters([]);
+        return;
+      }
+      try {
+        const res = await fetch(
+          `${apiBase}/api/projects/${selectedProjectId}/chapters`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as ChapterItem[];
+        if (!cancelled) setChapters(data);
+      } catch {
+        if (!cancelled) setChapters([]);
+      }
+    }
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, selectedProjectId, runEvents.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -193,7 +232,10 @@ export default function Home() {
     setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
   }
 
-  async function runDemoPipeline() {
+  async function runPipeline(
+    kind: string,
+    extra: Record<string, unknown> = {},
+  ) {
     if (!selectedProjectId) return;
     setRunError(null);
     setRunInProgress(true);
@@ -204,7 +246,7 @@ export default function Home() {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind: "demo" }),
+        body: JSON.stringify({ kind, ...extra }),
       },
     );
     if (!res.ok || !res.body) {
@@ -248,6 +290,13 @@ export default function Home() {
             typeof evt.data.markdown === "string"
           ) {
             setGeneratedMarkdown(evt.data.markdown);
+          }
+          if (
+            evt.type === "artifact" &&
+            evt.agent === "Outliner" &&
+            evt.data.artifact_type === "outline"
+          ) {
+            setOutline(evt.data.outline ?? null);
           }
         } catch {
           // ignore partial/bad events
@@ -489,13 +538,24 @@ export default function Home() {
                   <button
                     disabled={!selectedProjectId || runInProgress}
                     onClick={() => {
-                      runDemoPipeline().catch((e) =>
+                      runPipeline("demo").catch((e) =>
                         setRunError((e as Error).message),
                       );
                     }}
                     className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
                   >
                     {runInProgress ? "Running..." : "Run Demo Pipeline"}
+                  </button>
+                  <button
+                    disabled={!selectedProjectId || runInProgress}
+                    onClick={() => {
+                      runPipeline("outline").catch((e) =>
+                        setRunError((e as Error).message),
+                      );
+                    }}
+                    className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                  >
+                    Generate Outline
                   </button>
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">
                     Streams events and updates the Agents tab.
@@ -507,9 +567,57 @@ export default function Home() {
                   </div>
                 ) : null}
 
+                <div className="mt-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">Write Chapter</div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    <label className="grid gap-1 text-sm">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Chapter Index
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={chapterIndex}
+                        onChange={(e) => setChapterIndex(Number(e.target.value))}
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                      />
+                    </label>
+                    <label className="grid gap-1 text-sm">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Research Query (optional)
+                      </span>
+                      <input
+                        value={researchQuery}
+                        onChange={(e) => setResearchQuery(e.target.value)}
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        placeholder="e.g. Tang dynasty clothing details"
+                      />
+                    </label>
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      disabled={!selectedProjectId || runInProgress}
+                      onClick={() => {
+                        runPipeline("chapter", {
+                          chapter_index: chapterIndex,
+                          research_query: researchQuery.trim() || undefined,
+                        }).catch((e) =>
+                          setRunError((e as Error).message),
+                        );
+                      }}
+                      className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    >
+                      Write Chapter (LLM)
+                    </button>
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      Uses Settings → provider/model + local KB + optional web search.
+                    </span>
+                  </div>
+                </div>
+
                 <div className="mt-4">
                   <div className="mb-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    Latest Markdown (demo)
+                    Markdown Editor
                   </div>
                   <textarea
                     value={generatedMarkdown}
@@ -517,6 +625,42 @@ export default function Home() {
                     className="h-40 w-full rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-950"
                     placeholder="Generated markdown will appear here..."
                   />
+                </div>
+
+                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">Outline (latest)</div>
+                  <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-zinc-950 p-3 text-xs text-zinc-50">
+                    {outline ? JSON.stringify(outline, null, 2) : "No outline yet."}
+                  </pre>
+                </div>
+
+                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">Chapters</div>
+                  {chapters.length === 0 ? (
+                    <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                      No chapters yet.
+                    </div>
+                  ) : (
+                    <div className="mt-3 max-h-48 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                      <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                        {chapters.map((ch) => (
+                          <li key={ch.id} className="p-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="font-medium">
+                                {ch.chapter_index}. {ch.title}
+                              </div>
+                              <button
+                                onClick={() => setGeneratedMarkdown(ch.markdown)}
+                                className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                              >
+                                Open
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
