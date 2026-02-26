@@ -66,6 +66,10 @@ Build a local, single-user, web-based **multi-agent collaborative novel writing 
 
 ## 2) Versioned Iteration Notes (Update Per Release)
 
+Versioning policy (from v1.0.x onward):
+- Bigger iterations: bump `minor` and reset patch → `1.a.0` (e.g. 1.1.0, 1.2.0)
+- Smaller iterations: bump `patch` → `1.a.b` (e.g. 1.1.1, 1.1.2)
+
 ### v0.0.0 (Scaffold)
 - Repo scaffold created: monorepo folders, gitignore, basic docs.
 - Dev scripts added.
@@ -114,3 +118,12 @@ Build a local, single-user, web-based **multi-agent collaborative novel writing 
 - Export quality varies by environment:
   - DOCX/EPUB use pandoc when available; otherwise a basic fallback converter is used.
   - PDF fallback is plain-text oriented.
+
+### v1.0.1 (UI Preferences: Language + Theme)
+- UI language switch (中文/EN) + persisted UI preferences (localStorage).
+- Theme accent token for primary UI (tabs/primary buttons) + theme manager (add/delete/reset presets).
+
+### v1.0.2 (Docs + i18n Polish)
+- Added Simplified Chinese README (`README.zh-CN.md`) and language links in `README.md`.
+- Fixed remaining English placeholders in editors under Chinese mode.
+- Agents tab: front-end-only Chinese mapping for common event types / agent names.

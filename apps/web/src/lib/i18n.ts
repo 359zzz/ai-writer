@@ -98,7 +98,20 @@ export type I18nKey =
   | "category_name"
   | "color"
   | "delete"
-  | "run_history";
+  | "run_history"
+  | "search"
+  | "web_search_placeholder"
+  | "research_query_placeholder"
+  | "generated_markdown_placeholder"
+  | "kb_chunk_title_placeholder"
+  | "kb_chunk_tags_placeholder"
+  | "kb_chunk_content_placeholder"
+  | "not_available_backend"
+  | "no_runs"
+  | "no_agents_in_events"
+  | "score"
+  | "accent"
+  | "accent_text";
 
 const ZH: Record<I18nKey, string> = {
   app_name: "ai-writer",
@@ -199,6 +212,19 @@ const ZH: Record<I18nKey, string> = {
   color: "颜色",
   delete: "删除",
   run_history: "运行历史",
+  search: "搜索",
+  web_search_placeholder: "输入联网检索关键词...",
+  research_query_placeholder: "例如：唐代服饰细节",
+  generated_markdown_placeholder: "生成的 Markdown 将显示在这里...",
+  kb_chunk_title_placeholder: "条目标题",
+  kb_chunk_tags_placeholder: "标签（逗号分隔）",
+  kb_chunk_content_placeholder: "在此添加世界观/文风/设定等笔记...",
+  not_available_backend: "不可用（后端不可达？）",
+  no_runs: "暂无运行记录",
+  no_agents_in_events: "事件中未找到 agent 信息。",
+  score: "相关度",
+  accent: "强调色",
+  accent_text: "强调色文字",
 };
 
 const EN: Record<I18nKey, string> = {
@@ -303,9 +329,21 @@ const EN: Record<I18nKey, string> = {
   color: "Color",
   delete: "Delete",
   run_history: "Run history",
+  search: "Search",
+  web_search_placeholder: "Search the web for research...",
+  research_query_placeholder: "e.g. Tang dynasty clothing details",
+  generated_markdown_placeholder: "Generated markdown will appear here...",
+  kb_chunk_title_placeholder: "Chunk title",
+  kb_chunk_tags_placeholder: "tags (comma-separated)",
+  kb_chunk_content_placeholder: "Add lore/style/world notes here...",
+  not_available_backend: "Not available (backend unreachable?)",
+  no_runs: "No runs",
+  no_agents_in_events: "No agents found in events.",
+  score: "score",
+  accent: "Accent",
+  accent_text: "Accent text",
 };
 
 export function t(lang: Lang, key: I18nKey): string {
   return (lang === "zh" ? ZH : EN)[key] ?? key;
 }
-

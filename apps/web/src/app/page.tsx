@@ -122,6 +122,58 @@ export default function Home() {
 
   const tt = (key: I18nKey) => t(lang, key);
 
+  const formatEventType = (type: string): string => {
+    if (lang !== "zh") return type;
+    const map: Record<string, string> = {
+      run_started: "运行开始",
+      run_completed: "运行结束",
+      run_error: "运行错误",
+      agent_started: "Agent 开始",
+      agent_finished: "Agent 结束",
+      agent_output: "Agent 输出",
+      tool_call: "工具调用",
+      artifact: "产物",
+    };
+    return map[type] ?? type;
+  };
+
+  const formatAgentName = (agent: string): string => {
+    if (lang !== "zh") return agent;
+    const map: Record<string, string> = {
+      Director: "导演",
+      ConfigAutofill: "设定补全",
+      Outliner: "大纲",
+      Writer: "写手",
+      Editor: "编辑",
+      LoreKeeper: "设定校对",
+      Extractor: "抽取器",
+      Researcher: "检索",
+    };
+    const zh = map[agent];
+    return zh ? `${zh}（${agent}）` : agent;
+  };
+
+  const formatRunStatus = (status: string): string => {
+    if (lang !== "zh") return status;
+    const map: Record<string, string> = {
+      running: "运行中",
+      completed: "完成",
+      failed: "失败",
+    };
+    return map[status] ?? status;
+  };
+
+  const formatRunKind = (kind: string): string => {
+    if (lang !== "zh") return kind;
+    const map: Record<string, string> = {
+      demo: "示例",
+      outline: "大纲",
+      chapter: "章节",
+      continue: "续写",
+    };
+    return map[kind] ?? kind;
+  };
+
   useEffect(() => {
     const prefs = loadUiPrefs();
     setLang(prefs.lang);
@@ -817,7 +869,7 @@ export default function Home() {
                         value={researchQuery}
                         onChange={(e) => setResearchQuery(e.target.value)}
                         className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                        placeholder="e.g. Tang dynasty clothing details"
+                        placeholder={tt("research_query_placeholder")}
                       />
                     </label>
                   </div>
@@ -887,7 +939,7 @@ export default function Home() {
                     value={generatedMarkdown}
                     onChange={(e) => setGeneratedMarkdown(e.target.value)}
                     className="h-40 w-full rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-950"
-                    placeholder="Generated markdown will appear here..."
+                    placeholder={tt("generated_markdown_placeholder")}
                   />
                 </div>
 
@@ -971,20 +1023,20 @@ export default function Home() {
                         value={kbTitle}
                         onChange={(e) => setKbTitle(e.target.value)}
                         className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                        placeholder="Chunk title"
+                        placeholder={tt("kb_chunk_title_placeholder")}
                       />
                       <input
                         value={kbTags}
                         onChange={(e) => setKbTags(e.target.value)}
                         className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                        placeholder="tags (comma-separated)"
+                        placeholder={tt("kb_chunk_tags_placeholder")}
                       />
                     </div>
                     <textarea
                       value={kbContent}
                       onChange={(e) => setKbContent(e.target.value)}
                       className="h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
-                      placeholder="Add lore/style/world notes here..."
+                      placeholder={tt("kb_chunk_content_placeholder")}
                     />
                     <div className="flex items-center gap-2">
                       <button
@@ -1041,7 +1093,7 @@ export default function Home() {
                                 {r.content}
                               </div>
                               <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-                                score: {r.score.toFixed(2)}
+                                {tt("score")}: {r.score.toFixed(2)}
                               </div>
                             </li>
                           ))}
@@ -1068,11 +1120,7 @@ export default function Home() {
                           value={webQuery}
                           onChange={(e) => setWebQuery(e.target.value)}
                           className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-                          placeholder={
-                            lang === "zh"
-                              ? "输入联网检索关键词..."
-                              : "Search the web for research..."
-                          }
+                          placeholder={tt("web_search_placeholder")}
                         />
                         <button
                           disabled={!webQuery.trim() || webLoading}
@@ -1083,7 +1131,7 @@ export default function Home() {
                           }}
                           className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
                         >
-                          {webLoading ? "..." : lang === "zh" ? "搜索" : "Search"}
+                          {webLoading ? "..." : tt("search")}
                         </button>
                       </div>
 
@@ -1148,11 +1196,11 @@ export default function Home() {
                 className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
               >
                 {runs.length === 0 ? (
-                  <option value="">No runs</option>
+                  <option value="">{tt("no_runs")}</option>
                 ) : (
                   runs.map((r) => (
                     <option key={r.id} value={r.id}>
-                      {r.kind} · {r.status} ·{" "}
+                      {formatRunKind(r.kind)} · {formatRunStatus(r.status)} ·{" "}
                       {new Date(r.created_at).toLocaleString()}
                     </option>
                   ))
@@ -1196,8 +1244,8 @@ export default function Home() {
                     <li key={`${e.run_id}:${e.seq}`} className="p-3">
                       <div className="flex items-center justify-between gap-3">
                         <div className="font-medium">
-                          {e.seq}. {e.type}
-                          {e.agent ? ` · ${e.agent}` : ""}
+                          {e.seq}. {formatEventType(e.type)}
+                          {e.agent ? ` · ${formatAgentName(e.agent)}` : ""}
                         </div>
                         <div className="text-xs text-zinc-500 dark:text-zinc-400">
                           {new Date(e.ts).toLocaleTimeString()}
@@ -1222,13 +1270,13 @@ export default function Home() {
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {agentFlow.length === 0 ? (
                       <div className="text-sm text-zinc-500 dark:text-zinc-400">
-                        No agents found in events.
+                        {tt("no_agents_in_events")}
                       </div>
                     ) : (
                       agentFlow.map((a, idx) => (
                         <div key={`${a}:${idx}`} className="flex items-center gap-2">
                           <div className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-800 dark:bg-zinc-950">
-                            {a}
+                            {formatAgentName(a)}
                           </div>
                           {idx < agentFlow.length - 1 ? (
                             <span className="text-xs text-zinc-400">→</span>
@@ -1404,7 +1452,7 @@ export default function Home() {
 
                             <div className="mt-3 grid gap-2 md:grid-cols-2">
                               <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
-                                Accent
+                                {tt("accent")}
                                 <input
                                   type="color"
                                   value={th.accent}
@@ -1421,7 +1469,7 @@ export default function Home() {
                                 />
                               </label>
                               <label className="grid gap-1 text-xs text-zinc-500 dark:text-zinc-400">
-                                Accent Text
+                                {tt("accent_text")}
                                 <input
                                   type="color"
                                   value={th.accent_foreground}
@@ -1480,7 +1528,7 @@ export default function Home() {
                     </>
                   ) : (
                     <div className="text-zinc-500 dark:text-zinc-400">
-                      Not available (backend unreachable?)
+                      {tt("not_available_backend")}
                     </div>
                   )}
                 </div>

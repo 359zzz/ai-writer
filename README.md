@@ -2,6 +2,8 @@
 
 Local, single-user, multi-agent collaborative novel writing platform.
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 ## Quick Start (Windows)
 
 1) Put your API keys in `api.txt` (this file is **gitignored**).
