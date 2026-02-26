@@ -1,8 +1,20 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import __version__
+from .db import init_db
+from .routers.projects import router as projects_router
 
-app = FastAPI(title="ai-writer API", version="0.0.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="ai-writer API", version=__version__, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,5 +27,7 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "ai-writer-api"}
+    return {"ok": True, "service": "ai-writer-api", "version": __version__}
 
+
+app.include_router(projects_router)

@@ -7,12 +7,27 @@ type TabKey = "writing" | "agents" | "settings";
 type Health = {
   ok: boolean;
   service?: string;
+  version?: string;
+};
+
+type Project = {
+  id: string;
+  title: string;
+  settings: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
 };
 
 export default function Home() {
   const [tab, setTab] = useState<TabKey>("writing");
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+  const [newProjectTitle, setNewProjectTitle] = useState<string>("My Novel");
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    null,
+  );
 
   const apiBase = useMemo(() => {
     return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -36,6 +51,48 @@ export default function Home() {
       cancelled = true;
     };
   }, [apiBase]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      try {
+        setProjectsError(null);
+        const res = await fetch(`${apiBase}/api/projects`, {
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as Project[];
+        if (cancelled) return;
+        setProjects(data);
+        if (!selectedProjectId && data.length > 0) {
+          setSelectedProjectId(data[0].id);
+        }
+      } catch (e) {
+        if (!cancelled) setProjectsError((e as Error).message);
+      }
+    }
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, selectedProjectId]);
+
+  async function createProject() {
+    const title = newProjectTitle.trim();
+    if (!title) return;
+    const res = await fetch(`${apiBase}/api/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    const p = (await res.json()) as Project;
+    setProjects((prev) => [p, ...prev]);
+    setSelectedProjectId(p.id);
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50">
@@ -90,7 +147,8 @@ export default function Home() {
           <div className="mt-2 text-zinc-700 dark:text-zinc-200">
             {health ? (
               <span>
-                OK ({health.service ?? "unknown"})
+                OK ({health.service ?? "unknown"}
+                {health.version ? ` v${health.version}` : ""})
               </span>
             ) : healthError ? (
               <span className="text-red-600 dark:text-red-400">
@@ -109,6 +167,79 @@ export default function Home() {
               This is the Notion-like writing workspace (coming next). For now,
               it is a placeholder.
             </p>
+
+            <div className="mt-6 grid gap-6 md:grid-cols-2">
+              <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="text-sm font-medium">Projects</div>
+                <div className="mt-3 flex gap-2">
+                  <input
+                    value={newProjectTitle}
+                    onChange={(e) => setNewProjectTitle(e.target.value)}
+                    className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                    placeholder="Project title"
+                  />
+                  <button
+                    onClick={() => {
+                      createProject().catch((e) =>
+                        setProjectsError((e as Error).message),
+                      );
+                    }}
+                    className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                  >
+                    Create
+                  </button>
+                </div>
+
+                {projectsError ? (
+                  <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                    {projectsError}
+                  </div>
+                ) : null}
+
+                <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                  {projects.length === 0 ? (
+                    <div className="p-3 text-sm text-zinc-500 dark:text-zinc-400">
+                      No projects yet.
+                    </div>
+                  ) : (
+                    <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                      {projects.map((p) => {
+                        const active = p.id === selectedProjectId;
+                        return (
+                          <li key={p.id}>
+                            <button
+                              onClick={() => setSelectedProjectId(p.id)}
+                              className={[
+                                "w-full px-3 py-2 text-left text-sm",
+                                active
+                                  ? "bg-zinc-100 dark:bg-zinc-800"
+                                  : "hover:bg-zinc-50 dark:hover:bg-zinc-900",
+                              ].join(" ")}
+                            >
+                              {p.title}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="text-sm font-medium">Selected Project</div>
+                <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+                  {selectedProjectId ? (
+                    <span>Project ID: {selectedProjectId}</span>
+                  ) : (
+                    <span>None</span>
+                  )}
+                </div>
+                <div className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
+                  Next: settings + outline + chapters.
+                </div>
+              </div>
+            </div>
           </section>
         ) : null}
 
