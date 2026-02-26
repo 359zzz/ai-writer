@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .db import init_db
 from .routers.projects import router as projects_router
+from .routers.secrets import router as secrets_router
 
 
 @asynccontextmanager
@@ -31,3 +32,4 @@ def health():
 
 
 app.include_router(projects_router)
+app.include_router(secrets_router)

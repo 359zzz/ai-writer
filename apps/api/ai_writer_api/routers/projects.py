@@ -12,6 +12,15 @@ from ..models import Project, ProjectCreate, ProjectUpdate
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
+def _deep_merge(base: object, patch: object) -> object:
+    if isinstance(base, dict) and isinstance(patch, dict):
+        out = dict(base)
+        for k, v in patch.items():
+            out[k] = _deep_merge(out.get(k), v)
+        return out
+    return patch
+
+
 @router.get("")
 def list_projects() -> list[Project]:
     with get_session() as session:
@@ -48,12 +57,10 @@ def update_project(project_id: str, payload: ProjectUpdate) -> Project:
             p.title = payload.title
 
         if payload.settings is not None:
-            # Shallow merge by default; callers can send full object if desired.
-            p.settings = {**(p.settings or {}), **payload.settings}
+            p.settings = _deep_merge(p.settings or {}, payload.settings)  # type: ignore[assignment]
 
         p.updated_at = datetime.now(timezone.utc)
         session.add(p)
         session.commit()
         session.refresh(p)
         return p
-
