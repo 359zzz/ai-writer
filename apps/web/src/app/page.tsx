@@ -852,12 +852,14 @@ export default function Home() {
     }
   }
 
+  const showBgImage = uiBackground.enabled && Boolean(uiBackground.image_data_url);
+
   return (
     <div className="relative min-h-screen bg-[var(--ui-bg)] text-zinc-900">
-      {uiBackground.enabled && uiBackground.image_data_url ? (
+      {showBgImage ? (
         <div
           aria-hidden
-          className="pointer-events-none fixed inset-0 -z-10 overflow-hidden"
+          className="pointer-events-none fixed inset-0 z-0 overflow-hidden"
         >
           <div
             className="absolute inset-0 bg-cover bg-center"
@@ -870,97 +872,99 @@ export default function Home() {
           />
         </div>
       ) : null}
-      <header className="sticky top-0 z-10 border-b border-zinc-200 bg-[var(--ui-surface)] backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            {brandLogoDataUrl ? (
-              <img
-                src={brandLogoDataUrl}
-                alt={tt("app_name")}
-                className="h-8 w-8 rounded-lg object-cover ring-1 ring-black/10"
-              />
-            ) : (
-              <div className="h-8 w-8 rounded-lg bg-[var(--ui-accent)]" />
-            )}
-            <div className="leading-tight">
-              <div className="text-sm font-semibold">{tt("app_name")}</div>
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                {tt("app_tagline")}
+
+      <div className="relative z-10">
+        <header className="sticky top-0 z-10 border-b border-zinc-200 bg-[var(--ui-surface)] backdrop-blur">
+          <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+            <div className="flex items-center gap-3">
+              {brandLogoDataUrl ? (
+                <img
+                  src={brandLogoDataUrl}
+                  alt={tt("app_name")}
+                  className="h-8 w-8 rounded-lg object-cover ring-1 ring-black/10"
+                />
+              ) : (
+                <div className="h-8 w-8 rounded-lg bg-[var(--ui-accent)]" />
+              )}
+              <div className="leading-tight">
+                <div className="text-sm font-semibold">{tt("app_name")}</div>
+                <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {tt("app_tagline")}
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-3">
-            <nav className="flex items-center gap-2">
-              {(
-                [
-                  ["writing", tt("tab_writing")],
-                  ["agents", tt("tab_agents")],
-                  ["settings", tt("tab_settings")],
-                ] as const
-              ).map(([k, label]) => {
-                const active = tab === k;
-                return (
+            <div className="flex items-center gap-3">
+              <nav className="flex items-center gap-2">
+                {(
+                  [
+                    ["writing", tt("tab_writing")],
+                    ["agents", tt("tab_agents")],
+                    ["settings", tt("tab_settings")],
+                  ] as const
+                ).map(([k, label]) => {
+                  const active = tab === k;
+                  return (
+                    <button
+                      key={k}
+                      onClick={() => setTab(k)}
+                      className={[
+                        "rounded-lg px-3 py-2 text-sm transition-colors",
+                        active
+                          ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                          : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </nav>
+
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-white/70 p-1 text-xs dark:border-zinc-800 dark:bg-zinc-950/70">
                   <button
-                    key={k}
-                    onClick={() => setTab(k)}
+                    onClick={() => setLang("zh")}
                     className={[
-                      "rounded-lg px-3 py-2 text-sm transition-colors",
-                      active
+                      "rounded-md px-2 py-1 transition-colors",
+                      lang === "zh"
                         ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
                         : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
                     ].join(" ")}
                   >
-                    {label}
+                    中文
                   </button>
-                );
-              })}
-            </nav>
+                  <button
+                    onClick={() => setLang("en")}
+                    className={[
+                      "rounded-md px-2 py-1 transition-colors",
+                      lang === "en"
+                        ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                        : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
+                    ].join(" ")}
+                  >
+                    EN
+                  </button>
+                </div>
 
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-white/70 p-1 text-xs dark:border-zinc-800 dark:bg-zinc-950/70">
-                <button
-                  onClick={() => setLang("zh")}
-                  className={[
-                    "rounded-md px-2 py-1 transition-colors",
-                    lang === "zh"
-                      ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                      : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
-                  ].join(" ")}
+                <select
+                  value={themeId}
+                  onChange={(e) => setThemeId(e.target.value)}
+                  className="rounded-lg border border-zinc-200 bg-white/70 px-2 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-950/70"
+                  aria-label={tt("theme")}
                 >
-                  中文
-                </button>
-                <button
-                  onClick={() => setLang("en")}
-                  className={[
-                    "rounded-md px-2 py-1 transition-colors",
-                    lang === "en"
-                      ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                      : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900",
-                  ].join(" ")}
-                >
-                  EN
-                </button>
+                  {themes.map((th) => (
+                    <option key={th.id} value={th.id}>
+                      {th.name}
+                    </option>
+                  ))}
+                </select>
               </div>
-
-              <select
-                value={themeId}
-                onChange={(e) => setThemeId(e.target.value)}
-                className="rounded-lg border border-zinc-200 bg-white/70 px-2 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-950/70"
-                aria-label={tt("theme")}
-              >
-                {themes.map((th) => (
-                  <option key={th.id} value={th.id}>
-                    {th.name}
-                  </option>
-                ))}
-              </select>
             </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-8">
+        <main className="mx-auto max-w-6xl px-6 py-8">
         <div className="mb-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-4 text-sm dark:border-zinc-800">
           <div className="flex items-center justify-between gap-4">
             <div className="font-medium">{tt("backend")}</div>
@@ -2605,7 +2609,8 @@ export default function Home() {
             </div>
           </section>
         ) : null}
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

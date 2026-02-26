@@ -158,3 +158,7 @@ Versioning policy (from v1.0.x onward):
 - Restored built-in theme colors to the original v1.x palette (e.g. `破晓` accent back to orange `#F97316`).
 - Default UI background/surface reverted to a more neutral "classic" look (`#FAFAFA` / `#FFFFFF`).
 - Added a small migration: users still on the untouched v1.2.0 default themes auto-upgrade to the classic defaults.
+
+### v1.2.2 (UI Contrast + Background Image Fix)
+- Fixed UI background image not showing: background layer now renders behind content reliably (z-index/stacking fix).
+- Prevented OS-level dark mode from causing low-contrast text (Tailwind `dark:` variants are now class-based; app stays visually consistent until we add an explicit dark-mode toggle).
