@@ -41,6 +41,18 @@ class TraceEvent(SQLModel, table=True):
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
+class KBChunk(SQLModel, table=True):
+    __tablename__ = "kb_chunk"
+
+    id: int | None = Field(default=None, primary_key=True)
+    project_id: str = Field(foreign_key="project.id", index=True)
+    source_type: str = Field(default="note", index=True)  # note|upload|manuscript|web_import
+    title: str = Field(default="")
+    content: str
+    tags: str = Field(default="")
+    created_at: datetime = Field(default_factory=now_utc)
+
+
 class ProjectCreate(SQLModel):
     title: str
 

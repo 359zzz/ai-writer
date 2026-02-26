@@ -52,6 +52,14 @@ export default function Home() {
   const [runError, setRunError] = useState<string | null>(null);
   const [runInProgress, setRunInProgress] = useState<boolean>(false);
   const [generatedMarkdown, setGeneratedMarkdown] = useState<string>("");
+  const [kbTitle, setKbTitle] = useState<string>("Lore");
+  const [kbTags, setKbTags] = useState<string>("lore");
+  const [kbContent, setKbContent] = useState<string>("");
+  const [kbQuery, setKbQuery] = useState<string>("");
+  const [kbResults, setKbResults] = useState<
+    Array<{ id: number; title: string; content: string; score: number }>
+  >([]);
+  const [kbError, setKbError] = useState<string | null>(null);
 
   const apiBase = useMemo(() => {
     return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -243,6 +251,46 @@ export default function Home() {
     setRunInProgress(false);
   }
 
+  async function addKbChunk() {
+    if (!selectedProjectId) return;
+    setKbError(null);
+    const res = await fetch(`${apiBase}/api/projects/${selectedProjectId}/kb/chunks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: kbTitle,
+        tags: kbTags.split(",").map((t) => t.trim()).filter(Boolean),
+        content: kbContent,
+        source_type: "note",
+      }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    setKbContent("");
+  }
+
+  async function searchKb() {
+    if (!selectedProjectId) return;
+    setKbError(null);
+    const res = await fetch(
+      `${apiBase}/api/projects/${selectedProjectId}/kb/search?q=${encodeURIComponent(kbQuery)}&limit=8`,
+      { cache: "no-store" },
+    );
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as Array<{
+      id: number;
+      title: string;
+      content: string;
+      score: number;
+    }>;
+    setKbResults(data);
+  }
+
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50">
       <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
@@ -416,6 +464,94 @@ export default function Home() {
                     className="h-40 w-full rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-950"
                     placeholder="Generated markdown will appear here..."
                   />
+                </div>
+
+                <div className="mt-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">Local Knowledge Base</div>
+                  <div className="mt-2 grid gap-2">
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <input
+                        value={kbTitle}
+                        onChange={(e) => setKbTitle(e.target.value)}
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        placeholder="Chunk title"
+                      />
+                      <input
+                        value={kbTags}
+                        onChange={(e) => setKbTags(e.target.value)}
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        placeholder="tags (comma-separated)"
+                      />
+                    </div>
+                    <textarea
+                      value={kbContent}
+                      onChange={(e) => setKbContent(e.target.value)}
+                      className="h-24 w-full rounded-md border border-zinc-200 bg-white p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950"
+                      placeholder="Add lore/style/world notes here..."
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        disabled={!kbContent.trim()}
+                        onClick={() => {
+                          addKbChunk().catch((e) =>
+                            setKbError((e as Error).message),
+                          );
+                        }}
+                        className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                      >
+                        Save to KB
+                      </button>
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Stored locally (SQLite FTS).
+                      </span>
+                    </div>
+
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        value={kbQuery}
+                        onChange={(e) => setKbQuery(e.target.value)}
+                        className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                        placeholder="Search KB..."
+                      />
+                      <button
+                        disabled={!kbQuery.trim()}
+                        onClick={() => {
+                          searchKb().catch((e) =>
+                            setKbError((e as Error).message),
+                          );
+                        }}
+                        className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                      >
+                        Search
+                      </button>
+                    </div>
+
+                    {kbError ? (
+                      <div className="text-sm text-red-600 dark:text-red-400">
+                        {kbError}
+                      </div>
+                    ) : null}
+
+                    {kbResults.length > 0 ? (
+                      <div className="mt-2 max-h-48 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                        <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                          {kbResults.map((r) => (
+                            <li key={r.id} className="p-3">
+                              <div className="font-medium">
+                                {r.title || `Chunk #${r.id}`}
+                              </div>
+                              <div className="mt-1 line-clamp-3 text-xs text-zinc-600 dark:text-zinc-300">
+                                {r.content}
+                              </div>
+                              <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                                score: {r.score.toFixed(2)}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </div>
