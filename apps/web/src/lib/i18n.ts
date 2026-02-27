@@ -10,8 +10,18 @@ export type I18nKey =
   | "checking"
   | "ok"
   | "unreachable"
+  | "idle"
+  | "active_task"
+  | "progress"
   | "writing"
   | "writing_desc"
+  | "guide_title"
+  | "guide_step_projects"
+  | "guide_step_settings"
+  | "guide_step_kb"
+  | "guide_step_run"
+  | "guide_step_export"
+  | "guide_dismiss"
   | "writing_mode"
   | "writing_mode_create"
   | "writing_mode_continue"
@@ -42,6 +52,14 @@ export type I18nKey =
   | "continue_extracting_file"
   | "continue_selected_file"
   | "continue_remove_file"
+  | "continue_source_box"
+  | "continue_source_desc"
+  | "continue_selected_source"
+  | "continue_excerpt_mode"
+  | "continue_excerpt_tail"
+  | "continue_excerpt_head"
+  | "continue_excerpt_chars"
+  | "continue_source_placeholder"
   | "continue_or_paste"
   | "paste_manuscript"
   | "extract_continue"
@@ -166,8 +184,18 @@ const ZH: Record<I18nKey, string> = {
   checking: "检测中...",
   ok: "正常",
   unreachable: "无法连接",
+  idle: "空闲",
+  active_task: "正在执行",
+  progress: "进度",
   writing: "写作",
   writing_desc: "Notion 风格工作台（持续增强中）。",
+  guide_title: "快速上手",
+  guide_step_projects: "左侧新建/选择项目",
+  guide_step_settings: "在设置页选择模型并配置 API（api.txt / 环境变量）",
+  guide_step_kb: "（可选）右侧 Local KB 添加设定；Strong 模式更依赖 KB",
+  guide_step_run: "在右侧面板运行：生成大纲 / 写章节 / 续写",
+  guide_step_export: "写完后在 Export 导出 DOCX/EPUB/PDF",
+  guide_dismiss: "不再提示",
   writing_mode: "写作模式",
   writing_mode_create: "创作",
   writing_mode_continue: "续写",
@@ -200,6 +228,15 @@ const ZH: Record<I18nKey, string> = {
   continue_extracting_file: "提取中...",
   continue_selected_file: "已选择",
   continue_remove_file: "移除",
+  continue_source_box: "续写素材（拖拽/上传/粘贴）",
+  continue_source_desc:
+    "把文件拖进输入框 / 点击上传 / 直接粘贴文本或文件。大文件会保存到本地，只显示预览（不再回传全文）。",
+  continue_selected_source: "已加载",
+  continue_excerpt_mode: "预览/截断位置",
+  continue_excerpt_tail: "尾部（推荐）",
+  continue_excerpt_head: "开头",
+  continue_excerpt_chars: "截断长度（字符）",
+  continue_source_placeholder: "拖拽文件到这里，或点击上传，或直接粘贴文本/文件…",
   continue_or_paste: "或直接粘贴文本：",
   paste_manuscript: "粘贴已有作品...",
   extract_continue: "抽取 + 续写",
@@ -326,8 +363,18 @@ const EN: Record<I18nKey, string> = {
   checking: "Checking...",
   ok: "OK",
   unreachable: "Unreachable",
+  idle: "Idle",
+  active_task: "Active task",
+  progress: "Progress",
   writing: "Writing",
   writing_desc: "Notion-like workspace (iterating).",
+  guide_title: "Quick Start",
+  guide_step_projects: "Create/select a project (left panel)",
+  guide_step_settings: "Pick model & set API keys in Settings (api.txt/env)",
+  guide_step_kb: "(Optional) Add lore/style to Local KB; Strong mode relies on KB",
+  guide_step_run: "Run: outline / chapter / continue (right panel)",
+  guide_step_export: "Export DOCX/EPUB/PDF from Export",
+  guide_dismiss: "Dismiss",
   writing_mode: "Writing mode",
   writing_mode_create: "Create",
   writing_mode_continue: "Continue",
@@ -361,6 +408,15 @@ const EN: Record<I18nKey, string> = {
   continue_extracting_file: "Extracting...",
   continue_selected_file: "Selected",
   continue_remove_file: "Remove",
+  continue_source_box: "Continue source (drop/upload/paste)",
+  continue_source_desc:
+    "Drop a file into the box / click Upload / paste text or a file. Large sources are stored locally and only a preview is shown (no full round-trip).",
+  continue_selected_source: "Loaded",
+  continue_excerpt_mode: "Excerpt position",
+  continue_excerpt_tail: "Tail (recommended)",
+  continue_excerpt_head: "Head",
+  continue_excerpt_chars: "Excerpt length (chars)",
+  continue_source_placeholder: "Drop a file here, click Upload, or paste text/file…",
   continue_or_paste: "Or paste text:",
   paste_manuscript: "Paste your manuscript...",
   extract_continue: "Extract + Continue",

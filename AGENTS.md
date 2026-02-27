@@ -178,3 +178,12 @@ Versioning policy (from v1.0.x onward):
 - Writing layout now fills a fixed viewport height and supports vertical (height) resizing in the right tool panel (runs/export/KB/web cards are split into draggable panels).
 - Continue mode supports uploading `.txt/.docx/.pdf/.epub` files (backend extracts plain text locally; no LLM call), and populates the continue textarea for editing.
 - Backend: added `/api/tools/extract_text` and a reusable `tools/text_extract.py` utility; added `pypdf` for PDF extraction; added minimal tests for the new tool.
+
+### v1.2.6 (Continue Sources: Local Storage + Preview + Progress)
+- Fixed `DetachedInstanceError` in SSE pipelines by using DB sessions with `expire_on_commit=False` (prevents project settings from expiring after commit).
+- Continue mode upgraded for large manuscripts:
+  - New backend endpoints store uploads/pasted text under `apps/api/data/continue_sources/` and return a `source_id` + short preview (no full-text round trip).
+  - Runs now accept `source_id` + `source_slice_mode/head|tail` + `source_slice_chars`, and load excerpts from disk for the Extractor agent.
+  - Writing UI merged “upload + paste” into a single dropzone textarea supporting drag-drop, click upload, and paste (file/text), plus excerpt preview/truncation controls.
+- Continue text extraction improved with light pre-cleaning for PDF/EPUB (skip toc/nav docs, remove repeated PDF headers/footers, remove TOC dot-leader noise).
+- Backend status card now shows active run + progress bar (front-end derived from SSE trace events).  

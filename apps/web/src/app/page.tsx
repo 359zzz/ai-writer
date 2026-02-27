@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 import { MarkdownPreview } from "@/components/MarkdownPreview";
@@ -80,6 +80,7 @@ export default function Home() {
   );
 
   const [tab, setTab] = useState<TabKey>("writing");
+  const [showQuickStart, setShowQuickStart] = useState<boolean>(false);
   const [writingMode, setWritingMode] = useState<"create" | "continue">("create");
   const [agentsView, setAgentsView] = useState<"timeline" | "graph">("timeline");
   const [expandedEventKey, setExpandedEventKey] = useState<string | null>(null);
@@ -112,6 +113,8 @@ export default function Home() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [runInProgress, setRunInProgress] = useState<boolean>(false);
+  const [activeRunKind, setActiveRunKind] = useState<string | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [generatedMarkdown, setGeneratedMarkdown] = useState<string>("");
   const [editorView, setEditorView] = useState<"split" | "edit" | "preview">(
     "split",
@@ -120,12 +123,22 @@ export default function Home() {
   const [chapters, setChapters] = useState<ChapterItem[]>([]);
   const [chapterIndex, setChapterIndex] = useState<number>(1);
   const [researchQuery, setResearchQuery] = useState<string>("");
-  const [continueText, setContinueText] = useState<string>("");
-  const [continueFileName, setContinueFileName] = useState<string | null>(null);
-  const [continueFileChars, setContinueFileChars] = useState<number | null>(null);
-  const [continueFileLoading, setContinueFileLoading] = useState<boolean>(false);
-  const [continueFileError, setContinueFileError] = useState<string | null>(null);
-  const [continueFileToken, setContinueFileToken] = useState<number>(0);
+  // Continue Mode input can be either:
+  // - A stored local source_id (recommended for large files)
+  // - A small pasted/typed text (which we will store to backend on-demand)
+  const [continueSourceId, setContinueSourceId] = useState<string | null>(null);
+  const [continueSourceMeta, setContinueSourceMeta] = useState<
+    { filename?: string; chars?: number } | null
+  >(null);
+  const [continueInputText, setContinueInputText] = useState<string>("");
+  const [continueSourceLoading, setContinueSourceLoading] = useState<boolean>(false);
+  const [continueSourceError, setContinueSourceError] = useState<string | null>(null);
+  const [continueSourceToken, setContinueSourceToken] = useState<number>(0);
+  const [continueExcerptMode, setContinueExcerptMode] = useState<"head" | "tail">(
+    "tail",
+  );
+  const [continueExcerptChars, setContinueExcerptChars] = useState<number>(8000);
+  const [continueDropActive, setContinueDropActive] = useState<boolean>(false);
   // Local KB chunk fields. Keep defaults empty to avoid confusing users
   // with pre-filled values like "设定" in multiple inputs.
   const [kbTitle, setKbTitle] = useState<string>("");
@@ -293,6 +306,15 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    try {
+      const dismissed = localStorage.getItem("ai-writer:quickstart:dismissed");
+      setShowQuickStart(dismissed !== "1");
+    } catch {
+      setShowQuickStart(true);
+    }
+  }, []);
+
+  useEffect(() => {
     const active = themes.find((th) => th.id === themeId) ?? themes[0];
     if (!active) return;
     applyUiTheme(active);
@@ -329,6 +351,56 @@ export default function Home() {
       return lang === "zh" ? "设定" : "lore";
     });
   }, [lang]);
+
+  const refreshContinuePreview = useCallback(
+    async (sourceId: string) => {
+      const res = await fetch(
+        `${apiBase}/api/tools/continue_sources/${encodeURIComponent(sourceId)}/preview?mode=${encodeURIComponent(continueExcerptMode)}&limit_chars=${encodeURIComponent(String(continueExcerptChars))}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as {
+        text?: unknown;
+        meta?: { filename?: unknown; chars?: unknown };
+      };
+      const text = typeof data.text === "string" ? data.text : "";
+      setContinueInputText(text);
+      const filename =
+        typeof data.meta?.filename === "string" ? data.meta.filename : undefined;
+      const chars = typeof data.meta?.chars === "number" ? data.meta.chars : undefined;
+      setContinueSourceMeta({ filename, chars });
+    },
+    [apiBase, continueExcerptMode, continueExcerptChars],
+  );
+
+  useEffect(() => {
+    if (!continueSourceId) return;
+    if (continueSourceLoading) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      refreshContinuePreview(continueSourceId)
+        .then(() => {
+          if (!cancelled) setContinueSourceError(null);
+        })
+        .catch((e) => {
+          if (!cancelled) setContinueSourceError((e as Error).message);
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [continueSourceId, continueSourceLoading, refreshContinuePreview]);
 
   useEffect(() => {
     let cancelled = false;
@@ -668,70 +740,78 @@ export default function Home() {
     setRunError(null);
     setRunInProgress(true);
     setRunEvents([]);
+    setActiveRunKind(kind);
+    setActiveRunId(null);
 
-    const res = await fetch(
-      `${apiBase}/api/projects/${selectedProjectId}/runs/stream`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind, ...extra }),
-      },
-    );
-    if (!res.ok || !res.body) {
-      const txt = await res.text();
-      throw new Error(txt || `HTTP ${res.status}`);
-    }
+    try {
+      const res = await fetch(
+        `${apiBase}/api/projects/${selectedProjectId}/runs/stream`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind, ...extra }),
+        },
+      );
+      if (!res.ok || !res.body) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-      // Parse SSE blocks separated by blank lines.
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop() ?? "";
-      for (const part of parts) {
-        const line = part
-          .split("\n")
-          .map((l) => l.trim())
-          .find((l) => l.startsWith("data:"));
-        if (!line) continue;
-        const jsonText = line.replace(/^data:\s*/, "");
-        try {
-          const evt = JSON.parse(jsonText) as {
-            run_id: string;
-            seq: number;
-            ts: string;
-            type: string;
-            agent: string | null;
-            data: Record<string, unknown>;
-          };
-          setRunEvents((prev) => [...prev, evt]);
-          if (
-            evt.type === "artifact" &&
-            evt.agent === "Writer" &&
-            evt.data.artifact_type === "chapter_markdown" &&
-            typeof evt.data.markdown === "string"
-          ) {
-            setGeneratedMarkdown(evt.data.markdown);
+        // Parse SSE blocks separated by blank lines.
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          const line = part
+            .split("\n")
+            .map((l) => l.trim())
+            .find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          const jsonText = line.replace(/^data:\s*/, "");
+          try {
+            const evt = JSON.parse(jsonText) as {
+              run_id: string;
+              seq: number;
+              ts: string;
+              type: string;
+              agent: string | null;
+              data: Record<string, unknown>;
+            };
+            setActiveRunId((prev) => prev ?? evt.run_id);
+            setRunEvents((prev) => [...prev, evt]);
+            if (
+              evt.type === "artifact" &&
+              evt.agent === "Writer" &&
+              evt.data.artifact_type === "chapter_markdown" &&
+              typeof evt.data.markdown === "string"
+            ) {
+              setGeneratedMarkdown(evt.data.markdown);
+            }
+            if (
+              evt.type === "artifact" &&
+              evt.agent === "Outliner" &&
+              evt.data.artifact_type === "outline"
+            ) {
+              setOutline(evt.data.outline ?? null);
+            }
+          } catch {
+            // ignore partial/bad events
           }
-          if (
-            evt.type === "artifact" &&
-            evt.agent === "Outliner" &&
-            evt.data.artifact_type === "outline"
-          ) {
-            setOutline(evt.data.outline ?? null);
-          }
-        } catch {
-          // ignore partial/bad events
         }
       }
+    } finally {
+      setRunInProgress(false);
+      setActiveRunKind(null);
+      setActiveRunId(null);
     }
-    setRunInProgress(false);
   }
 
   async function addKbChunk() {
@@ -806,18 +886,24 @@ export default function Home() {
     }
   }
 
-  async function extractContinueFile(file: File) {
-    setContinueFileError(null);
-    setContinueFileLoading(true);
-    setContinueFileName(file.name);
-    setContinueFileChars(null);
+  function clearContinueInput() {
+    setContinueSourceId(null);
+    setContinueSourceMeta(null);
+    setContinueInputText("");
+    setContinueSourceError(null);
+    setContinueSourceToken((x) => x + 1);
+  }
+
+  async function uploadContinueFile(file: File): Promise<string> {
+    setContinueSourceError(null);
+    setContinueSourceLoading(true);
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(`${apiBase}/api/tools/extract_text`, {
-        method: "POST",
-        body: form,
-      });
+      const res = await fetch(
+        `${apiBase}/api/tools/continue_sources/upload?preview_mode=${encodeURIComponent(continueExcerptMode)}&preview_chars=${encodeURIComponent(String(continueExcerptChars))}`,
+        { method: "POST", body: form },
+      );
       if (!res.ok) {
         const raw = await res.text();
         let detail = raw;
@@ -831,15 +917,64 @@ export default function Home() {
       }
 
       const data = (await res.json()) as {
-        text?: unknown;
-        meta?: { chars?: unknown };
+        source_id?: unknown;
+        preview?: unknown;
+        meta?: { filename?: unknown; chars?: unknown };
       };
-      const text = typeof data.text === "string" ? data.text : "";
-      const chars = typeof data.meta?.chars === "number" ? data.meta.chars : null;
-      setContinueText(text);
-      setContinueFileChars(chars);
+      const sid = typeof data.source_id === "string" ? data.source_id : null;
+      if (!sid) throw new Error("bad_response");
+      const preview = typeof data.preview === "string" ? data.preview : "";
+      const filename = typeof data.meta?.filename === "string" ? data.meta.filename : file.name;
+      const chars = typeof data.meta?.chars === "number" ? data.meta.chars : undefined;
+      setContinueSourceId(sid);
+      setContinueSourceMeta({ filename, chars });
+      setContinueInputText(preview);
+      setContinueSourceToken((x) => x + 1);
+      return sid;
     } finally {
-      setContinueFileLoading(false);
+      setContinueSourceLoading(false);
+    }
+  }
+
+  async function uploadContinueText(text: string): Promise<string> {
+    setContinueSourceError(null);
+    setContinueSourceLoading(true);
+    try {
+      const res = await fetch(
+        `${apiBase}/api/tools/continue_sources/text?preview_mode=${encodeURIComponent(continueExcerptMode)}&preview_chars=${encodeURIComponent(String(continueExcerptChars))}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text, filename: "pasted.txt" }),
+        },
+      );
+      if (!res.ok) {
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as {
+        source_id?: unknown;
+        preview?: unknown;
+        meta?: { filename?: unknown; chars?: unknown };
+      };
+      const sid = typeof data.source_id === "string" ? data.source_id : null;
+      if (!sid) throw new Error("bad_response");
+      const preview = typeof data.preview === "string" ? data.preview : "";
+      const filename = typeof data.meta?.filename === "string" ? data.meta.filename : "pasted.txt";
+      const chars = typeof data.meta?.chars === "number" ? data.meta.chars : undefined;
+      setContinueSourceId(sid);
+      setContinueSourceMeta({ filename, chars });
+      setContinueInputText(preview);
+      return sid;
+    } finally {
+      setContinueSourceLoading(false);
     }
   }
 
@@ -901,6 +1036,53 @@ export default function Home() {
       setExporting(false);
     }
   }
+
+  const runProgress = useMemo(() => {
+    if (!runInProgress || !activeRunKind) return null;
+
+    const expectedAgents: Record<string, string[]> = {
+      demo: ["ConfigAutofill", "Outliner", "Writer", "LoreKeeper", "Editor"],
+      outline: ["ConfigAutofill", "Outliner"],
+      chapter: ["ConfigAutofill", "Outliner", "Writer", "LoreKeeper", "Editor"],
+      continue: [
+        "ConfigAutofill",
+        "Extractor",
+        "Outliner",
+        "Writer",
+        "LoreKeeper",
+        "Editor",
+      ],
+    };
+
+    const plan = expectedAgents[activeRunKind] ?? [];
+    const finished = new Set<string>();
+    for (const evt of runEvents) {
+      if (evt.type === "agent_finished" && evt.agent) finished.add(evt.agent);
+    }
+
+    let current: string | null = null;
+    for (let i = runEvents.length - 1; i >= 0; i -= 1) {
+      const evt = runEvents[i];
+      if (evt.type === "agent_started" && evt.agent && !finished.has(evt.agent)) {
+        current = evt.agent;
+        break;
+      }
+    }
+
+    const total = plan.length > 0 ? plan.length : Math.max(1, finished.size);
+    const done = Math.min(total, finished.size);
+    const inflight = current && !finished.has(current) ? 0.35 : 0;
+    const pct = Math.min(99, Math.round(((done + inflight) / total) * 100));
+
+    return {
+      kind: activeRunKind,
+      run_id: activeRunId,
+      current_agent: current,
+      done,
+      total,
+      pct,
+    };
+  }, [runInProgress, activeRunKind, activeRunId, runEvents]);
 
   const showBgImage = uiBackground.enabled && Boolean(uiBackground.image_data_url);
 
@@ -1036,6 +1218,32 @@ export default function Home() {
               <span>{tt("checking")}</span>
             )}
           </div>
+          <div className="mt-3 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3 dark:border-zinc-800">
+            {runProgress ? (
+              <>
+                <div className="flex items-center justify-between gap-3 text-xs text-[var(--ui-muted)]">
+                  <div className="min-w-0 truncate">
+                    {tt("active_task")}: {formatRunKind(runProgress.kind)} ·{" "}
+                    {formatAgentName(runProgress.current_agent ?? "Director")}
+                    {runProgress.run_id
+                      ? ` (#${runProgress.run_id.slice(0, 8)})`
+                      : ""}
+                  </div>
+                  <div className="shrink-0">
+                    {tt("progress")}: {runProgress.pct}%
+                  </div>
+                </div>
+                <div className="mt-2 h-2 w-full rounded-full bg-zinc-200 dark:bg-zinc-800">
+                  <div
+                    className="h-2 rounded-full bg-[var(--ui-accent)]"
+                    style={{ width: `${runProgress.pct}%` }}
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="text-xs text-[var(--ui-muted)]">{tt("idle")}</div>
+            )}
+          </div>
         </div>
 
         {tab === "writing" ? (
@@ -1044,6 +1252,39 @@ export default function Home() {
             <p className="mt-2 text-sm text-[var(--ui-muted)]">
               {tt("writing_desc")}
             </p>
+
+            {showQuickStart ? (
+              <div className="mt-4 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-4 text-sm dark:border-zinc-800">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="font-medium">{tt("guide_title")}</div>
+                    <div className="mt-2 grid gap-1 text-xs text-[var(--ui-muted)]">
+                      <div>1) {tt("guide_step_projects")}</div>
+                      <div>2) {tt("guide_step_settings")}</div>
+                      <div>3) {tt("guide_step_kb")}</div>
+                      <div>4) {tt("guide_step_run")}</div>
+                      <div>5) {tt("guide_step_export")}</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowQuickStart(false);
+                      try {
+                        localStorage.setItem(
+                          "ai-writer:quickstart:dismissed",
+                          "1",
+                        );
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                    className="shrink-0 rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                  >
+                    {tt("guide_dismiss")}
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-6 h-[calc(100vh-260px)] min-h-[560px]">
               <PanelGroup
@@ -1436,107 +1677,209 @@ export default function Home() {
                         </label>
 
                         <div className="mt-3 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-[var(--ui-control-text)]">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-xs text-[var(--ui-muted)]">
-                              {tt("continue_upload_file")}
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-xs text-[var(--ui-muted)]">
+                                {tt("continue_source_box")}
+                              </div>
+                              <div className="mt-1 text-[11px] text-[var(--ui-muted)]">
+                                {tt("continue_source_desc")}
+                              </div>
                             </div>
-                            <label className="cursor-pointer rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90">
-                              {continueFileLoading
-                                ? tt("continue_extracting_file")
-                                : tt("continue_upload_button")}
+                            <div className="flex shrink-0 items-center gap-2">
+                              <label className="cursor-pointer rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90">
+                                {continueSourceLoading
+                                  ? tt("continue_extracting_file")
+                                  : tt("continue_upload_button")}
+                                <input
+                                  key={continueSourceToken}
+                                  type="file"
+                                  accept=".txt,.md,.markdown,.docx,.pdf,.epub"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (!f) return;
+                                    uploadContinueFile(f).catch((err) =>
+                                      setContinueSourceError(
+                                        (err as Error).message,
+                                      ),
+                                    );
+                                  }}
+                                />
+                              </label>
+                              <button
+                                disabled={
+                                  continueSourceLoading ||
+                                  (!continueSourceId &&
+                                    !continueInputText.trim())
+                                }
+                                onClick={() => clearContinueInput()}
+                                className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                              >
+                                {tt("clear")}
+                              </button>
+                            </div>
+                          </div>
+
+                          {continueSourceId ? (
+                            <div className="mt-2 text-[11px] text-[var(--ui-muted)]">
+                              {tt("continue_selected_source")}:{" "}
+                              {continueSourceMeta?.filename ?? continueSourceId}
+                              {typeof continueSourceMeta?.chars === "number"
+                                ? lang === "zh"
+                                  ? `（${continueSourceMeta.chars} 字符）`
+                                  : ` (${continueSourceMeta.chars} chars)`
+                                : ""}
+                            </div>
+                          ) : null}
+
+                          <div className="mt-3 grid gap-2 md:grid-cols-2">
+                            <label className="grid gap-1 text-sm">
+                              <span className="text-xs text-[var(--ui-muted)]">
+                                {tt("continue_excerpt_mode")}
+                              </span>
+                              <select
+                                value={continueExcerptMode}
+                                onChange={(e) =>
+                                  setContinueExcerptMode(
+                                    e.target.value === "head"
+                                      ? "head"
+                                      : "tail",
+                                  )
+                                }
+                                className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                              >
+                                <option value="tail">
+                                  {tt("continue_excerpt_tail")}
+                                </option>
+                                <option value="head">
+                                  {tt("continue_excerpt_head")}
+                                </option>
+                              </select>
+                            </label>
+                            <label className="grid gap-1 text-sm">
+                              <span className="text-xs text-[var(--ui-muted)]">
+                                {tt("continue_excerpt_chars")}
+                              </span>
                               <input
-                                key={continueFileToken}
-                                type="file"
-                                accept=".txt,.md,.markdown,.docx,.pdf,.epub"
-                                className="hidden"
+                                type="number"
+                                min={200}
+                                max={50000}
+                                value={continueExcerptChars}
                                 onChange={(e) => {
-                                  const f = e.target.files?.[0];
-                                  if (!f) return;
-                                  extractContinueFile(f).catch((err) =>
-                                    setContinueFileError(
-                                      (err as Error).message,
-                                    ),
+                                  const n = Number(e.target.value);
+                                  if (!Number.isFinite(n)) return;
+                                  setContinueExcerptChars(
+                                    Math.max(200, Math.min(50000, n)),
                                   );
                                 }}
+                                className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                               />
                             </label>
                           </div>
-                          <div className="mt-2 text-[11px] text-[var(--ui-muted)]">
-                            {tt("continue_upload_desc")}
-                          </div>
-                          {continueFileName ? (
-                            <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-[var(--ui-muted)]">
-                              <div className="min-w-0 truncate">
-                                {tt("continue_selected_file")}:{" "}
-                                {continueFileName}
-                                {continueFileChars !== null
-                                  ? lang === "zh"
-                                    ? `（${continueFileChars} 字符）`
-                                    : ` (${continueFileChars} chars)`
-                                  : ""}
-                              </div>
-                              <button
-                                onClick={() => {
-                                  setContinueFileName(null);
-                                  setContinueFileChars(null);
-                                  setContinueFileError(null);
-                                  setContinueFileToken((x) => x + 1);
-                                }}
-                                className="shrink-0 rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
-                              >
-                                {tt("continue_remove_file")}
-                              </button>
-                            </div>
-                          ) : null}
-                          {continueFileError ? (
-                            <div className="mt-2 text-xs text-red-600 dark:text-red-400">
-                              {continueFileError}
-                            </div>
-                          ) : null}
-                        </div>
 
-                        <div className="mt-2 text-xs text-[var(--ui-muted)]">
-                          {tt("continue_or_paste")}
-                        </div>
-                        <textarea
-                          value={continueText}
-                          onChange={(e) => setContinueText(e.target.value)}
-                          className="mt-3 h-24 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                          placeholder={tt("paste_manuscript")}
-                        />
-                        <div className="mt-3 flex items-center gap-2">
-                          <button
-                            disabled={
-                              !selectedProjectId ||
-                              runInProgress ||
-                              !continueText.trim()
-                            }
-                            onClick={() => {
-                              runPipeline("continue", {
-                                chapter_index: chapterIndex,
-                                source_text: continueText,
-                                research_query: researchQuery.trim() || undefined,
-                              }).catch((e) =>
-                                setRunError((e as Error).message),
+                          {continueSourceError ? (
+                            <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                              {continueSourceError}
+                            </div>
+                          ) : null}
+
+                          <textarea
+                            value={continueInputText}
+                            readOnly={Boolean(continueSourceId)}
+                            onChange={(e) => {
+                              if (continueSourceId) return;
+                              setContinueInputText(e.target.value);
+                            }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              setContinueDropActive(true);
+                            }}
+                            onDragLeave={() => setContinueDropActive(false)}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              setContinueDropActive(false);
+                              const f = e.dataTransfer.files?.[0];
+                              if (!f) return;
+                              uploadContinueFile(f).catch((err) =>
+                                setContinueSourceError(
+                                  (err as Error).message,
+                                ),
                               );
                             }}
-                            className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
-                          >
-                            {tt("extract_continue")}
-                          </button>
-                          <button
-                            disabled={!continueText && !continueFileName}
-                            onClick={() => {
-                              setContinueText("");
-                              setContinueFileName(null);
-                              setContinueFileChars(null);
-                              setContinueFileError(null);
-                              setContinueFileToken((x) => x + 1);
+                            onPaste={(e) => {
+                              const f = e.clipboardData.files?.[0];
+                              if (f) {
+                                e.preventDefault();
+                                uploadContinueFile(f).catch((err) =>
+                                  setContinueSourceError(
+                                    (err as Error).message,
+                                  ),
+                                );
+                                return;
+                              }
+                              // For very large pasted text, avoid pushing it into React state
+                              // (textarea rendering can freeze). Store it directly to backend.
+                              const txt = e.clipboardData.getData("text") || "";
+                              if (
+                                !continueSourceId &&
+                                txt &&
+                                txt.length > 60000
+                              ) {
+                                e.preventDefault();
+                                uploadContinueText(txt).catch((err) =>
+                                  setContinueSourceError(
+                                    (err as Error).message,
+                                  ),
+                                );
+                              }
                             }}
-                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
-                          >
-                            {tt("clear")}
-                          </button>
+                            className={[
+                              "mt-3 h-40 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]",
+                              continueDropActive
+                                ? "ring-2 ring-[var(--ui-accent)]"
+                                : "",
+                              continueSourceId ? "opacity-90" : "",
+                            ].join(" ")}
+                            placeholder={tt("continue_source_placeholder")}
+                          />
+
+                          <div className="mt-3 flex items-center gap-2">
+                            <button
+                              disabled={
+                                !selectedProjectId ||
+                                runInProgress ||
+                                continueSourceLoading ||
+                                !(continueSourceId || continueInputText.trim())
+                              }
+                              onClick={async () => {
+                                try {
+                                  let sid = continueSourceId;
+                                  if (!sid) {
+                                    sid = await uploadContinueText(
+                                      continueInputText,
+                                    );
+                                  }
+                                  await runPipeline("continue", {
+                                    chapter_index: chapterIndex,
+                                    source_id: sid,
+                                    source_slice_mode: continueExcerptMode,
+                                    source_slice_chars: continueExcerptChars,
+                                    research_query:
+                                      researchQuery.trim() || undefined,
+                                  });
+                                } catch (e) {
+                                  setRunError((e as Error).message);
+                                }
+                              }}
+                              className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                            >
+                              {tt("extract_continue")}
+                            </button>
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("uses_settings")}
+                            </span>
+                          </div>
                         </div>
                       </div>
                     ) : null}

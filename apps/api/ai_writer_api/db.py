@@ -69,5 +69,11 @@ def init_db() -> None:
 
 @contextmanager
 def get_session() -> Session:
-    with Session(ENGINE) as session:
+    # IMPORTANT:
+    # SSE pipelines keep some ORM objects (e.g. Project) in memory across yields.
+    # SQLAlchemy defaults to expire_on_commit=True, which expires attributes on commit.
+    # When the session is later closed, accessing expired attributes triggers
+    # DetachedInstanceError. For this app, we prefer keeping loaded values stable
+    # across commits and using explicit refresh/reload when needed.
+    with Session(ENGINE, expire_on_commit=False) as session:
         yield session

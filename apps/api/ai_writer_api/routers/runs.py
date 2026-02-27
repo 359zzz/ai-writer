@@ -14,6 +14,7 @@ from sqlmodel import select
 from ..db import ENGINE, get_session
 from ..llm import LLMError, parse_json_loose, resolve_llm_config, generate_text
 from ..models import Chapter, KBChunk, Project, Run, TraceEvent
+from ..tools.continue_sources import ContinueSourceError, load_continue_source_excerpt
 from ..util import deep_merge, json_dumps
 
 
@@ -255,7 +256,58 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
 
         # Agent: Extractor (continue mode)
         story_state: dict[str, Any] | None = None
-        source_text = str(payload.get("source_text") or "").strip()
+        source_text = ""
+        source_id = payload.get("source_id")
+        excerpt_mode = str(payload.get("source_slice_mode") or "tail")
+        try:
+            excerpt_chars = int(payload.get("source_slice_chars") or 8000)
+        except Exception:
+            excerpt_chars = 8000
+        excerpt_chars = max(200, min(excerpt_chars, 50_000))
+
+        if kind == "continue":
+            if isinstance(source_id, str) and source_id.strip():
+                try:
+                    yield emit(
+                        "tool_call",
+                        "Extractor",
+                        {
+                            "tool": "continue_sources.load_excerpt",
+                            "source_id": source_id.strip(),
+                            "mode": excerpt_mode,
+                            "limit_chars": excerpt_chars,
+                        },
+                    )
+                    source_text = load_continue_source_excerpt(
+                        source_id=source_id.strip(),
+                        mode=excerpt_mode,
+                        limit_chars=excerpt_chars,
+                    ).strip()
+                    yield emit(
+                        "tool_result",
+                        "Extractor",
+                        {
+                            "tool": "continue_sources.load_excerpt",
+                            "chars": len(source_text),
+                        },
+                    )
+                except ContinueSourceError as e:
+                    yield emit(
+                        "agent_output",
+                        "Extractor",
+                        {"error": f"continue_source_load_failed:{str(e)}"},
+                    )
+                    source_text = ""
+                except Exception as e:
+                    yield emit(
+                        "agent_output",
+                        "Extractor",
+                        {"error": f"continue_source_load_failed:{type(e).__name__}"},
+                    )
+                    source_text = ""
+            else:
+                source_text = str(payload.get("source_text") or "").strip()
+
         if kind == "continue" and source_text:
             try:
                 yield emit("agent_started", "Extractor", {})
@@ -273,8 +325,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     '  "open_loops": ["..."],\n'
                     '  "style_profile": {"pov":"...","tense":"...","tone":"..."}\n'
                     "}\n\n"
-                    "Manuscript:\n"
-                    f"{source_text[:8000]}\n"
+                    "Manuscript (excerpt):\n"
+                    f"{source_text}\n"
                 )
                 cfg = llm_cfg()
                 yield emit(
