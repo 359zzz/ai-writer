@@ -193,3 +193,10 @@ Versioning policy (from v1.0.x onward):
   - OpenAI-compatible calls try both `/chat/completions` and `/v1/chat/completions` even when one path returns 5xx (fixes some proxy/base_url combinations).
   - Added small retry/backoff for transient errors (502/503/504/429/timeouts) and slightly increased timeout.
 - Writing → Backend progress bar now shows the run error message on abnormal exit (and during failure), sourced from SSE `run_error` events.
+
+### v1.2.8 (Base URL Robustness + Cleaner 502 Errors)
+- OpenAI-compatible base_url handling is now safer:
+  - Accepts base URLs with or without `/v1` without accidentally producing `/v1/v1/...`.
+  - Keeps the most meaningful failure reason (e.g. 502) instead of being overwritten by a later 404.
+- Sanitized HTML error pages in LLM errors to a short marker (`html_error_page`) to avoid flooding traces/UI.
+- `apps/api/scripts/smoke_llm.py` can now be run from repo root reliably (adds `apps/api` to `sys.path`).

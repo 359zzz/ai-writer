@@ -2,6 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
+from pathlib import Path
+
+# Allow running this script from repo root (or anywhere) without installing the package.
+_API_ROOT = Path(__file__).resolve().parents[1]  # .../apps/api
+if str(_API_ROOT) not in sys.path:
+    sys.path.insert(0, str(_API_ROOT))
 
 from ai_writer_api.llm import LLMError, generate_text, resolve_llm_config
 from ai_writer_api.secrets import secrets_status
@@ -50,4 +57,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

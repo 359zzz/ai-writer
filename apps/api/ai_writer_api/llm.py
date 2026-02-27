@@ -153,16 +153,61 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                         return clip(detail)
             except Exception:
                 pass
+            # Avoid dumping raw HTML error pages into traces/UI.
+            if "text/html" in ctype:
+                return "html_error_page"
             try:
                 return clip(resp.text)
             except Exception:
                 return ""
 
-        # Some OpenAI-compatible gateways require /v1, others don't.
-        candidates: list[str] = []
-        for u in (f"{base}/chat/completions", f"{base}/v1/chat/completions"):
-            if u not in candidates:
-                candidates.append(u)
+        def err_score(msg: str) -> int:
+            # Prefer the most actionable error for end users.
+            # Do NOT let a trailing 404 (e.g. trying /v1/v1) override a prior 502.
+            m = (msg or "").strip()
+            if not m:
+                return -1
+            if m.startswith("openai_http_404"):
+                return 0
+            if m.startswith("openai_non_json_response"):
+                return 10
+            if m.startswith("openai_bad_json"):
+                return 20
+            if m.startswith("openai_bad_response"):
+                return 25
+            if m.startswith("empty_completion"):
+                return 30
+            if m.startswith("openai_timeout") or m.startswith("openai_network_error"):
+                return 80
+            if m.startswith("openai_http_"):
+                return 90
+            return 40
+
+        def build_candidates(base_in: str) -> list[str]:
+            # Some OpenAI-compatible gateways want:
+            # - base=https://host              then POST /v1/chat/completions
+            # - base=https://host/v1           then POST /chat/completions
+            # This helper supports BOTH without producing /v1/v1.
+            b = _normalize_base_url(base_in)
+            bases: list[str] = [b]
+            if b.endswith("/v1"):
+                bases.append(b[: -len("/v1")])
+
+            candidates_out: list[str] = []
+            for bb in bases:
+                if not bb:
+                    continue
+                if bb.endswith("/v1"):
+                    urls = (f"{bb}/chat/completions",)
+                else:
+                    # Prefer /v1 first (most common), then try without /v1 for some gateways.
+                    urls = (f"{bb}/v1/chat/completions", f"{bb}/chat/completions")
+                for u in urls:
+                    if u not in candidates_out:
+                        candidates_out.append(u)
+            return candidates_out
+
+        candidates = build_candidates(base)
 
         transient_status = {408, 409, 425, 429, 500, 502, 503, 504}
         max_attempts = 3
@@ -170,6 +215,13 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
 
         async with httpx.AsyncClient(timeout=timeout_s, trust_env=False) as client:
             last_err: str | None = None
+            best_err: str | None = None
+
+            def record_err(msg: str) -> None:
+                nonlocal last_err, best_err
+                last_err = msg
+                if best_err is None or err_score(msg) >= err_score(best_err):
+                    best_err = msg
 
             for attempt in range(1, max_attempts + 1):
                 attempt_had_transient = False
@@ -178,16 +230,16 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                     try:
                         r = await client.post(url, json=payload, headers=headers)
                     except httpx.TimeoutException:
-                        last_err = "openai_timeout"
+                        record_err("openai_timeout")
                         attempt_had_transient = True
                         continue
                     except httpx.RequestError as e:
-                        last_err = f"openai_network_error:{type(e).__name__}"
+                        record_err(f"openai_network_error:{type(e).__name__}")
                         attempt_had_transient = True
                         continue
 
                     if r.status_code == 404:
-                        last_err = "openai_http_404"
+                        record_err("openai_http_404")
                         continue
 
                     if r.status_code >= 400:
@@ -197,7 +249,7 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                             msg += f":{detail}"
 
                         if r.status_code in transient_status:
-                            last_err = msg
+                            record_err(msg)
                             attempt_had_transient = True
                             # Try other candidate URL before retrying.
                             continue
@@ -207,23 +259,23 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                     ctype = (r.headers.get("content-type") or "").lower()
                     if "application/json" not in ctype:
                         # Some gateways respond with an HTML landing page at the root.
-                        last_err = "openai_non_json_response"
+                        record_err("openai_non_json_response")
                         continue
 
                     try:
                         data = r.json()
                     except Exception:
-                        last_err = "openai_bad_json"
+                        record_err("openai_bad_json")
                         continue
 
                     try:
                         content = str(data["choices"][0]["message"]["content"])
                     except Exception as e:
-                        last_err = f"openai_bad_response:{type(e).__name__}"
+                        record_err(f"openai_bad_response:{type(e).__name__}")
                         continue
 
                     if not content.strip():
-                        last_err = "empty_completion"
+                        record_err("empty_completion")
                         continue
 
                     return content
@@ -236,7 +288,7 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
 
                 break
 
-        raise LLMError(last_err or "openai_failed")
+        raise LLMError(best_err or last_err or "openai_failed")
 
     if cfg.provider == "openai":
         base = cfg.base_url or "https://api.openai.com/v1"
