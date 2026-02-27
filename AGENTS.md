@@ -173,3 +173,8 @@ Versioning policy (from v1.0.x onward):
 - Writing: added a left sidebar switch for `创作 / 续写` to make workflows clearer; research query is now shared across both flows.
 - Writing layout: removed the narrow centered max-width and added draggable resizable panels (left / editor / tools) with auto-save sizing.
 - Local KB: KB chunk inputs no longer prefill duplicate "设定"; title/tags now have explicit labels + clearer guidance.
+
+### v1.2.5 (Resizable Heights + Continue File Upload)
+- Writing layout now fills a fixed viewport height and supports vertical (height) resizing in the right tool panel (runs/export/KB/web cards are split into draggable panels).
+- Continue mode supports uploading `.txt/.docx/.pdf/.epub` files (backend extracts plain text locally; no LLM call), and populates the continue textarea for editing.
+- Backend: added `/api/tools/extract_text` and a reusable `tools/text_extract.py` utility; added `pypdf` for PDF extraction; added minimal tests for the new tool.

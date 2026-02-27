@@ -36,6 +36,13 @@ export type I18nKey =
   | "uses_settings"
   | "continue_mode"
   | "continue_desc"
+  | "continue_upload_file"
+  | "continue_upload_button"
+  | "continue_upload_desc"
+  | "continue_extracting_file"
+  | "continue_selected_file"
+  | "continue_remove_file"
+  | "continue_or_paste"
   | "paste_manuscript"
   | "extract_continue"
   | "clear"
@@ -186,6 +193,14 @@ const ZH: Record<I18nKey, string> = {
   uses_settings: "使用 设置→模型/知识库/联网检索 等配置。",
   continue_mode: "续写模式",
   continue_desc: "粘贴已有文本 → 抽取 StoryState → 在此基础上续写。",
+  continue_upload_file: "上传续写文件",
+  continue_upload_button: "上传",
+  continue_upload_desc:
+    "支持 .txt/.docx/.pdf/.epub；会自动提取文本填入下方。",
+  continue_extracting_file: "提取中...",
+  continue_selected_file: "已选择",
+  continue_remove_file: "移除",
+  continue_or_paste: "或直接粘贴文本：",
   paste_manuscript: "粘贴已有作品...",
   extract_continue: "抽取 + 续写",
   clear: "清空",
@@ -339,6 +354,14 @@ const EN: Record<I18nKey, string> = {
   uses_settings: "Uses Settings → model/KB/web search config.",
   continue_mode: "Continue Mode",
   continue_desc: "Paste text → extract StoryState → continue writing.",
+  continue_upload_file: "Upload continue file",
+  continue_upload_button: "Upload",
+  continue_upload_desc:
+    "Supports .txt/.docx/.pdf/.epub; extracted text will fill the box below.",
+  continue_extracting_file: "Extracting...",
+  continue_selected_file: "Selected",
+  continue_remove_file: "Remove",
+  continue_or_paste: "Or paste text:",
   paste_manuscript: "Paste your manuscript...",
   extract_continue: "Extract + Continue",
   clear: "Clear",

@@ -121,6 +121,11 @@ export default function Home() {
   const [chapterIndex, setChapterIndex] = useState<number>(1);
   const [researchQuery, setResearchQuery] = useState<string>("");
   const [continueText, setContinueText] = useState<string>("");
+  const [continueFileName, setContinueFileName] = useState<string | null>(null);
+  const [continueFileChars, setContinueFileChars] = useState<number | null>(null);
+  const [continueFileLoading, setContinueFileLoading] = useState<boolean>(false);
+  const [continueFileError, setContinueFileError] = useState<string | null>(null);
+  const [continueFileToken, setContinueFileToken] = useState<number>(0);
   // Local KB chunk fields. Keep defaults empty to avoid confusing users
   // with pre-filled values like "设定" in multiple inputs.
   const [kbTitle, setKbTitle] = useState<string>("");
@@ -801,6 +806,43 @@ export default function Home() {
     }
   }
 
+  async function extractContinueFile(file: File) {
+    setContinueFileError(null);
+    setContinueFileLoading(true);
+    setContinueFileName(file.name);
+    setContinueFileChars(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`${apiBase}/api/tools/extract_text`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+
+      const data = (await res.json()) as {
+        text?: unknown;
+        meta?: { chars?: unknown };
+      };
+      const text = typeof data.text === "string" ? data.text : "";
+      const chars = typeof data.meta?.chars === "number" ? data.meta.chars : null;
+      setContinueText(text);
+      setContinueFileChars(chars);
+    } finally {
+      setContinueFileLoading(false);
+    }
+  }
+
   async function importWebResultToKb(r: {
     title: string;
     url: string;
@@ -1003,14 +1045,18 @@ export default function Home() {
               {tt("writing_desc")}
             </p>
 
-            <div className="mt-6">
+            <div className="mt-6 h-[calc(100vh-260px)] min-h-[560px]">
               <PanelGroup
                 direction="horizontal"
                 autoSaveId="ai-writer:writing:outer"
-                className="flex"
+                className="flex h-full min-h-0"
               >
-                <Panel defaultSize={24} minSize={16} className="min-w-0 pr-3">
-                  <div className="grid gap-6">
+                <Panel
+                  defaultSize={24}
+                  minSize={16}
+                  className="min-w-0 pr-3 h-full min-h-0"
+                >
+                  <div className="grid gap-6 h-full min-h-0 overflow-auto pr-1">
                 <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("writing_mode")}</div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
@@ -1173,14 +1219,22 @@ export default function Home() {
                   <div className="h-full w-px rounded-full bg-zinc-200 transition-colors group-hover:bg-zinc-400 dark:bg-zinc-800 dark:group-hover:bg-zinc-600" />
                 </PanelResizeHandle>
 
-                <Panel defaultSize={76} minSize={40} className="min-w-0 pl-3">
+                <Panel
+                  defaultSize={76}
+                  minSize={40}
+                  className="min-w-0 pl-3 h-full min-h-0"
+                >
                   <PanelGroup
                     direction="horizontal"
                     autoSaveId="ai-writer:writing:inner"
-                    className="flex"
+                    className="flex h-full min-h-0"
                   >
-                    <Panel defaultSize={70} minSize={45} className="min-w-0 pr-3">
-                <div className="min-w-0 rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                    <Panel
+                      defaultSize={70}
+                      minSize={45}
+                      className="min-w-0 pr-3 h-full min-h-0"
+                    >
+                <div className="min-w-0 h-full min-h-0 rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800 flex flex-col">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm font-medium">{tt("markdown_editor")}</div>
                     <div className="flex items-center gap-1 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-1 text-xs text-[var(--ui-control-text)]">
@@ -1211,25 +1265,25 @@ export default function Home() {
                     <textarea
                       value={generatedMarkdown}
                       onChange={(e) => setGeneratedMarkdown(e.target.value)}
-                      className="mt-3 h-[70vh] min-h-[520px] w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 font-mono text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                      className="mt-3 min-h-0 flex-1 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 font-mono text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                       placeholder={tt("generated_markdown_placeholder")}
                     />
                   ) : editorView === "preview" ? (
-                    <div className="mt-3 h-[70vh] min-h-[520px] overflow-auto rounded-md border border-zinc-200 bg-[var(--ui-control)] p-4 text-[var(--ui-control-text)]">
+                    <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-md border border-zinc-200 bg-[var(--ui-control)] p-4 text-[var(--ui-control-text)]">
                       <MarkdownPreview
                         markdown={generatedMarkdown}
                         emptyLabel={tt("preview_empty")}
                       />
                     </div>
                   ) : (
-                    <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                    <div className="mt-3 min-h-0 flex-1 grid gap-3 lg:grid-cols-2">
                       <textarea
                         value={generatedMarkdown}
                         onChange={(e) => setGeneratedMarkdown(e.target.value)}
-                        className="h-[70vh] min-h-[520px] w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 font-mono text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                        className="min-h-0 h-full w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 font-mono text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                         placeholder={tt("generated_markdown_placeholder")}
                       />
-                      <div className="h-[70vh] min-h-[520px] overflow-auto rounded-md border border-zinc-200 bg-[var(--ui-control)] p-4 text-[var(--ui-control-text)]">
+                      <div className="min-h-0 h-full overflow-auto rounded-md border border-zinc-200 bg-[var(--ui-control)] p-4 text-[var(--ui-control-text)]">
                         <MarkdownPreview
                           markdown={generatedMarkdown}
                           emptyLabel={tt("preview_empty")}
@@ -1245,9 +1299,18 @@ export default function Home() {
                       <div className="h-full w-px rounded-full bg-zinc-200 transition-colors group-hover:bg-zinc-400 dark:bg-zinc-800 dark:group-hover:bg-zinc-600" />
                     </PanelResizeHandle>
 
-                    <Panel defaultSize={30} minSize={20} className="min-w-0 pl-3">
-                      <div className="grid gap-6">
-                  <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                    <Panel
+                      defaultSize={30}
+                      minSize={20}
+                      className="min-w-0 pl-3 h-full min-h-0"
+                    >
+                      <PanelGroup
+                        direction="vertical"
+                        autoSaveId="ai-writer:writing:right"
+                        className="flex h-full min-h-0 flex-col"
+                      >
+                        <Panel defaultSize={45} minSize={18} className="min-h-0">
+                          <div className="h-full min-h-0 overflow-auto rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("selected_project")}</div>
                     <div className="mt-2 text-sm text-[var(--ui-muted)]">
                       {selectedProjectId ? (
@@ -1371,6 +1434,70 @@ export default function Home() {
                             className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                           />
                         </label>
+
+                        <div className="mt-3 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-[var(--ui-control-text)]">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs text-[var(--ui-muted)]">
+                              {tt("continue_upload_file")}
+                            </div>
+                            <label className="cursor-pointer rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90">
+                              {continueFileLoading
+                                ? tt("continue_extracting_file")
+                                : tt("continue_upload_button")}
+                              <input
+                                key={continueFileToken}
+                                type="file"
+                                accept=".txt,.md,.markdown,.docx,.pdf,.epub"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const f = e.target.files?.[0];
+                                  if (!f) return;
+                                  extractContinueFile(f).catch((err) =>
+                                    setContinueFileError(
+                                      (err as Error).message,
+                                    ),
+                                  );
+                                }}
+                              />
+                            </label>
+                          </div>
+                          <div className="mt-2 text-[11px] text-[var(--ui-muted)]">
+                            {tt("continue_upload_desc")}
+                          </div>
+                          {continueFileName ? (
+                            <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-[var(--ui-muted)]">
+                              <div className="min-w-0 truncate">
+                                {tt("continue_selected_file")}:{" "}
+                                {continueFileName}
+                                {continueFileChars !== null
+                                  ? lang === "zh"
+                                    ? `（${continueFileChars} 字符）`
+                                    : ` (${continueFileChars} chars)`
+                                  : ""}
+                              </div>
+                              <button
+                                onClick={() => {
+                                  setContinueFileName(null);
+                                  setContinueFileChars(null);
+                                  setContinueFileError(null);
+                                  setContinueFileToken((x) => x + 1);
+                                }}
+                                className="shrink-0 rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                              >
+                                {tt("continue_remove_file")}
+                              </button>
+                            </div>
+                          ) : null}
+                          {continueFileError ? (
+                            <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                              {continueFileError}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                          {tt("continue_or_paste")}
+                        </div>
                         <textarea
                           value={continueText}
                           onChange={(e) => setContinueText(e.target.value)}
@@ -1398,8 +1525,14 @@ export default function Home() {
                             {tt("extract_continue")}
                           </button>
                           <button
-                            disabled={!continueText}
-                            onClick={() => setContinueText("")}
+                            disabled={!continueText && !continueFileName}
+                            onClick={() => {
+                              setContinueText("");
+                              setContinueFileName(null);
+                              setContinueFileChars(null);
+                              setContinueFileError(null);
+                              setContinueFileToken((x) => x + 1);
+                            }}
                             className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                           >
                             {tt("clear")}
@@ -1409,7 +1542,14 @@ export default function Home() {
                     ) : null}
                   </div>
 
-                  <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                        </Panel>
+
+                        <PanelResizeHandle className="group flex h-6 cursor-row-resize items-center justify-center">
+                          <div className="h-px w-full rounded-full bg-zinc-200 transition-colors group-hover:bg-zinc-400 dark:bg-zinc-800 dark:group-hover:bg-zinc-600" />
+                        </PanelResizeHandle>
+
+                        <Panel defaultSize={14} minSize={8} className="min-h-0">
+                          <div className="h-full min-h-0 overflow-auto rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("export")}</div>
                     <div className="mt-2 text-xs text-[var(--ui-muted)]">
                       {tt("export_desc")}
@@ -1445,9 +1585,15 @@ export default function Home() {
                         {exportError}
                       </div>
                     ) : null}
-                  </div>
+                          </div>
+                        </Panel>
 
-                  <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                        <PanelResizeHandle className="group flex h-6 cursor-row-resize items-center justify-center">
+                          <div className="h-px w-full rounded-full bg-zinc-200 transition-colors group-hover:bg-zinc-400 dark:bg-zinc-800 dark:group-hover:bg-zinc-600" />
+                        </PanelResizeHandle>
+
+                        <Panel defaultSize={26} minSize={12} className="min-h-0">
+                          <div className="h-full min-h-0 overflow-auto rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("local_kb")}</div>
                     <div className="mt-2 grid gap-2">
                       <div className="grid gap-2 md:grid-cols-2">
@@ -1545,7 +1691,14 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                        </Panel>
+
+                        <PanelResizeHandle className="group flex h-6 cursor-row-resize items-center justify-center">
+                          <div className="h-px w-full rounded-full bg-zinc-200 transition-colors group-hover:bg-zinc-400 dark:bg-zinc-800 dark:group-hover:bg-zinc-600" />
+                        </PanelResizeHandle>
+
+                        <Panel defaultSize={15} minSize={10} className="min-h-0">
+                          <div className="h-full min-h-0 overflow-auto rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("web_search")}</div>
                     <div className="mt-2 text-xs text-[var(--ui-muted)]">
                       {tt("web_search_desc")}
@@ -1614,8 +1767,9 @@ export default function Home() {
                         ) : null}
                       </>
                     )}
-                  </div>
-                      </div>
+                          </div>
+                        </Panel>
+                      </PanelGroup>
                     </Panel>
                   </PanelGroup>
                 </Panel>
