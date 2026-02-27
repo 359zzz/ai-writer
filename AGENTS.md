@@ -187,3 +187,9 @@ Versioning policy (from v1.0.x onward):
   - Writing UI merged “upload + paste” into a single dropzone textarea supporting drag-drop, click upload, and paste (file/text), plus excerpt preview/truncation controls.
 - Continue text extraction improved with light pre-cleaning for PDF/EPUB (skip toc/nav docs, remove repeated PDF headers/footers, remove TOC dot-leader noise).
 - Backend status card now shows active run + progress bar (front-end derived from SSE trace events).  
+
+### v1.2.7 (LLM Retry + Progress Error Banner)
+- LLM calls are now more robust to transient gateway issues:
+  - OpenAI-compatible calls try both `/chat/completions` and `/v1/chat/completions` even when one path returns 5xx (fixes some proxy/base_url combinations).
+  - Added small retry/backoff for transient errors (502/503/504/429/timeouts) and slightly increased timeout.
+- Writing → Backend progress bar now shows the run error message on abnormal exit (and during failure), sourced from SSE `run_error` events.

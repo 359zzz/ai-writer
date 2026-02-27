@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -129,31 +131,112 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
         }
         headers = {"Authorization": f"Bearer {api_key}"}
 
-        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
-            # Some OpenAI-compatible gateways require /v1, others don't.
-            for url in (f"{base}/chat/completions", f"{base}/v1/chat/completions"):
-                r = await client.post(url, json=payload, headers=headers)
-                if r.status_code == 404:
-                    continue
-                if r.status_code >= 400:
-                    raise LLMError(f"openai_http_{r.status_code}")
-                ctype = (r.headers.get("content-type") or "").lower()
-                if "application/json" not in ctype:
-                    # Some gateways respond with an HTML landing page at the root.
-                    continue
-                try:
-                    data = r.json()
-                except Exception:
-                    continue
-                try:
-                    content = str(data["choices"][0]["message"]["content"])
-                except Exception as e:
-                    raise LLMError(f"openai_bad_response:{type(e).__name__}")
-                if not content.strip():
-                    raise LLMError("empty_completion")
-                return content
+        def clip(s: str, max_len: int = 220) -> str:
+            ss = (s or "").strip()
+            if len(ss) <= max_len:
+                return ss
+            return ss[: max_len - 3].rstrip() + "..."
 
-        raise LLMError("openai_http_404")
+        def extract_err_detail(resp: httpx.Response) -> str:
+            ctype = (resp.headers.get("content-type") or "").lower()
+            try:
+                if "application/json" in ctype:
+                    data = resp.json()
+                    # OpenAI style: {"error": {"message": "...", ...}}
+                    if isinstance(data, dict) and isinstance(data.get("error"), dict):
+                        msg = data["error"].get("message")
+                        if isinstance(msg, str) and msg.strip():
+                            return clip(msg)
+                    # Some gateways use {"detail": "..."}.
+                    detail = data.get("detail") if isinstance(data, dict) else None
+                    if isinstance(detail, str) and detail.strip():
+                        return clip(detail)
+            except Exception:
+                pass
+            try:
+                return clip(resp.text)
+            except Exception:
+                return ""
+
+        # Some OpenAI-compatible gateways require /v1, others don't.
+        candidates: list[str] = []
+        for u in (f"{base}/chat/completions", f"{base}/v1/chat/completions"):
+            if u not in candidates:
+                candidates.append(u)
+
+        transient_status = {408, 409, 425, 429, 500, 502, 503, 504}
+        max_attempts = 3
+        timeout_s = 75
+
+        async with httpx.AsyncClient(timeout=timeout_s, trust_env=False) as client:
+            last_err: str | None = None
+
+            for attempt in range(1, max_attempts + 1):
+                attempt_had_transient = False
+                # Try both candidate URLs before deciding to retry.
+                for url in candidates:
+                    try:
+                        r = await client.post(url, json=payload, headers=headers)
+                    except httpx.TimeoutException:
+                        last_err = "openai_timeout"
+                        attempt_had_transient = True
+                        continue
+                    except httpx.RequestError as e:
+                        last_err = f"openai_network_error:{type(e).__name__}"
+                        attempt_had_transient = True
+                        continue
+
+                    if r.status_code == 404:
+                        last_err = "openai_http_404"
+                        continue
+
+                    if r.status_code >= 400:
+                        detail = extract_err_detail(r)
+                        msg = f"openai_http_{r.status_code}"
+                        if detail:
+                            msg += f":{detail}"
+
+                        if r.status_code in transient_status:
+                            last_err = msg
+                            attempt_had_transient = True
+                            # Try other candidate URL before retrying.
+                            continue
+
+                        raise LLMError(msg)
+
+                    ctype = (r.headers.get("content-type") or "").lower()
+                    if "application/json" not in ctype:
+                        # Some gateways respond with an HTML landing page at the root.
+                        last_err = "openai_non_json_response"
+                        continue
+
+                    try:
+                        data = r.json()
+                    except Exception:
+                        last_err = "openai_bad_json"
+                        continue
+
+                    try:
+                        content = str(data["choices"][0]["message"]["content"])
+                    except Exception as e:
+                        last_err = f"openai_bad_response:{type(e).__name__}"
+                        continue
+
+                    if not content.strip():
+                        last_err = "empty_completion"
+                        continue
+
+                    return content
+
+                if attempt < max_attempts and attempt_had_transient:
+                    # Exponential backoff + jitter for transient failures (502/503/504/429/timeouts).
+                    backoff = (0.8 * (2 ** (attempt - 1))) + (random.random() * 0.2)
+                    await asyncio.sleep(backoff)
+                    continue
+
+                break
+
+        raise LLMError(last_err or "openai_failed")
 
     if cfg.provider == "openai":
         base = cfg.base_url or "https://api.openai.com/v1"

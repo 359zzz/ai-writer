@@ -13,6 +13,7 @@ export type I18nKey =
   | "idle"
   | "active_task"
   | "progress"
+  | "error"
   | "writing"
   | "writing_desc"
   | "guide_title"
@@ -187,6 +188,7 @@ const ZH: Record<I18nKey, string> = {
   idle: "空闲",
   active_task: "正在执行",
   progress: "进度",
+  error: "错误",
   writing: "写作",
   writing_desc: "Notion 风格工作台（持续增强中）。",
   guide_title: "快速上手",
@@ -366,6 +368,7 @@ const EN: Record<I18nKey, string> = {
   idle: "Idle",
   active_task: "Active task",
   progress: "Progress",
+  error: "Error",
   writing: "Writing",
   writing_desc: "Notion-like workspace (iterating).",
   guide_title: "Quick Start",

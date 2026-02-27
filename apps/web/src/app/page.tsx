@@ -787,6 +787,14 @@ export default function Home() {
             };
             setActiveRunId((prev) => prev ?? evt.run_id);
             setRunEvents((prev) => [...prev, evt]);
+            if (evt.type === "run_error") {
+              const err =
+                typeof evt.data.error === "string"
+                  ? evt.data.error
+                  : "unknown_error";
+              const agent = evt.agent ? formatAgentName(evt.agent) : "Director";
+              setRunError(`${agent}: ${err}`);
+            }
             if (
               evt.type === "artifact" &&
               evt.agent === "Writer" &&
@@ -1239,7 +1247,16 @@ export default function Home() {
                     style={{ width: `${runProgress.pct}%` }}
                   />
                 </div>
+                {runError ? (
+                  <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                    {tt("error")}: {runError}
+                  </div>
+                ) : null}
               </>
+            ) : runError ? (
+              <div className="text-xs text-red-600 dark:text-red-400">
+                {tt("error")}: {runError}
+              </div>
             ) : (
               <div className="text-xs text-[var(--ui-muted)]">{tt("idle")}</div>
             )}
