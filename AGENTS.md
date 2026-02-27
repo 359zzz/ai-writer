@@ -213,3 +213,10 @@ Versioning policy (from v1.0.x onward):
 - Gemini provider becomes proxy-friendly:
   - Non-Google base URLs now try Gemini `v1beta:generateContent` first, then fall back to OpenAI-compatible.
   - Improved parsing and retries for flaky/empty proxy outputs (reduces `empty_completion` failures).
+
+### v1.2.10 (Continue: ConfigAutofill Soft-Fail + Version Align)
+- Continue/Chapter runs: `ConfigAutofill` is now **best-effort** in `weak` mode.
+  - Transient LLM gateway failures (e.g. `openai_http_502:html_error_page`) no longer abort “抽取 + 续写”.
+  - The pipeline continues with existing settings so Extractor/Outliner/Writer can still run.
+- Backend tests: added a regression test to ensure continue runs still complete and emit chapter artifacts when ConfigAutofill fails.
+- Version alignment: frontend bumped to `1.2.10` to match the API version.

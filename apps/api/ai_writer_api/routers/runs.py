@@ -183,19 +183,22 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         # Agent: ConfigAutofill
         # - Weak mode: LLM can creatively fill missing fields.
         # - Strong mode: avoid inventing canon/settings. (User should provide KB or explicit settings.)
-        try:
-            yield emit("agent_started", "ConfigAutofill", {"kb_mode": kb_mode})
-            if kb_mode == "strong":
-                yield emit(
-                    "agent_output",
-                    "ConfigAutofill",
-                    {
-                        "skipped": True,
-                        "reason": "strong_kb_mode_no_random_autofill",
-                    },
-                )
-                yield emit("agent_finished", "ConfigAutofill", {})
-            else:
+        yield emit("agent_started", "ConfigAutofill", {"kb_mode": kb_mode})
+        if kb_mode == "strong":
+            yield emit(
+                "agent_output",
+                "ConfigAutofill",
+                {
+                    "skipped": True,
+                    "reason": "strong_kb_mode_no_random_autofill",
+                },
+            )
+            yield emit("agent_finished", "ConfigAutofill", {})
+        else:
+            # ConfigAutofill is best-effort. If the gateway is flaky (e.g. 502 HTML),
+            # we should still allow the main pipeline (Extractor/Outliner/Writer) to run.
+            patch: dict[str, Any] | None = None
+            try:
                 system = (
                     "You are ConfigAutofillAgent for a novel writing platform. "
                     "Given a partial project settings JSON, produce a JSON patch that fills missing fields only. "
@@ -224,8 +227,9 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
                 )
                 autofill_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
-                patch = parse_json_loose(autofill_text)
-                if isinstance(patch, dict):
+                parsed = parse_json_loose(autofill_text)
+                if isinstance(parsed, dict):
+                    patch = parsed
                     with get_session() as s4:
                         p4 = s4.get(Project, project_id)
                         if p4:
@@ -240,19 +244,21 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "ConfigAutofill",
                     {"patch_keys": list(patch.keys()) if isinstance(patch, dict) else []},
                 )
-                yield emit("agent_finished", "ConfigAutofill", {})
-        except LLMError as e:
-            msg = str(e)
-            yield emit("run_error", "ConfigAutofill", {"error": msg})
-            mark_run_failed(msg)
-            yield emit("run_completed", "Director", {})
-            return
-        except Exception as e:
-            msg = f"config_autofill_failed:{type(e).__name__}"
-            yield emit("run_error", "ConfigAutofill", {"error": msg})
-            mark_run_failed(msg)
-            yield emit("run_completed", "Director", {})
-            return
+            except LLMError as e:
+                msg = str(e)
+                yield emit(
+                    "agent_output",
+                    "ConfigAutofill",
+                    {"error": msg, "soft_fail": True},
+                )
+            except Exception as e:
+                msg = f"config_autofill_failed:{type(e).__name__}"
+                yield emit(
+                    "agent_output",
+                    "ConfigAutofill",
+                    {"error": msg, "soft_fail": True},
+                )
+            yield emit("agent_finished", "ConfigAutofill", {})
 
         # Agent: Extractor (continue mode)
         story_state: dict[str, Any] | None = None

@@ -98,6 +98,7 @@ export type I18nKey =
   | "api_keys_hint"
   | "api_key_placeholder"
   | "save"
+  | "secrets_save_not_found"
   | "gpt_key"
   | "gemini_key"
   | "present"
@@ -287,6 +288,8 @@ const ZH: Record<I18nKey, string> = {
     "仅保存在本机后端（gitignored），不会回显完整 key；保存后输入框会清空。环境变量优先。",
   api_key_placeholder: "输入 API Key（不会回显）",
   save: "保存",
+  secrets_save_not_found:
+    "后端缺少 /api/secrets/set（可能正在运行旧版本）。请重启后端并确认 /api/health 版本 >= 1.2.10。",
   gpt_key: "GPT Key",
   gemini_key: "Gemini Key",
   present: "已配置",
@@ -484,6 +487,8 @@ const EN: Record<I18nKey, string> = {
     "Stored locally on the backend (gitignored) and never shown in full; inputs are cleared after saving. Env vars take precedence.",
   api_key_placeholder: "Enter API key (never shown back)",
   save: "Save",
+  secrets_save_not_found:
+    "Backend is missing /api/secrets/set (likely an older version). Restart the API and ensure /api/health version >= 1.2.10.",
   gpt_key: "GPT key",
   gemini_key: "Gemini key",
   present: "present",

@@ -693,6 +693,9 @@ export default function Home() {
         body: JSON.stringify(update),
       });
       if (!res.ok) {
+        if (res.status === 404) {
+          throw new Error(tt("secrets_save_not_found"));
+        }
         const txt = await res.text();
         throw new Error(txt || `HTTP ${res.status}`);
       }
