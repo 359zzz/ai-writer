@@ -98,6 +98,10 @@ export default function Home() {
     null,
   );
   const [secretsStatus, setSecretsStatus] = useState<SecretsStatus | null>(null);
+  const [openaiApiKeyDraft, setOpenaiApiKeyDraft] = useState<string>("");
+  const [geminiApiKeyDraft, setGeminiApiKeyDraft] = useState<string>("");
+  const [secretsSaving, setSecretsSaving] = useState<boolean>(false);
+  const [secretsSaveError, setSecretsSaveError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [runEvents, setRunEvents] = useState<
     Array<{
@@ -678,6 +682,37 @@ export default function Home() {
       cancelled = true;
     };
   }, [apiBase]);
+
+  async function saveSecrets(update: Record<string, unknown>) {
+    setSecretsSaveError(null);
+    setSecretsSaving(true);
+    try {
+      const res = await fetch(`${apiBase}/api/secrets/set`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(update),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as SecretsStatus;
+      setSecretsStatus(data);
+
+      // Do not keep keys in memory longer than needed.
+      if (Object.prototype.hasOwnProperty.call(update, "openai_api_key")) {
+        setOpenaiApiKeyDraft("");
+      }
+      if (Object.prototype.hasOwnProperty.call(update, "gemini_api_key")) {
+        setGeminiApiKeyDraft("");
+      }
+    } catch (err) {
+      setSecretsSaveError((err as Error).message);
+      throw err;
+    } finally {
+      setSecretsSaving(false);
+    }
+  }
 
   async function createProject() {
     const title = newProjectTitle.trim();
@@ -2891,15 +2926,7 @@ export default function Home() {
                 <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                 <div className="text-sm font-medium">{tt("secrets_status")}</div>
                 <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                  {lang === "zh"
-                    ? "密钥来自环境变量或本地"
-                    : "Keys are loaded from environment variables or local"}{" "}
-                  <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] dark:bg-zinc-800">
-                    api.txt
-                  </code>{" "}
-                  {lang === "zh"
-                    ? "（不会在 UI 中显示完整密钥）。"
-                    : "(never shown in UI)."}
+                  {tt("secrets_desc")}
                 </div>
                 <div className="mt-3 space-y-2 text-sm">
                   {secretsStatus ? (
@@ -2931,6 +2958,117 @@ export default function Home() {
                 <div className="text-sm font-medium">{tt("settings_nav_model")}</div>
                 <div className="mt-2 text-xs text-[var(--ui-muted)]">
                   {tt("select_project_first")}
+                </div>
+
+                <div className="mt-4 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3">
+                  <div className="text-xs font-medium text-[var(--ui-muted)]">
+                    {tt("api_keys")}
+                  </div>
+                  <div className="mt-2 text-[11px] text-[var(--ui-muted)]">
+                    {tt("api_keys_hint")}
+                  </div>
+
+                  {secretsStatus ? (
+                    <div className="mt-3 grid gap-3">
+                      <div className="grid gap-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs text-[var(--ui-muted)]">
+                            {tt("gpt_key")}
+                          </span>
+                          <span className="text-[11px] text-[var(--ui-muted)]">
+                            {secretsStatus.openai_api_key_present
+                              ? tt("present")
+                              : tt("missing")}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                          <input
+                            type="password"
+                            value={openaiApiKeyDraft}
+                            onChange={(e) => setOpenaiApiKeyDraft(e.target.value)}
+                            placeholder={tt("api_key_placeholder")}
+                            className="flex-1 rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              disabled={secretsSaving || !openaiApiKeyDraft.trim()}
+                              onClick={() =>
+                                saveSecrets({
+                                  openai_api_key: openaiApiKeyDraft,
+                                }).catch(() => {})
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                            >
+                              {tt("save")}
+                            </button>
+                            <button
+                              disabled={secretsSaving}
+                              onClick={() =>
+                                saveSecrets({ openai_api_key: "" }).catch(() => {})
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                            >
+                              {tt("clear")}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs text-[var(--ui-muted)]">
+                            {tt("gemini_key")}
+                          </span>
+                          <span className="text-[11px] text-[var(--ui-muted)]">
+                            {secretsStatus.gemini_api_key_present
+                              ? tt("present")
+                              : tt("missing")}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                          <input
+                            type="password"
+                            value={geminiApiKeyDraft}
+                            onChange={(e) => setGeminiApiKeyDraft(e.target.value)}
+                            placeholder={tt("api_key_placeholder")}
+                            className="flex-1 rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              disabled={secretsSaving || !geminiApiKeyDraft.trim()}
+                              onClick={() =>
+                                saveSecrets({
+                                  gemini_api_key: geminiApiKeyDraft,
+                                }).catch(() => {})
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                            >
+                              {tt("save")}
+                            </button>
+                            <button
+                              disabled={secretsSaving}
+                              onClick={() =>
+                                saveSecrets({ gemini_api_key: "" }).catch(() => {})
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                            >
+                              {tt("clear")}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 text-xs text-[var(--ui-muted)]">
+                      {tt("not_available_backend")}
+                    </div>
+                  )}
+
+                  {secretsSaveError ? (
+                    <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                      {secretsSaveError}
+                    </div>
+                  ) : null}
                 </div>
 
                 {selectedProject ? (
@@ -2991,9 +3129,37 @@ export default function Home() {
                             setSettingsError((err as Error).message),
                           )
                         }
-                        placeholder={tt("optional_use_api_txt")}
+                        placeholder={tt("optional_use_backend_defaults")}
                         className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                       />
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="text-xs text-[var(--ui-muted)]">
+                        {tt("gpt_wire_api")}
+                      </span>
+                      <select
+                        defaultValue={getSettingsValue(
+                          "llm.openai.wire_api",
+                          "chat",
+                        )}
+                        onChange={(e) =>
+                          saveProjectSettings({
+                            llm: { openai: { wire_api: e.target.value } },
+                          }).catch((err) =>
+                            setSettingsError((err as Error).message),
+                          )
+                        }
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                      >
+                        <option value="chat">{tt("gpt_wire_chat")}</option>
+                        <option value="responses">
+                          {tt("gpt_wire_responses")}
+                        </option>
+                      </select>
+                      <div className="text-[11px] text-[var(--ui-muted)]">
+                        {tt("gpt_wire_desc")}
+                      </div>
                     </label>
 
                     <label className="grid gap-1 text-sm">
@@ -3032,7 +3198,7 @@ export default function Home() {
                             setSettingsError((err as Error).message),
                           )
                         }
-                        placeholder={tt("optional_use_api_txt")}
+                        placeholder={tt("optional_use_backend_defaults")}
                         className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                       />
                     </label>

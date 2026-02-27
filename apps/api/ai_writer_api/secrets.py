@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -13,6 +15,72 @@ class Secrets:
     gemini_api_key: str | None = None
     gemini_model: str | None = None
     gemini_base_url: str | None = None
+
+
+def _default_secrets_store_path() -> Path:
+    """
+    Local-only secrets store path (gitignored via data/).
+
+    We store API keys here when they are configured via the web Settings UI,
+    so users don't have to rely on api.txt.
+    """
+
+    api_root = Path(__file__).resolve().parents[1]  # .../apps/api
+    data_dir = api_root / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir / "secrets.local.json"
+
+
+def _load_secrets_store() -> dict[str, str]:
+    path = _default_secrets_store_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in data.items():
+        if isinstance(k, str) and isinstance(v, str):
+            if v.strip():
+                out[k] = v.strip()
+    return out
+
+
+def _write_secrets_store(data: dict[str, str]) -> None:
+    path = _default_secrets_store_path()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def update_secrets_store(update: dict[str, Any]) -> None:
+    """
+    Update the local secrets store.
+
+    - Missing keys are ignored.
+    - Empty string clears the value.
+    - Values are stored as plain strings (local single-user app).
+
+    IMPORTANT: Must never print/log secrets.
+    """
+
+    store = _load_secrets_store()
+    for k, v in update.items():
+        if not isinstance(k, str):
+            continue
+        if v is None:
+            continue
+        if not isinstance(v, str):
+            continue
+        vv = v.strip()
+        if not vv:
+            store.pop(k, None)
+            continue
+        store[k] = vv
+    _write_secrets_store(store)
 
 
 def _find_api_txt() -> Path | None:
@@ -65,7 +133,8 @@ def load_secrets() -> Secrets:
     """
     Load secrets with priority:
     1) Environment variables
-    2) api.txt at repo root (gitignored)
+    2) Local backend secrets store (configured via Settings UI; gitignored)
+    3) api.txt at repo root (legacy fallback; gitignored)
 
     This function must never log/print keys.
     """
@@ -82,6 +151,26 @@ def load_secrets() -> Secrets:
     gemini_api_key = env_gemini_key
     gemini_model = env_gemini_model
     gemini_base_url = env_gemini_base
+
+    # Load from local backend secrets store (if present). Environment variables
+    # still take priority for CI / temporary overrides.
+    store = _load_secrets_store()
+    if not openai_api_key:
+        openai_api_key = store.get("OPENAI_API_KEY") or store.get("openai_api_key")
+    if not openai_base_url:
+        openai_base_url = store.get("OPENAI_BASE_URL") or store.get("openai_base_url")
+    if not openai_model:
+        openai_model = store.get("OPENAI_MODEL") or store.get("openai_model")
+    if not gemini_api_key:
+        gemini_api_key = store.get("GEMINI_API_KEY") or store.get("gemini_api_key")
+    if not gemini_model:
+        gemini_model = store.get("GEMINI_MODEL") or store.get("gemini_model")
+    if not gemini_base_url:
+        gemini_base_url = (
+            store.get("GEMINI_BASE_URL")
+            or store.get("GOOGLE_GEMINI_BASE_URL")
+            or store.get("gemini_base_url")
+        )
 
     api_txt = _find_api_txt()
     if api_txt:

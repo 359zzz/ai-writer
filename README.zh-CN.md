@@ -24,7 +24,10 @@
 
 ## 快速开始（Windows）
 
-1) 将你的 API Key 填入 `api.txt`（该文件已 **gitignore**，不会提交到仓库）。
+1) 配置 API Key（推荐用 UI 配置）：
+   - 启动后打开页面 → 设置 → 模型与工具 → `API Keys`（输入框为遮罩，保存在本机后端）。
+   - 或者使用环境变量。
+   - `api.txt` 仍保留为兼容方案（已 gitignore）。
 
 2) 运行：
 
@@ -50,6 +53,7 @@
 ### 2）设置模型与工具
 
 - 设置页：
+  - API Keys：在 **设置 → 模型与工具 → API Keys** 填写密钥（遮罩输入，不会回显完整 Key）
   - Provider：GPT（OpenAI-compatible）或 Gemini
   - Model / Base URL / temperature / max_tokens
   - KB 模式：
@@ -85,7 +89,10 @@
 
 ## 冒烟测试（LLM）
 
-本项目会从环境变量或本地 `api.txt`（已 gitignore）加载密钥。
+本项目会从以下位置加载密钥：
+- 环境变量
+- 后端本地密钥存储（`apps/api/data/secrets.local.json`，已 gitignore）
+- `api.txt` 兼容回退（已 gitignore）
 
 运行一个短小、安全的冒烟测试（输出不超过 500 字/500 词）：
 

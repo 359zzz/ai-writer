@@ -200,3 +200,16 @@ Versioning policy (from v1.0.x onward):
   - Keeps the most meaningful failure reason (e.g. 502) instead of being overwritten by a later 404.
 - Sanitized HTML error pages in LLM errors to a short marker (`html_error_page`) to avoid flooding traces/UI.
 - `apps/api/scripts/smoke_llm.py` can now be run from repo root reliably (adds `apps/api` to `sys.path`).
+
+### v1.2.9 (API Key UI + OpenAI Responses + Gemini Proxy Fixes)
+- Secrets/config are now configurable in-app (no longer reliant on `api.txt`):
+  - Backend adds a local-only secrets store at `apps/api/data/secrets.local.json` (gitignored).
+  - New endpoint `POST /api/secrets/set` stores keys without ever returning them; UI shows presence only.
+  - Settings → Model adds masked inputs for GPT/Gemini API keys (inputs clear after saving).
+- OpenAI-compatible calling is upgraded:
+  - Added `wire_api` support: `chat/completions` or `responses` (PackyAPI/Codex often prefers `responses`).
+  - Model settings now include an `OpenAI 接口类型（wire API）` selector persisted per-project.
+  - Backend falls back between `chat/completions` and `responses` automatically when one fails.
+- Gemini provider becomes proxy-friendly:
+  - Non-Google base URLs now try Gemini `v1beta:generateContent` first, then fall back to OpenAI-compatible.
+  - Improved parsing and retries for flaky/empty proxy outputs (reduces `empty_completion` failures).

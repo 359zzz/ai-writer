@@ -24,7 +24,10 @@ Local, single-user, multi-agent collaborative novel writing platform (FastAPI + 
 
 ## Quick Start (Windows)
 
-1) Put your API keys in `api.txt` (this file is **gitignored** and will never be committed).
+1) Configure API keys (recommended via UI):
+   - Open the app → Settings → Model → `API Keys` (masked inputs, stored locally on the backend).
+   - Alternatively you can still use environment variables.
+   - `api.txt` is kept as a legacy fallback (gitignored).
 
 2) Run:
 
@@ -50,6 +53,7 @@ All story fields are optional; missing fields can be autofilled by LLM in **Weak
 ### 2) Configure model + tools
 
 - Settings tab:
+  - API Keys: set keys in **Settings → Model → API Keys** (masked; never shown in full)
   - Provider: GPT (OpenAI-compatible) or Gemini
   - Model / Base URL / temperature / max_tokens
   - KB mode:
@@ -85,7 +89,10 @@ For large books, uploading is recommended: the backend stores the full text loca
 
 ## Smoke Test (LLM)
 
-This project loads API keys from environment variables or local `api.txt` (gitignored).
+This project loads API keys from:
+- environment variables
+- backend local secrets store (`apps/api/data/secrets.local.json`, gitignored)
+- legacy `api.txt` fallback (gitignored)
 
 Run a short, safe smoke test (<=500 chars output):
 

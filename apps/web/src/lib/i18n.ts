@@ -94,6 +94,10 @@ export type I18nKey =
   | "settings_desc"
   | "secrets_status"
   | "secrets_desc"
+  | "api_keys"
+  | "api_keys_hint"
+  | "api_key_placeholder"
+  | "save"
   | "gpt_key"
   | "gemini_key"
   | "present"
@@ -105,9 +109,14 @@ export type I18nKey =
   | "gemini_provider"
   | "gpt_model"
   | "gpt_base_url"
+  | "gpt_wire_api"
+  | "gpt_wire_chat"
+  | "gpt_wire_responses"
+  | "gpt_wire_desc"
   | "gemini_model"
   | "gemini_base_url"
   | "optional_use_api_txt"
+  | "optional_use_backend_defaults"
   | "temperature"
   | "max_tokens"
   | "chapter_words"
@@ -193,7 +202,7 @@ const ZH: Record<I18nKey, string> = {
   writing_desc: "Notion 风格工作台（持续增强中）。",
   guide_title: "快速上手",
   guide_step_projects: "左侧新建/选择项目",
-  guide_step_settings: "在设置页选择模型并配置 API（api.txt / 环境变量）",
+  guide_step_settings: "在设置页选择模型并配置 API Key（本地保存 / 环境变量）",
   guide_step_kb: "（可选）右侧 Local KB 添加设定；Strong 模式更依赖 KB",
   guide_step_run: "在右侧面板运行：生成大纲 / 写章节 / 续写",
   guide_step_export: "写完后在 Export 导出 DOCX/EPUB/PDF",
@@ -271,7 +280,13 @@ const ZH: Record<I18nKey, string> = {
   settings: "设置",
   settings_desc: "模型/Agent/API/知识库与界面偏好等设置。",
   secrets_status: "密钥状态",
-  secrets_desc: "密钥来自环境变量或本地 api.txt（不会在 UI 中显示完整密钥）。",
+  secrets_desc:
+    "密钥来自环境变量 / 后端本地密钥存储（data/secrets.local.json，gitignored）/ api.txt 兼容（不会在 UI 中显示完整密钥）。",
+  api_keys: "API Keys",
+  api_keys_hint:
+    "仅保存在本机后端（gitignored），不会回显完整 key；保存后输入框会清空。环境变量优先。",
+  api_key_placeholder: "输入 API Key（不会回显）",
+  save: "保存",
   gpt_key: "GPT Key",
   gemini_key: "Gemini Key",
   present: "已配置",
@@ -283,9 +298,16 @@ const ZH: Record<I18nKey, string> = {
   gemini_provider: "Gemini",
   gpt_model: "GPT 模型",
   gpt_base_url: "GPT Base URL",
+  gpt_wire_api: "OpenAI 接口类型（wire API）",
+  gpt_wire_chat: "chat/completions（兼容）",
+  gpt_wire_responses: "responses（推荐）",
+  gpt_wire_desc:
+    "部分网关（例如 PackyAPI/Codex）更偏好 responses；如果你遇到 502/空返回，可切换为 responses。",
   gemini_model: "Gemini 模型",
   gemini_base_url: "Gemini Base URL",
   optional_use_api_txt: "可选：留空则使用 api.txt / 环境变量",
+  optional_use_backend_defaults:
+    "可选：留空则使用后端默认（环境变量 / 本地密钥 / api.txt 兼容）",
   temperature: "温度",
   max_tokens: "最大 tokens",
   chapter_words: "单章字数",
@@ -373,7 +395,8 @@ const EN: Record<I18nKey, string> = {
   writing_desc: "Notion-like workspace (iterating).",
   guide_title: "Quick Start",
   guide_step_projects: "Create/select a project (left panel)",
-  guide_step_settings: "Pick model & set API keys in Settings (api.txt/env)",
+  guide_step_settings:
+    "Pick a model & set API keys in Settings (stored locally or via env vars)",
   guide_step_kb: "(Optional) Add lore/style to Local KB; Strong mode relies on KB",
   guide_step_run: "Run: outline / chapter / continue (right panel)",
   guide_step_export: "Export DOCX/EPUB/PDF from Export",
@@ -455,7 +478,12 @@ const EN: Record<I18nKey, string> = {
   settings_desc: "Model/agent/api/tools and UI preferences.",
   secrets_status: "Secrets Status",
   secrets_desc:
-    "Keys are loaded from environment variables or local api.txt (never shown).",
+    "Keys are loaded from env vars / backend local secrets (gitignored) / legacy api.txt (never shown in full).",
+  api_keys: "API Keys",
+  api_keys_hint:
+    "Stored locally on the backend (gitignored) and never shown in full; inputs are cleared after saving. Env vars take precedence.",
+  api_key_placeholder: "Enter API key (never shown back)",
+  save: "Save",
   gpt_key: "GPT key",
   gemini_key: "Gemini key",
   present: "present",
@@ -467,9 +495,16 @@ const EN: Record<I18nKey, string> = {
   gemini_provider: "Gemini",
   gpt_model: "GPT Model",
   gpt_base_url: "GPT Base URL",
+  gpt_wire_api: "OpenAI wire API",
+  gpt_wire_chat: "chat/completions (compat)",
+  gpt_wire_responses: "responses (recommended)",
+  gpt_wire_desc:
+    "Some gateways (e.g. PackyAPI/Codex) prefer the Responses API. Switch to responses if you see 502/empty content.",
   gemini_model: "Gemini Model",
   gemini_base_url: "Gemini Base URL",
   optional_use_api_txt: "Optional (leave empty to use api.txt/env)",
+  optional_use_backend_defaults:
+    "Optional (leave empty to use backend defaults: env/local secrets/legacy api.txt)",
   temperature: "Temperature",
   max_tokens: "Max tokens",
   chapter_words: "Chapter words",
