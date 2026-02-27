@@ -166,3 +166,10 @@ Versioning policy (from v1.0.x onward):
 ### v1.2.3 (Theme: Text + Control Colors)
 - Theme system expanded with more tokens: normal text color + muted text + control (input/button) background + control text.
 - UI controls now use theme tokens so custom themes won't create "black boxes with unreadable text".
+
+### v1.2.4 (Web Search Robustness + Writing Modes + Resizable Workspace)
+- Fixed web search failures in some networks: backend now supports provider routing (`auto` prefers Bing HTML scrape, falls back to DDG).
+- Settings: added web search provider selector (still optional; results never auto-import into KB).
+- Writing: added a left sidebar switch for `创作 / 续写` to make workflows clearer; research query is now shared across both flows.
+- Writing layout: removed the narrow centered max-width and added draggable resizable panels (left / editor / tools) with auto-save sizing.
+- Local KB: KB chunk inputs no longer prefill duplicate "设定"; title/tags now have explicit labels + clearer guidance.

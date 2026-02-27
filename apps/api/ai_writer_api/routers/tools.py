@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from duckduckgo_search import DDGS
 from fastapi import APIRouter, HTTPException, Query
+
+from ..tools.web_search import WebSearchError, web_search as perform_web_search
 
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
@@ -13,6 +14,7 @@ router = APIRouter(prefix="/api/tools", tags=["tools"])
 def web_search(
     q: str = Query(min_length=1, max_length=200),
     limit: int = Query(default=5, ge=1, le=10),
+    provider: str = Query(default="auto", max_length=24),
 ) -> list[dict[str, Any]]:
     """
     Lightweight web search tool.
@@ -26,17 +28,13 @@ def web_search(
         raise HTTPException(status_code=400, detail="q is required")
 
     try:
-        out: list[dict[str, Any]] = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=limit):
-                out.append(
-                    {
-                        "title": r.get("title") or "",
-                        "url": r.get("href") or r.get("url") or "",
-                        "snippet": r.get("body") or r.get("snippet") or "",
-                    }
-                )
-        return out
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"web_search_failed: {type(e).__name__}")
-
+        results, _meta = perform_web_search(query, limit=limit, provider=provider)
+        # Keep response shape stable (list of {title,url,snippet}).
+        return results
+    except WebSearchError as e:
+        detail = "web_search_failed"
+        if getattr(e, "errors", None):
+            detail += f": {', '.join(e.errors[:6])}"
+        raise HTTPException(status_code=502, detail=detail) from e
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(status_code=502, detail=f"web_search_failed: {type(e).__name__}") from e

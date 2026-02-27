@@ -408,24 +408,36 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         # Tool: web search (optional)
         research_query = str(payload.get("research_query") or "").strip()
         web_results: list[dict[str, Any]] = []
-        web_enabled = bool((((project.settings or {}).get("tools") or {}).get("web_search") or {}).get("enabled", True))
+        web_cfg = (((project.settings or {}).get("tools") or {}).get("web_search") or {})
+        web_enabled = bool(web_cfg.get("enabled", True))
+        web_provider = str(web_cfg.get("provider") or "auto")
         if research_query and web_enabled:
             try:
-                from duckduckgo_search import DDGS
+                from ..tools.web_search import web_search
 
-                yield emit("tool_call", "WebSearch", {"tool": "web_search", "q": research_query})
-                with DDGS() as ddgs:
-                    for r in ddgs.text(research_query, max_results=5):
-                        web_results.append(
-                            {
-                                "title": r.get("title") or "",
-                                "url": r.get("href") or r.get("url") or "",
-                                "snippet": r.get("body") or r.get("snippet") or "",
-                            }
-                        )
-                yield emit("tool_result", "WebSearch", {"tool": "web_search", "hits": len(web_results)})
-            except Exception:
+                yield emit(
+                    "tool_call",
+                    "WebSearch",
+                    {"tool": "web_search", "q": research_query, "provider": web_provider},
+                )
+                web_results, meta = web_search(research_query, limit=5, provider=web_provider)
+                yield emit(
+                    "tool_result",
+                    "WebSearch",
+                    {
+                        "tool": "web_search",
+                        "hits": len(web_results),
+                        "provider_used": meta.get("provider_used"),
+                        "errors": meta.get("errors", []),
+                    },
+                )
+            except Exception as e:
                 web_results = []
+                yield emit(
+                    "tool_result",
+                    "WebSearch",
+                    {"tool": "web_search", "hits": 0, "error": type(e).__name__},
+                )
 
         # Agent: Writer
         try:

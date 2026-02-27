@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 import { MarkdownPreview } from "@/components/MarkdownPreview";
 import { t, type I18nKey, type Lang } from "@/lib/i18n";
@@ -79,6 +80,7 @@ export default function Home() {
   );
 
   const [tab, setTab] = useState<TabKey>("writing");
+  const [writingMode, setWritingMode] = useState<"create" | "continue">("create");
   const [agentsView, setAgentsView] = useState<"timeline" | "graph">("timeline");
   const [expandedEventKey, setExpandedEventKey] = useState<string | null>(null);
   const [settingsPane, setSettingsPane] = useState<
@@ -119,12 +121,10 @@ export default function Home() {
   const [chapterIndex, setChapterIndex] = useState<number>(1);
   const [researchQuery, setResearchQuery] = useState<string>("");
   const [continueText, setContinueText] = useState<string>("");
-  const [kbTitle, setKbTitle] = useState<string>(
-    DEFAULT_UI_PREFS.lang === "zh" ? "设定" : "Lore",
-  );
-  const [kbTags, setKbTags] = useState<string>(
-    DEFAULT_UI_PREFS.lang === "zh" ? "设定" : "lore",
-  );
+  // Local KB chunk fields. Keep defaults empty to avoid confusing users
+  // with pre-filled values like "设定" in multiple inputs.
+  const [kbTitle, setKbTitle] = useState<string>("");
+  const [kbTags, setKbTags] = useState<string>("");
   const [kbContent, setKbContent] = useState<string>("");
   const [kbQuery, setKbQuery] = useState<string>("");
   const [kbResults, setKbResults] = useState<
@@ -774,13 +774,21 @@ export default function Home() {
     setWebError(null);
     setWebLoading(true);
     try {
+      const provider = getSettingsValue("tools.web_search.provider", "auto");
       const res = await fetch(
-        `${apiBase}/api/tools/web_search?q=${encodeURIComponent(webQuery)}&limit=6`,
+        `${apiBase}/api/tools/web_search?q=${encodeURIComponent(webQuery)}&limit=6&provider=${encodeURIComponent(provider)}`,
         { cache: "no-store" },
       );
       if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || `HTTP ${res.status}`);
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
       }
       const data = (await res.json()) as Array<{
         title: string;
@@ -875,7 +883,7 @@ export default function Home() {
 
       <div className="relative z-10">
         <header className="sticky top-0 z-10 border-b border-zinc-200 bg-[var(--ui-surface)] backdrop-blur">
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+          <div className="mx-auto flex w-full items-center justify-between px-6 py-4">
             <div className="flex items-center gap-3">
               {brandLogoDataUrl ? (
                 <img
@@ -964,7 +972,7 @@ export default function Home() {
           </div>
         </header>
 
-        <main className="mx-auto max-w-6xl px-6 py-8">
+        <main className="mx-auto w-full px-6 py-8">
         <div className="mb-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-4 text-sm dark:border-zinc-800">
           <div className="flex items-center justify-between gap-4">
             <div className="font-medium">{tt("backend")}</div>
@@ -995,8 +1003,47 @@ export default function Home() {
               {tt("writing_desc")}
             </p>
 
-            <div className="mt-6 grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
-              <div className="grid gap-6">
+            <div className="mt-6">
+              <PanelGroup
+                direction="horizontal"
+                autoSaveId="ai-writer:writing:outer"
+                className="flex"
+              >
+                <Panel defaultSize={24} minSize={16} className="min-w-0 pr-3">
+                  <div className="grid gap-6">
+                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">{tt("writing_mode")}</div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setWritingMode("create")}
+                      className={[
+                        "rounded-md px-3 py-2 text-sm transition-colors",
+                        writingMode === "create"
+                          ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                          : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
+                      ].join(" ")}
+                    >
+                      {tt("writing_mode_create")}
+                    </button>
+                    <button
+                      onClick={() => setWritingMode("continue")}
+                      className={[
+                        "rounded-md px-3 py-2 text-sm transition-colors",
+                        writingMode === "continue"
+                          ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                          : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
+                      ].join(" ")}
+                    >
+                      {tt("writing_mode_continue")}
+                    </button>
+                  </div>
+                  <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                    {writingMode === "create"
+                      ? tt("writing_mode_create_desc")
+                      : tt("writing_mode_continue_desc")}
+                  </div>
+                </div>
+
                 <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("projects")}</div>
                   <div className="mt-3 flex gap-2">
@@ -1119,9 +1166,20 @@ export default function Home() {
                     </div>
                   )}
                 </div>
-              </div>
+                  </div>
+                </Panel>
 
-              <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+                <PanelResizeHandle className="group flex w-6 cursor-col-resize items-center justify-center">
+                  <div className="h-full w-px rounded-full bg-zinc-200 transition-colors group-hover:bg-zinc-400 dark:bg-zinc-800 dark:group-hover:bg-zinc-600" />
+                </PanelResizeHandle>
+
+                <Panel defaultSize={76} minSize={40} className="min-w-0 pl-3">
+                  <PanelGroup
+                    direction="horizontal"
+                    autoSaveId="ai-writer:writing:inner"
+                    className="flex"
+                  >
+                    <Panel defaultSize={70} minSize={45} className="min-w-0 pr-3">
                 <div className="min-w-0 rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm font-medium">{tt("markdown_editor")}</div>
@@ -1181,7 +1239,14 @@ export default function Home() {
                   )}
                 </div>
 
-                <div className="grid gap-6">
+                    </Panel>
+
+                    <PanelResizeHandle className="group flex w-6 cursor-col-resize items-center justify-center">
+                      <div className="h-full w-px rounded-full bg-zinc-200 transition-colors group-hover:bg-zinc-400 dark:bg-zinc-800 dark:group-hover:bg-zinc-600" />
+                    </PanelResizeHandle>
+
+                    <Panel defaultSize={30} minSize={20} className="min-w-0 pl-3">
+                      <div className="grid gap-6">
                   <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("selected_project")}</div>
                     <div className="mt-2 text-sm text-[var(--ui-muted)]">
@@ -1227,9 +1292,72 @@ export default function Home() {
                     ) : null}
 
                     <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
-                      <div className="text-sm font-medium">{tt("write_chapter")}</div>
-                      <div className="mt-3 grid gap-2">
-                        <label className="grid gap-1 text-sm">
+                      <div className="text-sm font-medium">
+                        {tt("research_query_optional")}
+                      </div>
+                      <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                        {tt("research_query_desc")}
+                      </div>
+                      <input
+                        value={researchQuery}
+                        onChange={(e) => setResearchQuery(e.target.value)}
+                        className="mt-3 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                        placeholder={tt("research_query_placeholder")}
+                      />
+                    </div>
+
+                    {writingMode === "create" ? (
+                      <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                        <div className="text-sm font-medium">
+                          {tt("write_chapter")}
+                        </div>
+                        <div className="mt-3 grid gap-2">
+                          <label className="grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("chapter_index")}
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={chapterIndex}
+                              onChange={(e) =>
+                                setChapterIndex(Number(e.target.value))
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                            />
+                          </label>
+                        </div>
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            disabled={!selectedProjectId || runInProgress}
+                            onClick={() => {
+                              runPipeline("chapter", {
+                                chapter_index: chapterIndex,
+                                research_query: researchQuery.trim() || undefined,
+                              }).catch((e) =>
+                                setRunError((e as Error).message),
+                              );
+                            }}
+                            className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                          >
+                            {tt("write_chapter_llm")}
+                          </button>
+                          <span className="text-xs text-[var(--ui-muted)]">
+                            {tt("uses_settings")}
+                          </span>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {writingMode === "continue" ? (
+                      <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                        <div className="text-sm font-medium">
+                          {tt("continue_mode")}
+                        </div>
+                        <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                          {tt("continue_desc")}
+                        </div>
+                        <label className="mt-3 grid gap-1 text-sm">
                           <span className="text-xs text-[var(--ui-muted)]">
                             {tt("chapter_index")}
                           </span>
@@ -1237,79 +1365,48 @@ export default function Home() {
                             type="number"
                             min={1}
                             value={chapterIndex}
-                            onChange={(e) => setChapterIndex(Number(e.target.value))}
+                            onChange={(e) =>
+                              setChapterIndex(Number(e.target.value))
+                            }
                             className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                           />
                         </label>
-                        <label className="grid gap-1 text-sm">
-                          <span className="text-xs text-[var(--ui-muted)]">
-                            {tt("research_query_optional")}
-                          </span>
-                          <input
-                            value={researchQuery}
-                            onChange={(e) => setResearchQuery(e.target.value)}
-                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                            placeholder={tt("research_query_placeholder")}
-                          />
-                        </label>
+                        <textarea
+                          value={continueText}
+                          onChange={(e) => setContinueText(e.target.value)}
+                          className="mt-3 h-24 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                          placeholder={tt("paste_manuscript")}
+                        />
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            disabled={
+                              !selectedProjectId ||
+                              runInProgress ||
+                              !continueText.trim()
+                            }
+                            onClick={() => {
+                              runPipeline("continue", {
+                                chapter_index: chapterIndex,
+                                source_text: continueText,
+                                research_query: researchQuery.trim() || undefined,
+                              }).catch((e) =>
+                                setRunError((e as Error).message),
+                              );
+                            }}
+                            className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                          >
+                            {tt("extract_continue")}
+                          </button>
+                          <button
+                            disabled={!continueText}
+                            onClick={() => setContinueText("")}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {tt("clear")}
+                          </button>
+                        </div>
                       </div>
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          disabled={!selectedProjectId || runInProgress}
-                          onClick={() => {
-                            runPipeline("chapter", {
-                              chapter_index: chapterIndex,
-                              research_query: researchQuery.trim() || undefined,
-                            }).catch((e) =>
-                              setRunError((e as Error).message),
-                            );
-                          }}
-                          className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
-                        >
-                          {tt("write_chapter_llm")}
-                        </button>
-                        <span className="text-xs text-[var(--ui-muted)]">
-                          {tt("uses_settings")}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
-                      <div className="text-sm font-medium">{tt("continue_mode")}</div>
-                      <div className="mt-2 text-xs text-[var(--ui-muted)]">
-                        {tt("continue_desc")}
-                      </div>
-                      <textarea
-                        value={continueText}
-                        onChange={(e) => setContinueText(e.target.value)}
-                        className="mt-3 h-24 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                        placeholder={tt("paste_manuscript")}
-                      />
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          disabled={!selectedProjectId || runInProgress || !continueText.trim()}
-                          onClick={() => {
-                            runPipeline("continue", {
-                              chapter_index: chapterIndex,
-                              source_text: continueText,
-                              research_query: researchQuery.trim() || undefined,
-                            }).catch((e) =>
-                              setRunError((e as Error).message),
-                            );
-                          }}
-                          className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
-                        >
-                          {tt("extract_continue")}
-                        </button>
-                        <button
-                          disabled={!continueText}
-                          onClick={() => setContinueText("")}
-                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
-                        >
-                          {tt("clear")}
-                        </button>
-                      </div>
-                    </div>
+                    ) : null}
                   </div>
 
                   <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
@@ -1354,18 +1451,28 @@ export default function Home() {
                     <div className="text-sm font-medium">{tt("local_kb")}</div>
                     <div className="mt-2 grid gap-2">
                       <div className="grid gap-2 md:grid-cols-2">
-                        <input
-                          value={kbTitle}
-                          onChange={(e) => setKbTitle(e.target.value)}
-                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                          placeholder={tt("kb_chunk_title_placeholder")}
-                        />
-                        <input
-                          value={kbTags}
-                          onChange={(e) => setKbTags(e.target.value)}
-                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                          placeholder={tt("kb_chunk_tags_placeholder")}
-                        />
+                        <label className="grid gap-1 text-sm">
+                          <span className="text-xs text-[var(--ui-muted)]">
+                            {tt("kb_chunk_title")}
+                          </span>
+                          <input
+                            value={kbTitle}
+                            onChange={(e) => setKbTitle(e.target.value)}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                            placeholder={tt("kb_chunk_title_placeholder")}
+                          />
+                        </label>
+                        <label className="grid gap-1 text-sm">
+                          <span className="text-xs text-[var(--ui-muted)]">
+                            {tt("kb_chunk_tags")}
+                          </span>
+                          <input
+                            value={kbTags}
+                            onChange={(e) => setKbTags(e.target.value)}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                            placeholder={tt("kb_chunk_tags_placeholder")}
+                          />
+                        </label>
                       </div>
                       <textarea
                         value={kbContent}
@@ -1508,8 +1615,11 @@ export default function Home() {
                       </>
                     )}
                   </div>
-                </div>
-              </div>
+                      </div>
+                    </Panel>
+                  </PanelGroup>
+                </Panel>
+              </PanelGroup>
             </div>
           </section>
         ) : null}
@@ -2537,6 +2647,39 @@ export default function Home() {
                           )
                         }
                       />
+                    </label>
+
+                    <label className="grid gap-1 text-sm">
+                      <span className="text-xs text-[var(--ui-muted)]">
+                        {tt("web_search_provider")}
+                      </span>
+                      <select
+                        defaultValue={getSettingsValue(
+                          "tools.web_search.provider",
+                          "auto",
+                        )}
+                        onChange={(e) =>
+                          saveProjectSettings({
+                            tools: { web_search: { provider: e.target.value } },
+                          }).catch((err) =>
+                            setSettingsError((err as Error).message),
+                          )
+                        }
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                      >
+                        <option value="auto">
+                          {tt("web_search_provider_auto")}
+                        </option>
+                        <option value="bing">
+                          {tt("web_search_provider_bing")}
+                        </option>
+                        <option value="duckduckgo">
+                          {tt("web_search_provider_duckduckgo")}
+                        </option>
+                      </select>
+                      <div className="text-[11px] text-[var(--ui-muted)]">
+                        {tt("web_search_provider_desc")}
+                      </div>
                     </label>
 
                     {settingsError ? (

@@ -12,6 +12,11 @@ export type I18nKey =
   | "unreachable"
   | "writing"
   | "writing_desc"
+  | "writing_mode"
+  | "writing_mode_create"
+  | "writing_mode_continue"
+  | "writing_mode_create_desc"
+  | "writing_mode_continue_desc"
   | "projects"
   | "project_title_placeholder"
   | "create"
@@ -26,6 +31,7 @@ export type I18nKey =
   | "write_chapter"
   | "chapter_index"
   | "research_query_optional"
+  | "research_query_desc"
   | "write_chapter_llm"
   | "uses_settings"
   | "continue_mode"
@@ -84,6 +90,11 @@ export type I18nKey =
   | "kb_weak"
   | "kb_strong"
   | "web_search_tool"
+  | "web_search_provider"
+  | "web_search_provider_auto"
+  | "web_search_provider_bing"
+  | "web_search_provider_duckduckgo"
+  | "web_search_provider_desc"
   | "ui_prefs"
   | "language"
   | "theme"
@@ -103,6 +114,8 @@ export type I18nKey =
   | "web_search_placeholder"
   | "research_query_placeholder"
   | "generated_markdown_placeholder"
+  | "kb_chunk_title"
+  | "kb_chunk_tags"
   | "kb_chunk_title_placeholder"
   | "kb_chunk_tags_placeholder"
   | "kb_chunk_content_placeholder"
@@ -148,6 +161,11 @@ const ZH: Record<I18nKey, string> = {
   unreachable: "无法连接",
   writing: "写作",
   writing_desc: "Notion 风格工作台（持续增强中）。",
+  writing_mode: "写作模式",
+  writing_mode_create: "创作",
+  writing_mode_continue: "续写",
+  writing_mode_create_desc: "从设定/大纲开始写新章节。",
+  writing_mode_continue_desc: "粘贴已有文本，抽取信息后在此基础上续写。",
   projects: "项目",
   project_title_placeholder: "项目标题",
   create: "新建",
@@ -162,6 +180,8 @@ const ZH: Record<I18nKey, string> = {
   write_chapter: "写章节",
   chapter_index: "章节序号",
   research_query_optional: "联网检索（可选）",
+  research_query_desc:
+    "在写章节/续写前先联网搜索一轮，并把简短结果作为上下文（不会自动写入 KB）。",
   write_chapter_llm: "写章节（LLM）",
   uses_settings: "使用 设置→模型/知识库/联网检索 等配置。",
   continue_mode: "续写模式",
@@ -220,6 +240,12 @@ const ZH: Record<I18nKey, string> = {
   kb_weak: "弱依赖（优先 KB）",
   kb_strong: "强依赖（canon-locked）",
   web_search_tool: "联网搜索工具",
+  web_search_provider: "联网搜索提供商",
+  web_search_provider_auto: "自动（推荐）",
+  web_search_provider_bing: "Bing（无需 Key）",
+  web_search_provider_duckduckgo: "DuckDuckGo",
+  web_search_provider_desc:
+    "某些网络环境下 DDG 可能超时；自动模式会优先尝试 Bing。",
   ui_prefs: "界面偏好",
   language: "语言",
   theme: "主题配色",
@@ -239,6 +265,8 @@ const ZH: Record<I18nKey, string> = {
   web_search_placeholder: "输入联网检索关键词...",
   research_query_placeholder: "例如：唐代服饰细节",
   generated_markdown_placeholder: "生成的 Markdown 将显示在这里...",
+  kb_chunk_title: "标题（可选）",
+  kb_chunk_tags: "标签（可选）",
   kb_chunk_title_placeholder: "条目标题",
   kb_chunk_tags_placeholder: "标签（逗号分隔）",
   kb_chunk_content_placeholder: "在此添加世界观/文风/设定等笔记...",
@@ -285,6 +313,12 @@ const EN: Record<I18nKey, string> = {
   unreachable: "Unreachable",
   writing: "Writing",
   writing_desc: "Notion-like workspace (iterating).",
+  writing_mode: "Writing mode",
+  writing_mode_create: "Create",
+  writing_mode_continue: "Continue",
+  writing_mode_create_desc: "Draft new chapters from your settings/outline.",
+  writing_mode_continue_desc:
+    "Paste an existing manuscript, extract state, then continue writing.",
   projects: "Projects",
   project_title_placeholder: "Project title",
   create: "Create",
@@ -299,6 +333,8 @@ const EN: Record<I18nKey, string> = {
   write_chapter: "Write Chapter",
   chapter_index: "Chapter Index",
   research_query_optional: "Web research (optional)",
+  research_query_desc:
+    "Runs a lightweight web search before writing and feeds short results as context (not saved to the KB).",
   write_chapter_llm: "Write Chapter (LLM)",
   uses_settings: "Uses Settings → model/KB/web search config.",
   continue_mode: "Continue Mode",
@@ -360,6 +396,12 @@ const EN: Record<I18nKey, string> = {
   kb_weak: "Weak (prefer KB)",
   kb_strong: "Strong (canon-locked)",
   web_search_tool: "Web search tool",
+  web_search_provider: "Web search provider",
+  web_search_provider_auto: "Auto (recommended)",
+  web_search_provider_bing: "Bing (no key)",
+  web_search_provider_duckduckgo: "DuckDuckGo",
+  web_search_provider_desc:
+    "DDG may time out in some networks; auto mode tries Bing first.",
   ui_prefs: "UI Preferences",
   language: "Language",
   theme: "Theme",
@@ -379,6 +421,8 @@ const EN: Record<I18nKey, string> = {
   web_search_placeholder: "Search the web for research...",
   research_query_placeholder: "e.g. Tang dynasty clothing details",
   generated_markdown_placeholder: "Generated markdown will appear here...",
+  kb_chunk_title: "Title (optional)",
+  kb_chunk_tags: "Tags (optional)",
   kb_chunk_title_placeholder: "Chunk title",
   kb_chunk_tags_placeholder: "tags (comma-separated)",
   kb_chunk_content_placeholder: "Add lore/style/world notes here...",
