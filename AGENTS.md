@@ -245,3 +245,13 @@ Versioning policy (from v1.0.x onward):
   - OpenAI-compatible calls treat `empty_completion` as retryable (some distributors return reasoning-only outputs with empty text).
   - Gemini v1beta calls now retry/backoff on transient 5xx/429 **including** distributor-like 503s (previously raised immediately).
   - Fallback model set includes `gemini-2.5-pro`, and fallbacks also trigger on transient `http_5xx` errors (not only on “model unavailable”/empty outputs).
+
+### v1.3.4 (Reliability: Outliner Soft-Fail + Editor Guardrails + Packy Throttle)
+- Web: clears previous outline/markdown at run start so a failed run won’t look “success” due to stale content.
+- Runs pipeline:
+  - Outliner: retries once when JSON parsing fails (with a stricter prompt and `gemini-3-flash-preview` fallback), and **soft-fails** on `chapter/continue` so writing can proceed even if outline generation is flaky.
+  - Writer: per-run `max_tokens` is scaled by `chapter_words`; retries once on suspiciously short output (prefers `gemini-3-flash-preview` on Packy) and fails loudly if still too short (prevents “run completed but chapter is incomplete”).
+  - Editor: prompt updated to preserve structure/length (no summarization); adds a guardrail to fall back to Writer output if the edited result looks truncated/incorrect.
+- LLM (PackyAPI): reduces bursty traffic risk:
+  - Adds gentle throttling + in-flight limiting for PackyAPI requests.
+  - Uses only documented `/v1/...` endpoints for Packy base URLs; Gemini-on-Packy uses chat-only (avoids `/responses`) to reduce “probing noise”.

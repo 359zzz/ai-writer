@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
@@ -513,7 +514,32 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
                 )
                 outline_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
-                outline = parse_json_loose(outline_text)
+                try:
+                    outline = parse_json_loose(outline_text)
+                except Exception:
+                    # Retry once with stricter guidance (some gateways sometimes
+                    # prepend chatter or truncate JSON).
+                    cfg_retry = cfg
+                    if cfg.provider == "gemini" and "packyapi.com" in (cfg.base_url or "").lower():
+                        cfg_retry = replace(cfg_retry, model="gemini-3-flash-preview")
+                    cfg_retry = replace(cfg_retry, temperature=0.2)
+                    yield emit(
+                        "tool_call",
+                        "Outliner",
+                        {
+                            "tool": "llm.generate_text",
+                            "provider": cfg_retry.provider,
+                            "model": cfg_retry.model,
+                            "note": "retry_parse_json",
+                        },
+                    )
+                    outline_text2 = await generate_text(
+                        system_prompt=system,
+                        user_prompt=user
+                        + "\n\nIMPORTANT: Output JSON only. No markdown, no commentary, no code fences.",
+                        cfg=cfg_retry,
+                    )
+                    outline = parse_json_loose(outline_text2)
                 # Some code-first models may still default to English. If we asked for zh,
                 # do a single best-effort translation pass for the natural language fields.
                 if (
@@ -575,16 +601,26 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 yield emit("agent_finished", "Outliner", {})
             except LLMError as e:
                 msg = str(e)
-                yield emit("run_error", "Outliner", {"error": msg})
-                mark_run_failed(msg)
-                yield emit("run_completed", "Director", {})
-                return
+                if kind == "outline":
+                    yield emit("run_error", "Outliner", {"error": msg})
+                    mark_run_failed(msg)
+                    yield emit("run_completed", "Director", {})
+                    return
+                # For chapter/continue runs, Outliner is helpful but not strictly
+                # required. Soft-fail to keep the app usable under flaky gateways.
+                yield emit("agent_output", "Outliner", {"error": msg})
+                yield emit("agent_finished", "Outliner", {})
+                outline = None
             except Exception as e:
                 msg = f"outline_failed:{type(e).__name__}"
-                yield emit("run_error", "Outliner", {"error": msg})
-                mark_run_failed(msg)
-                yield emit("run_completed", "Director", {})
-                return
+                if kind == "outline":
+                    yield emit("run_error", "Outliner", {"error": msg})
+                    mark_run_failed(msg)
+                    yield emit("run_completed", "Director", {})
+                    return
+                yield emit("agent_output", "Outliner", {"error": msg})
+                yield emit("agent_finished", "Outliner", {})
+                outline = None
 
         if kind == "outline":
             mark_run_completed()
@@ -665,11 +701,13 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 )
 
         # Agent: Writer
+        writer_max_tokens = llm_cfg().max_tokens
         try:
             yield emit("agent_started", "Writer", {"chapter_index": chapter_index})
             system = (
                 "You are WriterAgent. Write a novel chapter in Markdown. "
                 f"{lang_hint_md} "
+                "Write narrative prose (NOT an outline, NOT bullet notes). "
                 "Respect the provided story settings and local KB excerpts. "
             )
             if kb_mode == "strong":
@@ -684,6 +722,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 )
             else:
                 system += "If some details are missing, you may creatively fill gaps in a consistent way."
+            min_len = max(200, int(chapter_words * 0.25))
             user_parts = [
                 f"Story settings:\n{json_dumps(story)}",
                 f"Writing targets: chapter_words≈{chapter_words}, chapter_index={chapter_index}",
@@ -704,6 +743,12 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 )
                 user_parts.append(f"Web research results (do not treat as canon unless stated):\n{web_text[:2000]}")
             if output_lang == "zh":
+                user_parts.append(f"最低长度：至少 {min_len} 个汉字（不含 Markdown 符号）。不要中途截断。")
+            else:
+                user_parts.append(
+                    f"Minimum length: at least {max(120, int(chapter_words * 0.6))} words. Do not cut mid-sentence."
+                )
+            if output_lang == "zh":
                 user_parts.append(
                     "只输出章节 Markdown（不要解释/不要前言）。用一级标题开头，例如："
                     f"{_writer_title_example(output_lang, chapter_index)}"
@@ -713,14 +758,70 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "Output ONLY the chapter Markdown. Start with a level-1 title like: "
                     f"{_writer_title_example(output_lang, chapter_index)}"
                 )
-            cfg = llm_cfg()
+            cfg0 = llm_cfg()
+            desired_max_tokens = max(int(cfg0.max_tokens), min(4096, max(80, int(chapter_words * 1.4))))
+            cfg = replace(cfg0, max_tokens=desired_max_tokens) if desired_max_tokens != cfg0.max_tokens else cfg0
+            writer_max_tokens = cfg.max_tokens
             yield emit(
                 "tool_call",
                 "Writer",
-                {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
+                {
+                    "tool": "llm.generate_text",
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                    "max_tokens": cfg.max_tokens,
+                },
             )
             writer_text = await generate_text(system_prompt=system, user_prompt="\n\n---\n\n".join(user_parts), cfg=cfg)
             writer_text = strip_think_blocks(writer_text)
+            if not re.search(r"(?m)^#\\s+\\S", writer_text):
+                title = _default_chapter_title(output_lang, chapter_index)
+                if isinstance(chapter_plan, dict):
+                    t = chapter_plan.get("title")
+                    if isinstance(t, str) and t.strip():
+                        title = t.strip()
+                writer_text = f"# {title}\n\n{writer_text.lstrip()}"
+            if output_lang == "zh":
+                cjk_count = len(_CJK_RE.findall(writer_text))
+                if cjk_count < min_len:
+                    # Retry once when the gateway returns a suspiciously short
+                    # completion (often truncated/partial). Prefer a more
+                    # available fallback model on PackyAPI.
+                    retry_cfg = cfg
+                    if cfg.provider == "gemini" and "packyapi.com" in (cfg.base_url or "").lower():
+                        retry_cfg = replace(retry_cfg, model="gemini-3-flash-preview")
+                    yield emit(
+                        "tool_call",
+                        "Writer",
+                        {
+                            "tool": "llm.generate_text",
+                            "provider": retry_cfg.provider,
+                            "model": retry_cfg.model,
+                            "max_tokens": retry_cfg.max_tokens,
+                            "note": "retry_too_short",
+                        },
+                    )
+                    retry_user = (
+                        "\n\n---\n\n".join(user_parts)
+                        + f"\n\nIMPORTANT: 上一轮输出过短且不完整。请重新输出【完整章节 Markdown】（不要承接上一轮），"
+                        + f"至少 {min_len} 个汉字，结尾完整，不要只写标题或一句话。"
+                    )
+                    writer_text2 = await generate_text(
+                        system_prompt=system, user_prompt=retry_user, cfg=retry_cfg
+                    )
+                    writer_text2 = strip_think_blocks(writer_text2)
+                    if not re.search(r"(?m)^#\\s+\\S", writer_text2):
+                        title = _default_chapter_title(output_lang, chapter_index)
+                        if isinstance(chapter_plan, dict):
+                            t = chapter_plan.get("title")
+                            if isinstance(t, str) and t.strip():
+                                title = t.strip()
+                        writer_text2 = f"# {title}\n\n{writer_text2.lstrip()}"
+                    cjk_count2 = len(_CJK_RE.findall(writer_text2))
+                    if cjk_count2 >= min_len:
+                        writer_text = writer_text2
+                    else:
+                        raise LLMError(f"writer_output_too_short:cjk={cjk_count2},min={min_len}")
             yield emit("agent_output", "Writer", {"text": writer_text[:400]})
             yield emit("agent_finished", "Writer", {})
         except LLMError as e:
@@ -741,26 +842,57 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         try:
             yield emit("agent_started", "Editor", {})
             system = (
-                "You are EditorAgent. Polish the chapter while keeping meaning. Output Markdown only. "
+                "You are EditorAgent. Revise a novel chapter in Markdown. "
                 f"{lang_hint_md} "
+                "Preserve structure and length: do NOT summarize, do NOT delete content. "
+                "Only improve wording/flow and fix inconsistencies/typos. "
+                "If the input is not in the required language, translate it while preserving meaning and length. "
                 "Do NOT remove evidence citations like [KB#123] or placeholders like [[TBD]]."
             )
             user = (
-                "Polish this Markdown chapter. Keep it concise; do not add new plot points.\n\n"
+                "Revise the following Markdown chapter. Return the FULL chapter Markdown only.\n\n"
                 f"{writer_text}\n"
             )
-            cfg = llm_cfg()
+            cfg0 = llm_cfg()
+            editor_max_tokens = max(int(cfg0.max_tokens), int(writer_max_tokens))
+            cfg = replace(cfg0, max_tokens=editor_max_tokens) if editor_max_tokens != cfg0.max_tokens else cfg0
             yield emit(
                 "tool_call",
                 "Editor",
-                {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
+                {
+                    "tool": "llm.generate_text",
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                    "max_tokens": cfg.max_tokens,
+                },
             )
             edited_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
             edited_text = strip_think_blocks(edited_text)
+            # Guardrail: some models may incorrectly summarize/shorten or output
+            # partial content; fall back to the original writer output.
+            w = writer_text.strip()
+            e = edited_text.strip()
+            suspicious = False
+            if not e:
+                suspicious = True
+            elif not re.search(r"(?m)^#\\s+\\S", edited_text):
+                suspicious = True
+            elif len(w) >= 400 and len(e) < int(len(w) * 0.65):
+                suspicious = True
+            elif output_lang == "zh" and _CJK_RE.search(w) and not _CJK_RE.search(e):
+                suspicious = True
+            if suspicious:
+                raise ValueError("editor_suspicious_output")
             yield emit("agent_output", "Editor", {"text": edited_text[:400]})
             yield emit("agent_finished", "Editor", {})
-        except Exception:
+        except Exception as e:
             edited_text = writer_text
+            yield emit(
+                "agent_output",
+                "Editor",
+                {"error": f"editor_fallback_to_writer:{type(e).__name__}"},
+            )
+            yield emit("agent_finished", "Editor", {})
 
         # Agent: LoreKeeper (evidence audit + canon guard)
         yield emit("agent_started", "LoreKeeper", {"kb_mode": kb_mode})

@@ -932,6 +932,10 @@ export default function Home() {
     setRunEvents([]);
     setActiveRunKind(kind);
     setActiveRunId(null);
+    // Clear previous outputs early to avoid confusing "old success" content
+    // lingering when a new run fails mid-pipeline.
+    setGeneratedMarkdown("");
+    setOutline(null);
 
     try {
       // Ensure any in-flight Settings/Secrets save completes before starting a run,

@@ -15,6 +15,13 @@ from .secrets import Secrets, load_secrets
 Provider = Literal["openai", "gemini"]
 WireAPI = Literal["chat", "responses"]
 
+_PACKY_MIN_REQUEST_INTERVAL_S = 0.22
+_PACKY_MAX_REQUEST_INTERVAL_S = 0.35
+_PACKY_MAX_INFLIGHT = 2
+_PACKY_THROTTLE_LOCK = asyncio.Lock()
+_PACKY_NEXT_ALLOWED_AT: float = 0.0
+_PACKY_SEMAPHORE = asyncio.Semaphore(_PACKY_MAX_INFLIGHT)
+
 
 class LLMError(RuntimeError):
     pass
@@ -39,6 +46,33 @@ def _looks_like_model_unavailable(msg: str) -> bool:
     if "no distributor" in m or "distributor" in m:
         return True
     return False
+
+
+def _is_packy_base(base_url: str | None) -> bool:
+    return bool(base_url) and ("packyapi.com" in (base_url or "").lower())
+
+
+async def _maybe_throttle_packy(base_url: str | None) -> None:
+    """
+    PackyAPI (and some similar gateways) may temporarily return "no distributor"
+    and can be sensitive to bursty traffic. Since this is a local single-user app,
+    we throttle a bit to reduce the chance of being flagged as abusive.
+    """
+
+    if not _is_packy_base(base_url):
+        return
+
+    global _PACKY_NEXT_ALLOWED_AT
+    async with _PACKY_THROTTLE_LOCK:
+        now = asyncio.get_running_loop().time()
+        wait_s = max(0.0, float(_PACKY_NEXT_ALLOWED_AT) - now)
+        interval = _PACKY_MIN_REQUEST_INTERVAL_S + (
+            random.random() * (_PACKY_MAX_REQUEST_INTERVAL_S - _PACKY_MIN_REQUEST_INTERVAL_S)
+        )
+        _PACKY_NEXT_ALLOWED_AT = max(float(_PACKY_NEXT_ALLOWED_AT), now) + float(interval)
+
+    if wait_s > 0:
+        await asyncio.sleep(wait_s)
 
 
 @dataclass(frozen=True)
@@ -254,7 +288,13 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
         # Supports BOTH styles without producing /v1/v1:
         # - base=https://host              then POST /v1/<path>
         # - base=https://host/v1           then POST /<path>
+        #
+        # For PackyAPI specifically, prefer only the documented /v1 endpoints to
+        # reduce extra 404s/requests that can look like abusive probing.
         b = _normalize_base_url(base_in)
+        if _is_packy_base(b):
+            root = b[: -len("/v1")] if b.endswith("/v1") else b
+            return [f"{root}/v1/{path}"]
         bases: list[str] = [b]
         if b.endswith("/v1"):
             bases.append(b[: -len("/v1")])
@@ -352,6 +392,8 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
         path: str,
         payload: dict[str, Any],
         parser: Callable[[Any], str],
+        *,
+        fast_fail_on_model_unavailable: bool = False,
     ) -> str:
         candidates = build_candidates(base_url, path)
         headers = {"Authorization": f"Bearer {api_key}"}
@@ -370,7 +412,12 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                 attempt_had_transient = False
                 for url in candidates:
                     try:
-                        r = await client.post(url, json=payload, headers=headers)
+                        await _maybe_throttle_packy(base_url)
+                        if _is_packy_base(base_url):
+                            async with _PACKY_SEMAPHORE:
+                                r = await client.post(url, json=payload, headers=headers)
+                        else:
+                            r = await client.post(url, json=payload, headers=headers)
                     except httpx.TimeoutException:
                         record_err("openai_timeout")
                         attempt_had_transient = True
@@ -391,6 +438,8 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                             msg += f":{detail}"
 
                         if r.status_code in transient_status:
+                            if fast_fail_on_model_unavailable and _looks_like_model_unavailable(msg):
+                                raise LLMError(msg)
                             record_err(msg)
                             attempt_had_transient = True
                             continue
@@ -439,6 +488,9 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
         api_key: str,
         model: str,
         prefer: WireAPI = "chat",
+        *,
+        allow_responses: bool = True,
+        fast_fail_on_model_unavailable: bool = False,
     ) -> str:
         payload_chat = {
             "model": model,
@@ -461,7 +513,8 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
         second: WireAPI = "responses" if first == "chat" else "chat"
         errs: list[str] = []
 
-        for kind in (first, second):
+        kinds = (first, second) if allow_responses else (first,)
+        for kind in kinds:
             try:
                 if kind == "responses":
                     return await openai_compatible_request(
@@ -470,6 +523,7 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                         path="responses",
                         payload=payload_responses,
                         parser=extract_responses_text,
+                        fast_fail_on_model_unavailable=fast_fail_on_model_unavailable,
                     )
                 return await openai_compatible_request(
                     base_url=base_url,
@@ -477,6 +531,7 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                     path="chat/completions",
                     payload=payload_chat,
                     parser=extract_chat_text,
+                    fast_fail_on_model_unavailable=fast_fail_on_model_unavailable,
                 )
             except LLMError as e:
                 errs.append(str(e))
@@ -550,7 +605,12 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                 attempt_had_transient = False
                 for url in urls:
                     try:
-                        r = await client.post(url, params=params, json=payload)
+                        await _maybe_throttle_packy(base_url)
+                        if _is_packy_base(base_url):
+                            async with _PACKY_SEMAPHORE:
+                                r = await client.post(url, params=params, json=payload)
+                        else:
+                            r = await client.post(url, params=params, json=payload)
                     except httpx.TimeoutException:
                         last_err = "gemini_timeout"
                         attempt_had_transient = True
@@ -574,6 +634,8 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                         # (including PackyAPI "no distributor" cases). Retry with
                         # backoff before giving up or switching models.
                         if r.status_code in transient_status:
+                            if _looks_like_model_unavailable(msg):
+                                raise LLMError(msg)
                             last_err = msg
                             attempt_had_transient = True
                             continue
@@ -647,16 +709,20 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
         # PackyAPI docs (third-party clients) commonly recommend Gemini 3.
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",
-        "gemini-3.1-pro-preview",
         # Widely available 2.5 fallbacks.
-        "gemini-2.5-pro",
-        # Older/common flash fallbacks (some gateways expose these instead).
         "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
+        # Older/common flash fallbacks (some gateways expose these instead).
         "gemini-2.0-flash",
         "gemini-1.5-flash",
     ]
     cur_low = (cfg.model or "").strip().lower()
     fallbacks = [m for m in fallback_models if m.strip().lower() != cur_low]
+    if _is_packy_base(base):
+        # Keep fallback probing tight for PackyAPI to avoid looking like a
+        # request flood: try a few common alternatives, then give up.
+        fallbacks = fallbacks[:4]
 
     async def openai_chat(model: str) -> str:
         return await openai_compatible_generate(
@@ -664,6 +730,14 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
             api_key=cfg.api_key,
             model=model,
             prefer="chat",
+            # PackyAPI Gemini group does not implement /responses for Gemini models,
+            # and trying multiple wire APIs can create a burst of requests that
+            # looks like abusive probing. Prefer chat-only there.
+            allow_responses=not _is_packy_base(base),
+            # When PackyAPI returns "no distributor" for a model, it usually
+            # won't succeed by hammering retries; switching models is more
+            # effective.
+            fast_fail_on_model_unavailable=_is_packy_base(base),
         )
 
     async def openai_chat_with_fallbacks() -> str:
