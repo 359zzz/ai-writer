@@ -15,7 +15,7 @@ import {
   type UiTheme,
 } from "@/lib/uiPrefs";
 
-type TabKey = "writing" | "agents" | "settings";
+type TabKey = "create" | "continue" | "agents" | "settings";
 
 type Health = {
   ok: boolean;
@@ -135,9 +135,12 @@ export default function Home() {
     DEFAULT_UI_PREFS.brand.logo_data_url,
   );
 
-  const [tab, setTab] = useState<TabKey>("writing");
+  const [tab, setTab] = useState<TabKey>("create");
+  const [createPane, setCreatePane] = useState<
+    "projects" | "background" | "outline" | "writing"
+  >("writing");
+  const [continuePane, setContinuePane] = useState<"article" | "book">("article");
   const [showQuickStart, setShowQuickStart] = useState<boolean>(false);
-  const [writingMode, setWritingMode] = useState<"create" | "continue">("create");
   const [agentsView, setAgentsView] = useState<"timeline" | "graph">("timeline");
   const [expandedEventKey, setExpandedEventKey] = useState<string | null>(null);
   const [settingsPane, setSettingsPane] = useState<
@@ -225,6 +228,9 @@ export default function Home() {
   );
   const [exporting, setExporting] = useState<boolean>(false);
   const [exportError, setExportError] = useState<string | null>(null);
+
+  const writingMode: "create" | "continue" =
+    tab === "continue" ? "continue" : "create";
 
   const apiBase = useMemo(() => {
     return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -1341,7 +1347,8 @@ export default function Home() {
               <nav className="flex items-center gap-2">
                 {(
                   [
-                    ["writing", tt("tab_writing")],
+                    ["create", tt("tab_writing")],
+                    ["continue", tt("tab_continue")],
                     ["agents", tt("tab_agents")],
                     ["settings", tt("tab_settings")],
                   ] as const
@@ -1466,14 +1473,16 @@ export default function Home() {
           </div>
         </div>
 
-        {tab === "writing" ? (
+        {tab === "create" || tab === "continue" ? (
           <section className="rounded-xl border border-zinc-200 bg-transparent p-6 dark:border-zinc-800">
-            <h1 className="text-lg font-semibold">{tt("writing")}</h1>
+            <h1 className="text-lg font-semibold">
+              {tab === "create" ? tt("tab_writing") : tt("tab_continue")}
+            </h1>
             <p className="mt-2 text-sm text-[var(--ui-muted)]">
               {tt("writing_desc")}
             </p>
 
-            {showQuickStart ? (
+            {tab === "create" && createPane === "writing" && showQuickStart ? (
               <div className="mt-4 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-4 text-sm dark:border-zinc-800">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
@@ -1506,7 +1515,63 @@ export default function Home() {
               </div>
             ) : null}
 
-            <div className="mt-6 h-[calc(100vh-260px)] min-h-[560px]">
+            {tab === "create" ? (
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {(
+                  [
+                    ["projects", tt("create_nav_projects")],
+                    ["background", tt("create_nav_background")],
+                    ["outline", tt("create_nav_outline")],
+                    ["writing", tt("create_nav_writing")],
+                  ] as const
+                ).map(([k, label]) => {
+                  const active = createPane === k;
+                  return (
+                    <button
+                      key={k}
+                      onClick={() => setCreatePane(k)}
+                      className={[
+                        "rounded-lg px-3 py-2 text-sm transition-colors",
+                        active
+                          ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                          : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {(
+                  [
+                    ["article", tt("continue_nav_article")],
+                    ["book", tt("continue_nav_book")],
+                  ] as const
+                ).map(([k, label]) => {
+                  const active = continuePane === k;
+                  return (
+                    <button
+                      key={k}
+                      onClick={() => setContinuePane(k)}
+                      className={[
+                        "rounded-lg px-3 py-2 text-sm transition-colors",
+                        active
+                          ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                          : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {((tab === "create" && createPane === "writing") ||
+              (tab === "continue" && continuePane === "article")) ? (
+              <div className="mt-6 h-[calc(100vh-260px)] min-h-[560px]">
               <PanelGroup
                 direction="horizontal"
                 autoSaveId="ai-writer:writing:outer"
@@ -1518,40 +1583,7 @@ export default function Home() {
                   className="min-w-0 pr-3 h-full min-h-0"
                 >
                   <div className="grid gap-6 h-full min-h-0 overflow-auto pr-1">
-                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
-                  <div className="text-sm font-medium">{tt("writing_mode")}</div>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => setWritingMode("create")}
-                      className={[
-                        "rounded-md px-3 py-2 text-sm transition-colors",
-                        writingMode === "create"
-                          ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                          : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
-                      ].join(" ")}
-                    >
-                      {tt("writing_mode_create")}
-                    </button>
-                    <button
-                      onClick={() => setWritingMode("continue")}
-                      className={[
-                        "rounded-md px-3 py-2 text-sm transition-colors",
-                        writingMode === "continue"
-                          ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
-                          : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
-                      ].join(" ")}
-                    >
-                      {tt("writing_mode_continue")}
-                    </button>
-                  </div>
-                  <div className="mt-2 text-xs text-[var(--ui-muted)]">
-                    {writingMode === "create"
-                      ? tt("writing_mode_create_desc")
-                      : tt("writing_mode_continue_desc")}
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("projects")}</div>
                   <div className="mt-3 flex gap-2">
                     <input
@@ -1654,7 +1686,7 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("outline_latest")}</div>
                   {selectedProjectId ? (
                     outlineChapters ? (
@@ -1684,7 +1716,7 @@ export default function Home() {
                   )}
                 </div>
 
-                <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
                   <div className="text-sm font-medium">{tt("chapters")}</div>
                   {!selectedProjectId ? (
                     <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
@@ -2439,14 +2471,315 @@ export default function Home() {
                         ) : null}
                       </>
                     )}
-                          </div>
-                        </Panel>
+                  </div>
+                </Panel>
                       </PanelGroup>
                     </Panel>
                   </PanelGroup>
                 </Panel>
               </PanelGroup>
             </div>
+            ) : tab === "create" ? (
+              createPane === "projects" ? (
+                <div className="mt-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-6 dark:border-zinc-800">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold">{tt("create_nav_projects")}</div>
+                      <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                        {lang === "zh"
+                          ? "v1.4.x：先迁移为独立分页。后续会在这里加入项目卡片（简介/统计/一键生成简介/拖拽/删除）。"
+                          : "v1.4.x: Split into a dedicated pane first. Next: project cards (synopsis/stats/AI synopsis button/drag/delete)."
+                        }
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setCreatePane("writing")}
+                      className="shrink-0 rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                    >
+                      {lang === "zh" ? "去写作" : "Go to Writing"}
+                    </button>
+                  </div>
+
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                      <div className="text-sm font-medium">
+                        {lang === "zh" ? "新建项目" : "New project"}
+                      </div>
+                      <div className="mt-3 flex gap-2">
+                        <input
+                          value={newProjectTitle}
+                          onChange={(e) => setNewProjectTitle(e.target.value)}
+                          className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                          placeholder={tt("project_title_placeholder")}
+                        />
+                        <button
+                          onClick={() => {
+                            createProject().catch((e) =>
+                              setProjectsError((e as Error).message),
+                            );
+                          }}
+                          className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90"
+                        >
+                          {tt("create")}
+                        </button>
+                      </div>
+                      {projectsError ? (
+                        <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                          {projectsError}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                      <div className="text-sm font-medium">{tt("projects")}</div>
+                      <div className="mt-3 rounded-md border border-zinc-200 dark:border-zinc-800">
+                        {projects.length === 0 ? (
+                          <div className="p-3 text-sm text-[var(--ui-muted)]">
+                            {tt("no_projects")}
+                          </div>
+                        ) : (
+                          <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                            {projects.map((p) => {
+                              const active = p.id === selectedProjectId;
+                              return (
+                                <li key={p.id}>
+                                  <div
+                                    onClick={() => setSelectedProjectId(p.id)}
+                                    onDragOver={(e) => {
+                                      if (!draggingProjectId) return;
+                                      e.preventDefault();
+                                    }}
+                                    onDrop={(e) => {
+                                      const moving =
+                                        draggingProjectId ||
+                                        e.dataTransfer.getData("text/plain");
+                                      if (!moving || moving === p.id) return;
+                                      e.preventDefault();
+                                      setProjects((prev) => {
+                                        const next = moveById(prev, moving, p.id);
+                                        saveProjectOrder(next.map((x) => x.id));
+                                        return next;
+                                      });
+                                      setDraggingProjectId(null);
+                                    }}
+                                    className={[
+                                      "flex items-center gap-2 px-3 py-2 text-left text-sm",
+                                      active
+                                        ? "bg-zinc-100 dark:bg-zinc-800"
+                                        : "hover:bg-zinc-50 dark:hover:bg-zinc-900",
+                                    ].join(" ")}
+                                  >
+                                    <button
+                                      type="button"
+                                      draggable
+                                      onClick={(e) => e.stopPropagation()}
+                                      onDragStart={(e) => {
+                                        setDraggingProjectId(p.id);
+                                        e.dataTransfer.setData("text/plain", p.id);
+                                        e.dataTransfer.effectAllowed = "move";
+                                      }}
+                                      onDragEnd={() => setDraggingProjectId(null)}
+                                      className="cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
+                                      title={
+                                        lang === "zh" ? "拖拽排序" : "Drag to reorder"
+                                      }
+                                    >
+                                      ⋮⋮
+                                    </button>
+                                    <div className="min-w-0 flex-1 truncate">
+                                      {p.title}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        deleteProject(p.id).catch((err) =>
+                                          setProjectsError((err as Error).message),
+                                        );
+                                      }}
+                                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                    >
+                                      {lang === "zh" ? "删除" : "Delete"}
+                                    </button>
+                                  </div>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : createPane === "background" ? (
+                <div className="mt-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-6 dark:border-zinc-800">
+                  <div className="text-sm font-semibold">{tt("create_nav_background")}</div>
+                  <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                    {lang === "zh"
+                      ? "v1.5.0 起这里会升级为：知识库条目列表（显式展示/拖拽/删改）+ 单选/多选导出（json/txt）+ 联网检索配置。"
+                      : "From v1.5.0: KB list (visible/drag/edit/delete) + export selection (json/txt) + web research config."}
+                  </div>
+                  <div className="mt-4 grid gap-6 lg:grid-cols-2">
+                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                      <div className="text-sm font-medium">{tt("local_kb")}</div>
+                      <div className="mt-3 grid gap-2">
+                        <div className="grid gap-2 md:grid-cols-2">
+                          <label className="grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("kb_chunk_title")}
+                            </span>
+                            <input
+                              value={kbTitle}
+                              onChange={(e) => setKbTitle(e.target.value)}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                              placeholder={tt("kb_chunk_title_placeholder")}
+                            />
+                          </label>
+                          <label className="grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("kb_chunk_tags")}
+                            </span>
+                            <input
+                              value={kbTags}
+                              onChange={(e) => setKbTags(e.target.value)}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                              placeholder={tt("kb_chunk_tags_placeholder")}
+                            />
+                          </label>
+                        </div>
+                        <textarea
+                          value={kbContent}
+                          onChange={(e) => setKbContent(e.target.value)}
+                          className="min-h-[140px] w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                          placeholder={tt("kb_chunk_content_placeholder")}
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            disabled={!selectedProjectId || !kbContent.trim()}
+                            onClick={() => {
+                              addKbChunk().catch((e) =>
+                                setKbError((e as Error).message),
+                              );
+                            }}
+                            className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                          >
+                            {tt("save_to_kb")}
+                          </button>
+                          <span className="text-xs text-[var(--ui-muted)]">
+                            {tt("stored_locally")}
+                          </span>
+                        </div>
+
+                        <div className="mt-2 flex items-center gap-2">
+                          <input
+                            value={kbQuery}
+                            onChange={(e) => setKbQuery(e.target.value)}
+                            className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                            placeholder={`${tt("search_kb")}...`}
+                          />
+                          <button
+                            disabled={!kbQuery.trim()}
+                            onClick={() => {
+                              searchKb().catch((e) =>
+                                setKbError((e as Error).message),
+                              );
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {tt("search_kb")}
+                          </button>
+                        </div>
+                        {kbError ? (
+                          <div className="text-sm text-red-600 dark:text-red-400">
+                            {kbError}
+                          </div>
+                        ) : null}
+                        {kbResults.length > 0 ? (
+                          <div className="mt-2 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                            <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                              {kbResults.map((r) => (
+                                <li key={r.id} className="p-3">
+                                  <div className="font-medium">
+                                    {r.title || `Chunk #${r.id}`}
+                                  </div>
+                                  <div className="mt-1 line-clamp-3 text-xs text-[var(--ui-muted)]">
+                                    {r.content}
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                      <div className="text-sm font-medium">{tt("web_search")}</div>
+                      <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                        {tt("web_search_desc")}
+                      </div>
+                      <div className="mt-3 text-sm text-[var(--ui-muted)]">
+                        {lang === "zh"
+                          ? "联网检索的开关与提供商配置暂时仍在 Settings → 模型与工具。"
+                          : "Web research toggles/provider config currently remains in Settings → Model & Tools."}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-6 dark:border-zinc-800">
+                  <div className="text-sm font-semibold">{tt("create_nav_outline")}</div>
+                  <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                    {lang === "zh"
+                      ? "v1.6.0 起这里会支持：文本/文档导入编辑大纲；v1.7.0 加入轻量图形大纲（节点/连线）。"
+                      : "From v1.6.0: outline text/doc import editing; v1.7.0: lightweight graph outline (nodes/edges)."
+                    }
+                  </div>
+                  <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                    <div className="text-sm font-medium">{tt("outline_latest")}</div>
+                    {selectedProjectId ? (
+                      outlineChapters ? (
+                        <ol className="mt-3 space-y-2 text-sm">
+                          {outlineChapters.map((ch) => (
+                            <li
+                              key={ch.index}
+                              className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800"
+                            >
+                              <div className="font-medium">
+                                {ch.index}. {ch.title}
+                              </div>
+                              {ch.summary ? (
+                                <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                                  {ch.summary}
+                                </div>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ol>
+                      ) : (
+                        <div className="mt-2 text-sm text-[var(--ui-muted)]">
+                          {tt("no_outline")}
+                        </div>
+                      )
+                    ) : (
+                      <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                        {tt("select_project_first")}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            ) : (
+              <div className="mt-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-6 dark:border-zinc-800">
+                <div className="text-sm font-semibold">{tt("continue_nav_book")}</div>
+                <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                  {lang === "zh"
+                    ? "v2.0.0 目标：百万字级书籍续写（分片→并行总结→角色卡→世界观/时间线→续写）。此分页先占位，后续逐步落地。"
+                    : "v2.0.0 goal: million-word book continuation (chunk → parallel summaries → character cards → world/timeline → continue). This pane is a scaffold for now."
+                  }
+                </div>
+              </div>
+            )}
           </section>
         ) : null}
 

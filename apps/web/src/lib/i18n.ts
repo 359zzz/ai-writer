@@ -4,6 +4,7 @@ export type I18nKey =
   | "app_name"
   | "app_tagline"
   | "tab_writing"
+  | "tab_continue"
   | "tab_agents"
   | "tab_settings"
   | "backend"
@@ -28,6 +29,12 @@ export type I18nKey =
   | "writing_mode_continue"
   | "writing_mode_create_desc"
   | "writing_mode_continue_desc"
+  | "create_nav_projects"
+  | "create_nav_background"
+  | "create_nav_outline"
+  | "create_nav_writing"
+  | "continue_nav_article"
+  | "continue_nav_book"
   | "projects"
   | "project_title_placeholder"
   | "create"
@@ -188,7 +195,8 @@ export type I18nKey =
 const ZH: Record<I18nKey, string> = {
   app_name: "ai-writer",
   app_tagline: "多智能体小说工作台（MVP）",
-  tab_writing: "写作",
+  tab_writing: "创作",
+  tab_continue: "续写",
   tab_agents: "Agent 协作",
   tab_settings: "设置",
   backend: "后端",
@@ -204,7 +212,7 @@ const ZH: Record<I18nKey, string> = {
   guide_title: "快速上手",
   guide_step_projects: "左侧新建/选择项目",
   guide_step_settings: "在设置页选择模型并配置 API Key（本地保存 / 环境变量）",
-  guide_step_kb: "（可选）右侧 Local KB 添加设定；Strong 模式更依赖 KB",
+  guide_step_kb: "（可选）右侧 本地知识库 添加设定；Strong 模式更依赖知识库",
   guide_step_run: "在右侧面板运行：生成大纲 / 写章节 / 续写",
   guide_step_export: "写完后在 Export 导出 DOCX/EPUB/PDF",
   guide_dismiss: "不再提示",
@@ -213,6 +221,12 @@ const ZH: Record<I18nKey, string> = {
   writing_mode_continue: "续写",
   writing_mode_create_desc: "从设定/大纲开始写新章节。",
   writing_mode_continue_desc: "粘贴已有文本，抽取信息后在此基础上续写。",
+  create_nav_projects: "项目管理",
+  create_nav_background: "背景设定",
+  create_nav_outline: "大纲编辑",
+  create_nav_writing: "写作",
+  continue_nav_article: "文章续写",
+  continue_nav_book: "书籍续写",
   projects: "项目",
   project_title_placeholder: "项目标题",
   create: "新建",
@@ -228,7 +242,7 @@ const ZH: Record<I18nKey, string> = {
   chapter_index: "章节序号",
   research_query_optional: "联网检索（可选）",
   research_query_desc:
-    "在写章节/续写前先联网搜索一轮，并把简短结果作为上下文（不会自动写入 KB）。",
+    "在写章节/续写前先联网搜索一轮，并把简短结果作为上下文（不会自动写入知识库）。",
   write_chapter_llm: "写章节（LLM）",
   uses_settings: "使用 设置→模型/知识库/联网检索 等配置。",
   continue_mode: "续写模式",
@@ -264,12 +278,12 @@ const ZH: Record<I18nKey, string> = {
   exporting: "导出中...",
   local_kb: "本地知识库",
   stored_locally: "本地存储（SQLite FTS）。",
-  save_to_kb: "保存到 KB",
-  search_kb: "搜索 KB",
+  save_to_kb: "保存到知识库",
+  search_kb: "搜索知识库",
   web_search: "联网搜索（Research）",
-  web_search_desc: "搜索结果默认不入库，需手动导入到本地 KB。",
+  web_search_desc: "搜索结果默认不入库，需手动导入到本地知识库。",
   web_search_disabled: "已在设置中关闭联网搜索工具。",
-  import_to_kb: "导入到 KB",
+  import_to_kb: "导入到知识库",
   agents: "Agent 协作",
   agents_desc: "可视化多智能体执行轨迹（时间线 + 简易图）。",
   timeline: "时间线",
@@ -295,7 +309,7 @@ const ZH: Record<I18nKey, string> = {
   present: "已配置",
   missing: "缺失",
   project_settings: "项目设置",
-  select_project_first: "请先在写作页选择一个项目。",
+  select_project_first: "请先选择一个项目。",
   provider: "模型提供商",
   gpt_provider: "GPT（OpenAI-compatible）",
   gemini_provider: "Gemini",
@@ -315,8 +329,8 @@ const ZH: Record<I18nKey, string> = {
   max_tokens: "最大 tokens",
   chapter_words: "单章字数",
   chapter_count: "章节数",
-  kb_mode: "KB 模式",
-  kb_weak: "弱依赖（优先 KB）",
+  kb_mode: "知识库模式",
+  kb_weak: "弱依赖（优先知识库）",
   kb_strong: "强依赖（canon-locked）",
   web_search_tool: "联网搜索工具",
   web_search_provider: "联网搜索提供商",
@@ -383,7 +397,8 @@ const ZH: Record<I18nKey, string> = {
 const EN: Record<I18nKey, string> = {
   app_name: "ai-writer",
   app_tagline: "Multi-agent novel workspace (MVP)",
-  tab_writing: "Writing",
+  tab_writing: "Create",
+  tab_continue: "Continue",
   tab_agents: "Agent Collaboration",
   tab_settings: "Settings",
   backend: "Backend",
@@ -410,6 +425,12 @@ const EN: Record<I18nKey, string> = {
   writing_mode_create_desc: "Draft new chapters from your settings/outline.",
   writing_mode_continue_desc:
     "Paste an existing manuscript, extract state, then continue writing.",
+  create_nav_projects: "Projects",
+  create_nav_background: "Background",
+  create_nav_outline: "Outline",
+  create_nav_writing: "Writing",
+  continue_nav_article: "Article",
+  continue_nav_book: "Book",
   projects: "Projects",
   project_title_placeholder: "Project title",
   create: "Create",

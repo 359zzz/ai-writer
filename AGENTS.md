@@ -259,3 +259,11 @@ Versioning policy (from v1.0.x onward):
 ### v1.3.5 (Dev Script: Stable Backend Python)
 - `scripts/dev.ps1`: always launches backend with the project venv’s `python.exe` (instead of relying on PATH activation) to prevent “restarted but still running old API version” confusion under Uvicorn `--reload`.
 - `scripts/dev.ps1`: warns when port `8000` is already in use and prints the existing process command line (best-effort), so you can stop the old server before starting a new one.
+
+### v1.4.0 (UI IA: Create/Continue Split + Pane Scaffolds)
+- Web: top-level navigation splits “创作 / 续写” (Create/Continue) as separate tabs; removes the in-workspace “写作模式” toggle (mode is now determined by the top tab).
+- Web: adds v2.0-ready pane scaffolds:
+  - 创作: 项目管理 / 背景设定 / 大纲编辑 / 写作
+  - 续写: 文章续写 / 书籍续写
+  Non-writing panes are scaffolds for now and will be upgraded in subsequent minor releases.
+- i18n (zh): replaces “KB” wording with “知识库” in user-facing copy (keeps internal key names unchanged).
