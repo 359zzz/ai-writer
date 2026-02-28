@@ -625,65 +625,89 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
             prefer=cfg.wire_api,
         )
 
-    # Gemini: we always try the Gemini v1beta shape first (works for Google and
-    # some proxies). If the base_url isn't Google-like and that fails, we fall
-    # back to OpenAI-compatible chat/responses (some gateways expose Gemini via
-    # /chat/completions).
+    # Gemini:
+    # - Google official endpoints: Gemini v1beta shape
+    # - PackyAPI: their Gemini group works well with OpenAI-compatible chat/completions
+    #   (as documented for third-party clients), and v1beta can be flaky (503 distributor /
+    #   empty_completion with reasoning-only responses). Prefer OpenAI-compatible first.
     base = cfg.base_url or "https://generativelanguage.googleapis.com"
     if _is_google_genai_base(base):
         return await gemini_generate_v1beta(base, cfg.api_key, cfg.model)
 
-    try:
-        return await gemini_generate_v1beta(base, cfg.api_key, cfg.model)
-    except LLMError as e1:
-        gemini_err = str(e1)
+    base_low = (base or "").lower()
+    prefer_openai_first = "packyapi.com" in base_low
 
-        # PackyAPI (and similar gateways) may intermittently report that a model
-        # has "no distributor"/"no channel" in the selected group, or return a
-        # syntactically-valid response with no text (empty_completion) for some
-        # thinking-heavy models. In these cases, try a small set of fallback
-        # Gemini models so the app remains usable.
-        if _looks_like_model_unavailable(gemini_err) or gemini_err.startswith("empty_completion"):
-            # Keep this list conservative: it should only contain broadly-available
-            # model IDs that PackyAPI commonly exposes.
-            fallbacks = [
-                # PackyAPI docs (third-party clients) commonly recommend Gemini 3.
-                "gemini-3-pro-preview",
-                "gemini-3-flash-preview",
-                "gemini-3.1-pro-preview",
-                # Older/common flash fallbacks (some gateways expose these instead).
-                "gemini-2.5-flash",
-                "gemini-2.0-flash",
-                "gemini-1.5-flash",
-            ]
-            for fb in fallbacks:
-                if fb.strip().lower() == (cfg.model or "").strip().lower():
-                    continue
-                try:
-                    return await gemini_generate_v1beta(base, cfg.api_key, fb)
-                except LLMError as efb:
-                    # Keep the most actionable failure.
-                    gemini_err = max([gemini_err, str(efb)], key=err_score)
+    # Keep this list conservative: it should only contain broadly-available model IDs.
+    fallback_models = [
+        # PackyAPI docs (third-party clients) commonly recommend Gemini 3.
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+        # Older/common flash fallbacks (some gateways expose these instead).
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+    cur_low = (cfg.model or "").strip().lower()
+    fallbacks = [m for m in fallback_models if m.strip().lower() != cur_low]
+
+    async def openai_chat(model: str) -> str:
+        return await openai_compatible_generate(
+            base_url=base,
+            api_key=cfg.api_key,
+            model=model,
+            prefer="chat",
+        )
+
+    async def openai_chat_with_fallbacks() -> str:
         try:
-            return await openai_compatible_generate(
-                base_url=base,
-                api_key=cfg.api_key,
-                model=cfg.model,
-                prefer="chat",
-            )
-        except LLMError as e2:
-            # If Gemini endpoint returns a syntactically valid response but
-            # with no text parts, surface that as the primary failure (it's
-            # usually more actionable than "not implemented" fallbacks).
-            if gemini_err.startswith("empty_completion"):
-                raise LLMError(gemini_err)
-            best = max([gemini_err, str(e2)], key=err_score)
-            if "packyapi.com" in (base or "").lower() and _looks_like_model_unavailable(best):
-                best += (
-                    " | packyapi_hint=try gemini-3-pro-preview or gemini-3-flash-preview"
-                    " (and if needed: gemini-2.5-flash)"
-                )
+            return await openai_chat(cfg.model)
+        except LLMError as e:
+            best = str(e)
+            if _looks_like_model_unavailable(best) or best.startswith("empty_completion"):
+                for fb in fallbacks:
+                    try:
+                        return await openai_chat(fb)
+                    except LLMError as efb:
+                        best = max([best, str(efb)], key=err_score)
             raise LLMError(best)
+
+    async def gemini_v1beta(model: str) -> str:
+        return await gemini_generate_v1beta(base, cfg.api_key, model)
+
+    async def gemini_v1beta_with_fallbacks() -> str:
+        try:
+            return await gemini_v1beta(cfg.model)
+        except LLMError as e:
+            best = str(e)
+            if _looks_like_model_unavailable(best) or best.startswith("empty_completion"):
+                for fb in fallbacks:
+                    try:
+                        return await gemini_v1beta(fb)
+                    except LLMError as efb:
+                        best = max([best, str(efb)], key=err_score)
+            raise LLMError(best)
+
+    errors: list[str] = []
+    primary = openai_chat_with_fallbacks if prefer_openai_first else gemini_v1beta_with_fallbacks
+    secondary = gemini_v1beta_with_fallbacks if prefer_openai_first else openai_chat_with_fallbacks
+
+    try:
+        return await primary()
+    except LLMError as e1:
+        errors.append(str(e1))
+    try:
+        return await secondary()
+    except LLMError as e2:
+        errors.append(str(e2))
+
+    best = max(errors, key=err_score) if errors else "gemini_failed"
+    if prefer_openai_first and _looks_like_model_unavailable(best):
+        best += (
+            " | packyapi_hint=try gemini-3-pro-preview or gemini-3-flash-preview"
+            " (and if needed: gemini-2.5-flash)"
+        )
+    raise LLMError(best)
 
 
 def parse_json_loose(text: str) -> Any:

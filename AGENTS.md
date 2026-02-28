@@ -234,3 +234,8 @@ Versioning policy (from v1.0.x onward):
 ### v1.3.1 (PackyAPI Gemini: Better Defaults + Reliable Fallback)
 - PackyAPI Gemini: improved fallback model set to include Gemini 3 (`gemini-3-pro-preview` / `gemini-3-flash-preview` / `gemini-3.1-pro-preview`) and also triggers fallback on `empty_completion` (some gateways return reasoning-only outputs with empty text).
 - Settings: default Gemini model updated to `gemini-3-pro-preview` (matches PackyAPI third-party client guidance and works more reliably than some 2.5 models in certain groups).
+
+### v1.3.2 (PackyAPI Gemini: Consistent Runs + Save-Then-Run)
+- Web: run buttons now wait for any in-flight Settings/Secrets save to complete before starting a run (prevents “I set gemini-3-* but tool_call still shows old gemini-2.5-*” races).
+- API: run pipeline snapshots the LLM config at run start and includes it in `run_started` trace payload; prevents mid-run settings edits from mixing models across agents.
+- Gemini (PackyAPI): prefer OpenAI-compatible `chat/completions` first (per PackyAPI third-party guidance), then fall back to Gemini v1beta + model fallback set.

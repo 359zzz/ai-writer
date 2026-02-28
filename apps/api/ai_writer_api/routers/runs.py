@@ -193,10 +193,23 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         output_lang = _resolve_output_lang(payload, project)
         lang_hint_json = _lang_hint_json(output_lang)
         lang_hint_md = _lang_hint_markdown(output_lang)
+
+        # Snapshot LLM config at run start to avoid mixing settings changes mid-run.
+        run_llm_cfg = resolve_llm_config(project.settings or {})
         yield emit(
             "run_started",
             "Director",
-            {"kind": kind, "project_id": project_id, "output_lang": output_lang},
+            {
+                "kind": kind,
+                "project_id": project_id,
+                "output_lang": output_lang,
+                "llm": {
+                    "provider": run_llm_cfg.provider,
+                    "model": run_llm_cfg.model,
+                    "base_url": run_llm_cfg.base_url,
+                    "wire_api": run_llm_cfg.wire_api if run_llm_cfg.provider == "openai" else None,
+                },
+            },
         )
 
         def kb_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -224,7 +237,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             return [dict(r) for r in rows]
 
         def llm_cfg():
-            return resolve_llm_config(project.settings or {})
+            return run_llm_cfg
 
         def mark_run_failed(msg: str) -> None:
             with get_session() as s3:

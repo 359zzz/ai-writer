@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 import { MarkdownPreview } from "@/components/MarkdownPreview";
@@ -159,6 +159,9 @@ export default function Home() {
   const [secretsSaving, setSecretsSaving] = useState<boolean>(false);
   const [secretsSaveError, setSecretsSaveError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsSaving, setSettingsSaving] = useState<boolean>(false);
+  const pendingSecretsSaveRef = useRef<Promise<void> | null>(null);
+  const pendingProjectSettingsSaveRef = useRef<Promise<void> | null>(null);
   const [runEvents, setRunEvents] = useState<
     Array<{
       run_id: string;
@@ -745,6 +748,7 @@ export default function Home() {
   async function saveSecrets(update: Record<string, unknown>) {
     setSecretsSaveError(null);
     setSecretsSaving(true);
+    const p = (async () => {
     try {
       const res = await fetch(`${apiBase}/api/secrets/set`, {
         method: "POST",
@@ -771,8 +775,16 @@ export default function Home() {
     } catch (err) {
       setSecretsSaveError((err as Error).message);
       throw err;
+    }
+    })();
+
+    pendingSecretsSaveRef.current = p;
+    try {
+      await p;
     } finally {
-      setSecretsSaving(false);
+      if (pendingSecretsSaveRef.current === p) {
+        setSecretsSaving(false);
+      }
     }
   }
 
@@ -883,17 +895,31 @@ export default function Home() {
   async function saveProjectSettings(next: Record<string, unknown>) {
     if (!selectedProject) return;
     setSettingsError(null);
-    const res = await fetch(`${apiBase}/api/projects/${selectedProject.id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ settings: next }),
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(txt || `HTTP ${res.status}`);
+    setSettingsSaving(true);
+    const p = (async () => {
+      const res = await fetch(`${apiBase}/api/projects/${selectedProject.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ settings: next }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      const updated = (await res.json()) as Project;
+      setProjects((prev) => prev.map((pp) => (pp.id === updated.id ? updated : pp)));
+    })();
+    pendingProjectSettingsSaveRef.current = p;
+    try {
+      await p;
+    } catch (e) {
+      setSettingsError((e as Error).message);
+      throw e;
+    } finally {
+      if (pendingProjectSettingsSaveRef.current === p) {
+        setSettingsSaving(false);
+      }
     }
-    const updated = (await res.json()) as Project;
-    setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
   }
 
   async function runPipeline(
@@ -908,6 +934,15 @@ export default function Home() {
     setActiveRunId(null);
 
     try {
+      // Ensure any in-flight Settings/Secrets save completes before starting a run,
+      // otherwise the backend may start with stale provider/model/base_url.
+      if (pendingProjectSettingsSaveRef.current) {
+        await pendingProjectSettingsSaveRef.current;
+      }
+      if (pendingSecretsSaveRef.current) {
+        await pendingSecretsSaveRef.current;
+      }
+
       const res = await fetch(
         `${apiBase}/api/projects/${selectedProjectId}/runs/stream`,
         {
@@ -1837,7 +1872,12 @@ export default function Home() {
                     </div>
                     <div className="mt-4 flex flex-wrap items-center gap-2">
                       <button
-                        disabled={!selectedProjectId || runInProgress}
+                        disabled={
+                          !selectedProjectId ||
+                          runInProgress ||
+                          settingsSaving ||
+                          secretsSaving
+                        }
                         onClick={() => {
                           runPipeline("demo").catch((e) =>
                             setRunError((e as Error).message),
@@ -1848,7 +1888,12 @@ export default function Home() {
                         {runInProgress ? tt("running") : tt("run_demo")}
                       </button>
                       <button
-                        disabled={!selectedProjectId || runInProgress}
+                        disabled={
+                          !selectedProjectId ||
+                          runInProgress ||
+                          settingsSaving ||
+                          secretsSaving
+                        }
                         onClick={() => {
                           runPipeline("outline").catch((e) =>
                             setRunError((e as Error).message),
@@ -1906,7 +1951,12 @@ export default function Home() {
                         </div>
                         <div className="mt-3 flex items-center gap-2">
                           <button
-                            disabled={!selectedProjectId || runInProgress}
+                            disabled={
+                              !selectedProjectId ||
+                              runInProgress ||
+                              settingsSaving ||
+                              secretsSaving
+                            }
                             onClick={() => {
                               runPipeline("chapter", {
                                 chapter_index: chapterIndex,
@@ -2122,6 +2172,8 @@ export default function Home() {
                               disabled={
                                 !selectedProjectId ||
                                 runInProgress ||
+                                settingsSaving ||
+                                secretsSaving ||
                                 continueSourceLoading ||
                                 !(continueSourceId || continueInputText.trim())
                               }
