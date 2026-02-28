@@ -639,10 +639,23 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
         gemini_err = str(e1)
 
         # PackyAPI (and similar gateways) may intermittently report that a model
-        # has "no distributor"/"no channel" in the selected group. In this case,
-        # try a small set of fallback Gemini models so the app remains usable.
-        if _looks_like_model_unavailable(gemini_err):
-            fallbacks = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        # has "no distributor"/"no channel" in the selected group, or return a
+        # syntactically-valid response with no text (empty_completion) for some
+        # thinking-heavy models. In these cases, try a small set of fallback
+        # Gemini models so the app remains usable.
+        if _looks_like_model_unavailable(gemini_err) or gemini_err.startswith("empty_completion"):
+            # Keep this list conservative: it should only contain broadly-available
+            # model IDs that PackyAPI commonly exposes.
+            fallbacks = [
+                # PackyAPI docs (third-party clients) commonly recommend Gemini 3.
+                "gemini-3-pro-preview",
+                "gemini-3-flash-preview",
+                "gemini-3.1-pro-preview",
+                # Older/common flash fallbacks (some gateways expose these instead).
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash",
+            ]
             for fb in fallbacks:
                 if fb.strip().lower() == (cfg.model or "").strip().lower():
                     continue
@@ -666,7 +679,10 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                 raise LLMError(gemini_err)
             best = max([gemini_err, str(e2)], key=err_score)
             if "packyapi.com" in (base or "").lower() and _looks_like_model_unavailable(best):
-                best += " | packyapi_hint=try gemini-2.5-flash or gemini-2.0-flash or gemini-1.5-flash"
+                best += (
+                    " | packyapi_hint=try gemini-3-pro-preview or gemini-3-flash-preview"
+                    " (and if needed: gemini-2.5-flash)"
+                )
             raise LLMError(best)
 
 

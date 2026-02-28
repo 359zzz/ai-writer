@@ -230,3 +230,7 @@ Versioning policy (from v1.0.x onward):
   - `DELETE /api/projects/{project_id}/chapters/{chapter_id}`
   - `POST /api/projects/{project_id}/chapters/reorder`
 - Tests: added regressions for think-stripping + chapter/project delete/reorder APIs.
+
+### v1.3.1 (PackyAPI Gemini: Better Defaults + Reliable Fallback)
+- PackyAPI Gemini: improved fallback model set to include Gemini 3 (`gemini-3-pro-preview` / `gemini-3-flash-preview` / `gemini-3.1-pro-preview`) and also triggers fallback on `empty_completion` (some gateways return reasoning-only outputs with empty text).
+- Settings: default Gemini model updated to `gemini-3-pro-preview` (matches PackyAPI third-party client guidance and works more reliably than some 2.5 models in certain groups).

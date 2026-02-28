@@ -3388,10 +3388,10 @@ export default function Home() {
                         {tt("gemini_model")}
                       </span>
                       <input
-                        defaultValue={getSettingsValue(
-                          "llm.gemini.model",
-                          "gemini-2.5-flash",
-                        )}
+                          defaultValue={getSettingsValue(
+                            "llm.gemini.model",
+                            "gemini-3-pro-preview",
+                          )}
                         onBlur={(e) =>
                           saveProjectSettings({
                             llm: { gemini: { model: e.target.value } },
