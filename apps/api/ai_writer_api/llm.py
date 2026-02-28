@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
@@ -24,6 +25,20 @@ def _is_google_genai_base(base_url: str | None) -> bool:
         return False
     u = base_url.lower()
     return ("generativelanguage.googleapis.com" in u) or ("genai.googleapis.com" in u)
+
+
+def _looks_like_model_unavailable(msg: str) -> bool:
+    m = (msg or "").strip().lower()
+    if not m:
+        return False
+    # Common proxy / gateway patterns (PackyAPI etc.)
+    if "无可用渠道" in m:
+        return True
+    if "model_not_found" in m or "模型不存在" in m:
+        return True
+    if "no distributor" in m or "distributor" in m:
+        return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -61,6 +76,59 @@ def _normalize_base_url(url: str) -> str:
     return u
 
 
+_OPENAI_ENDPOINT_SUFFIXES = (
+    "/v1/chat/completions",
+    "/chat/completions",
+    "/v1/responses",
+    "/responses",
+)
+
+
+def _strip_openai_endpoint_suffix(base_url: str) -> str:
+    """
+    Some providers (including PackyAPI docs for certain clients) present the full
+    endpoint URL like:
+      https://www.packyapi.com/v1/chat/completions
+    while our app expects a base URL like:
+      https://www.packyapi.com (or /v1)
+
+    This helper makes the app more copy/paste friendly.
+    """
+
+    u = (base_url or "").strip().rstrip("/")
+    for suf in _OPENAI_ENDPOINT_SUFFIXES:
+        if u.endswith(suf):
+            return u[: -len(suf)].rstrip("/")
+    return u
+
+
+def _normalize_openai_model_name(model: str) -> str:
+    """
+    Normalize common user inputs:
+    - gpt4o -> gpt-4o
+    - gpt4o-mini -> gpt-4o-mini
+    - gpt5.2 -> gpt-5.2
+
+    This is intentionally conservative: only apply when the user omitted the dash
+    after 'gpt'.
+    """
+
+    m = (model or "").strip()
+    low = m.lower()
+
+    # Common aliases without dash.
+    if low == "gpt4o":
+        return "gpt-4o"
+    if low == "gpt4o-mini":
+        return "gpt-4o-mini"
+
+    # Generic: gpt5..., gpt4..., etc -> gpt-5..., gpt-4...
+    if re.match(r"^gpt\d", low) and not low.startswith("gpt-"):
+        return "gpt-" + m[3:]
+
+    return m
+
+
 def resolve_llm_config(project_settings: dict[str, Any], secrets: Secrets | None = None) -> LLMConfig:
     s = secrets or load_secrets()
     llm = project_settings.get("llm") if isinstance(project_settings, dict) else {}
@@ -93,10 +161,11 @@ def resolve_llm_config(project_settings: dict[str, Any], secrets: Secrets | None
         model = str(model).strip()
         if len(model) >= 2 and ((model[0] == model[-1] == '"') or (model[0] == model[-1] == "'")):
             model = model[1:-1].strip()
+        model = _normalize_openai_model_name(model)
         api_key = s.openai_api_key
         return LLMConfig(
             provider="openai",
-            base_url=_normalize_base_url(str(base_url)),
+            base_url=_strip_openai_endpoint_suffix(_normalize_base_url(str(base_url))),
             model=str(model),
             api_key=api_key,
             temperature=temperature_f,
@@ -410,6 +479,30 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
 
         if errs:
             best = max(errs, key=err_score)
+
+            # If we tried both wire APIs, keep some context: PackyAPI (and other
+            # gateways) can fail differently across endpoints. Showing only the
+            # "best" error sometimes hides the more actionable one.
+            alt = next((e for e in errs if e != best), None)
+            if alt and alt not in best:
+                best = f"{best} | alt={alt}"
+
+            # PackyAPI-specific hint: their docs recommend /v1/chat/completions
+            # for most integrations, and Codex-group users often use
+            # gpt-5.1-codex. In some regions, /v1/responses may be unstable and
+            # return Cloudflare 502 HTML.
+            b_low = (base_url or "").lower()
+            if "packyapi.com" in b_low:
+                # Only add a hint when it looks like the common failure pattern.
+                if ("openai_http_502:html_error_page" in best) and (
+                    ("openai_http_404" in best) or ("openai_http_404" in (alt or ""))
+                ):
+                    best += " | packyapi_hint=try wire_api=chat and model=gpt-5.1-codex"
+                elif ("openai_http_502:html_error_page" in best) and (
+                    model.strip().lower() in {"gpt-5.2", "gpt-5", "gpt-5-codex", "gpt-5.2-codex"}
+                ):
+                    best += " | packyapi_hint=try model=gpt-5.1-codex"
+
             raise LLMError(best)
         raise LLMError("openai_failed")
 
@@ -472,7 +565,10 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                         if detail:
                             msg += f":{detail}"
 
-                        if r.status_code in transient_status:
+                        # A 503 can be either a transient gateway hiccup OR a
+                        # "model unavailable" situation (no distributor/channel).
+                        # Only treat it as retryable when it looks transient.
+                        if r.status_code in transient_status and not _looks_like_model_unavailable(msg):
                             last_err = msg
                             attempt_had_transient = True
                             continue
@@ -541,6 +637,20 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
         return await gemini_generate_v1beta(base, cfg.api_key, cfg.model)
     except LLMError as e1:
         gemini_err = str(e1)
+
+        # PackyAPI (and similar gateways) may intermittently report that a model
+        # has "no distributor"/"no channel" in the selected group. In this case,
+        # try a small set of fallback Gemini models so the app remains usable.
+        if _looks_like_model_unavailable(gemini_err):
+            fallbacks = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+            for fb in fallbacks:
+                if fb.strip().lower() == (cfg.model or "").strip().lower():
+                    continue
+                try:
+                    return await gemini_generate_v1beta(base, cfg.api_key, fb)
+                except LLMError as efb:
+                    # Keep the most actionable failure.
+                    gemini_err = max([gemini_err, str(efb)], key=err_score)
         try:
             return await openai_compatible_generate(
                 base_url=base,
@@ -555,6 +665,8 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
             if gemini_err.startswith("empty_completion"):
                 raise LLMError(gemini_err)
             best = max([gemini_err, str(e2)], key=err_score)
+            if "packyapi.com" in (base or "").lower() and _looks_like_model_unavailable(best):
+                best += " | packyapi_hint=try gemini-2.5-flash or gemini-2.0-flash or gemini-1.5-flash"
             raise LLMError(best)
 
 

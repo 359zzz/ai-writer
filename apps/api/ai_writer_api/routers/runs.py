@@ -15,7 +15,7 @@ from ..db import ENGINE, get_session
 from ..llm import LLMError, parse_json_loose, resolve_llm_config, generate_text
 from ..models import Chapter, KBChunk, Project, Run, TraceEvent
 from ..tools.continue_sources import ContinueSourceError, load_continue_source_excerpt
-from ..util import deep_merge, json_dumps
+from ..util import deep_merge, json_dumps, strip_think_blocks
 
 
 router = APIRouter(tags=["runs"])
@@ -28,6 +28,97 @@ class RunRequestPayload(dict):
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _coerce_lang(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    v = value.strip().lower()
+    if not v or v == "auto":
+        return None
+    if v in {"zh", "zh-cn", "zh_cn", "zh-hans", "zh_hans", "cn", "chinese", "中文", "简体", "简体中文"}:
+        return "zh"
+    if v in {"en", "en-us", "en_us", "english", "英文"}:
+        return "en"
+    if v.startswith("zh"):
+        return "zh"
+    if v.startswith("en"):
+        return "en"
+    return None
+
+
+def _resolve_output_lang(payload: dict[str, Any], project: Project) -> str:
+    """
+    Decide which language to ask the LLM to write in.
+
+    Priority:
+    1) payload override (ui_lang/output_lang/output_language/lang)
+    2) project settings (writing/story/ui fields if present)
+    3) heuristic: if project title/settings contain CJK -> zh else en
+    """
+
+    for key in ("output_lang", "output_language", "ui_lang", "lang"):
+        resolved = _coerce_lang(payload.get(key))
+        if resolved:
+            return resolved
+
+    settings = project.settings or {}
+    if isinstance(settings, dict):
+        writing = settings.get("writing") if isinstance(settings.get("writing"), dict) else {}
+        story = settings.get("story") if isinstance(settings.get("story"), dict) else {}
+        ui = settings.get("ui") if isinstance(settings.get("ui"), dict) else {}
+
+        for candidate in (
+            (writing or {}).get("output_lang"),
+            (writing or {}).get("language"),
+            (story or {}).get("output_lang"),
+            (story or {}).get("language"),
+            (ui or {}).get("lang"),
+        ):
+            resolved = _coerce_lang(candidate)
+            if resolved:
+                return resolved
+
+        # Heuristic fallback.
+        blob = f"{project.title or ''}\n{json.dumps(settings, ensure_ascii=False)}"
+        if _CJK_RE.search(blob):
+            return "zh"
+
+    return "en"
+
+
+def _lang_hint_json(lang: str) -> str:
+    if lang == "zh":
+        return (
+            "Output language: Simplified Chinese (zh-CN). "
+            "所有自然语言字段请用简体中文。"
+            "Keep JSON keys in English as in the schema."
+        )
+    return "Output language: English (en). Keep JSON keys in English as in the schema."
+
+
+def _lang_hint_markdown(lang: str) -> str:
+    if lang == "zh":
+        return (
+            "Output language: Simplified Chinese (zh-CN). "
+            "全文用简体中文书写（包括标题/小节标题）。"
+        )
+    return "Output language: English (en)."
+
+
+def _writer_title_example(lang: str, chapter_index: int) -> str:
+    if lang == "zh":
+        return f"# 第{chapter_index}章：标题"
+    return "# Chapter X: Title"
+
+
+def _default_chapter_title(lang: str, chapter_index: int) -> str:
+    if lang == "zh":
+        return f"第{chapter_index}章"
+    return f"Chapter {chapter_index}"
 
 
 @router.get("/api/projects/{project_id}/runs")
@@ -99,7 +190,14 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
 
             return f"data: {json.dumps(evt, ensure_ascii=False)}\n\n".encode("utf-8")
 
-        yield emit("run_started", "Director", {"kind": kind, "project_id": project_id})
+        output_lang = _resolve_output_lang(payload, project)
+        lang_hint_json = _lang_hint_json(output_lang)
+        lang_hint_md = _lang_hint_markdown(output_lang)
+        yield emit(
+            "run_started",
+            "Director",
+            {"kind": kind, "project_id": project_id, "output_lang": output_lang},
+        )
 
         def kb_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
             sql = text(
@@ -201,6 +299,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             try:
                 system = (
                     "You are ConfigAutofillAgent for a novel writing platform. "
+                    f"{lang_hint_json} "
                     "Given a partial project settings JSON, produce a JSON patch that fills missing fields only. "
                     "Do not overwrite user-provided fields. Output JSON only."
                 )
@@ -319,6 +418,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 yield emit("agent_started", "Extractor", {})
                 system = (
                     "You are ExtractorAgent. Extract a structured StoryState from an existing manuscript excerpt. "
+                    f"{lang_hint_json} "
                     "Output JSON only."
                 )
                 user = (
@@ -373,14 +473,25 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 yield emit("agent_started", "Outliner", {})
                 system = (
                     "You are OutlinerAgent. Create a concise chapter outline for a novel. "
+                    f"{lang_hint_json} "
                     "Output JSON only."
                 )
+                if output_lang == "zh":
+                    lang_user = (
+                        "语言要求：请用简体中文填写所有自然语言字段（title/summary/goal）。"
+                        "不要输出英文或中英混排；如果输入里有英文，请先翻译为中文再写。\n\n"
+                    )
+                    example = '{ "chapters": [ {"index":1,"title":"第1章：……","summary":"……","goal":"……"} ] }'
+                else:
+                    lang_user = "Language requirement: Use English for all natural language fields.\n\n"
+                    example = '{ "chapters": [ {"index":1,"title":"...","summary":"...","goal":"..."} ] }'
                 user = (
+                    f"{lang_user}"
                     f"Story info:\n{json_dumps(story)}\n\n"
                     f"StoryState (if any):\n{json_dumps(story_state or {})}\n\n"
                     f"Target chapter_count: {chapter_count}\n\n"
                     "Output JSON in the form:\n"
-                    "{ \"chapters\": [ {\"index\":1,\"title\":\"...\",\"summary\":\"...\",\"goal\":\"...\"} ] }\n"
+                    f"{example}\n"
                 )
                 cfg = llm_cfg()
                 yield emit(
@@ -390,6 +501,49 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 )
                 outline_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
                 outline = parse_json_loose(outline_text)
+                # Some code-first models may still default to English. If we asked for zh,
+                # do a single best-effort translation pass for the natural language fields.
+                if (
+                    output_lang == "zh"
+                    and isinstance(outline, dict)
+                    and isinstance(outline.get("chapters"), list)
+                ):
+                    sample_values: list[str] = []
+                    for ch in (outline.get("chapters") or [])[:10]:
+                        if not isinstance(ch, dict):
+                            continue
+                        for k in ("title", "summary", "goal"):
+                            v = ch.get(k)
+                            if isinstance(v, str) and v.strip():
+                                sample_values.append(v.strip())
+
+                    if sample_values and not any(_CJK_RE.search(v) for v in sample_values):
+                        try:
+                            system_t = (
+                                "You are OutlineTranslatorAgent. "
+                                "Convert an outline JSON to Simplified Chinese (zh-CN). "
+                                "Translate ONLY natural language string values (title/summary/goal). "
+                                "Do NOT change keys, indexes, or structure. Output JSON only."
+                            )
+                            user_t = f"OutlineJSON:\n{json_dumps(outline)}\n"
+                            yield emit(
+                                "tool_call",
+                                "Outliner",
+                                {
+                                    "tool": "llm.generate_text",
+                                    "provider": cfg.provider,
+                                    "model": cfg.model,
+                                    "note": "translate_outline_to_zh",
+                                },
+                            )
+                            translated_text = await generate_text(
+                                system_prompt=system_t, user_prompt=user_t, cfg=cfg
+                            )
+                            translated = parse_json_loose(translated_text)
+                            if isinstance(translated, dict) and isinstance(translated.get("chapters"), list):
+                                outline = translated
+                        except Exception:
+                            pass
                 if isinstance(outline, dict) and isinstance(outline.get("chapters"), list):
                     with get_session() as s5:
                         p5 = s5.get(Project, project_id)
@@ -502,6 +656,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             yield emit("agent_started", "Writer", {"chapter_index": chapter_index})
             system = (
                 "You are WriterAgent. Write a novel chapter in Markdown. "
+                f"{lang_hint_md} "
                 "Respect the provided story settings and local KB excerpts. "
             )
             if kb_mode == "strong":
@@ -535,9 +690,16 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     f"- {w.get('title','')}\n  {w.get('snippet','')}\n  {w.get('url','')}" for w in web_results
                 )
                 user_parts.append(f"Web research results (do not treat as canon unless stated):\n{web_text[:2000]}")
-            user_parts.append(
-                "Output ONLY the chapter Markdown. Start with a level-1 title like: # Chapter X: Title"
-            )
+            if output_lang == "zh":
+                user_parts.append(
+                    "只输出章节 Markdown（不要解释/不要前言）。用一级标题开头，例如："
+                    f"{_writer_title_example(output_lang, chapter_index)}"
+                )
+            else:
+                user_parts.append(
+                    "Output ONLY the chapter Markdown. Start with a level-1 title like: "
+                    f"{_writer_title_example(output_lang, chapter_index)}"
+                )
             cfg = llm_cfg()
             yield emit(
                 "tool_call",
@@ -545,6 +707,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
             )
             writer_text = await generate_text(system_prompt=system, user_prompt="\n\n---\n\n".join(user_parts), cfg=cfg)
+            writer_text = strip_think_blocks(writer_text)
             yield emit("agent_output", "Writer", {"text": writer_text[:400]})
             yield emit("agent_finished", "Writer", {})
         except LLMError as e:
@@ -566,6 +729,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             yield emit("agent_started", "Editor", {})
             system = (
                 "You are EditorAgent. Polish the chapter while keeping meaning. Output Markdown only. "
+                f"{lang_hint_md} "
                 "Do NOT remove evidence citations like [KB#123] or placeholders like [[TBD]]."
             )
             user = (
@@ -579,6 +743,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
             )
             edited_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
+            edited_text = strip_think_blocks(edited_text)
             yield emit("agent_output", "Editor", {"text": edited_text[:400]})
             yield emit("agent_finished", "Editor", {})
         except Exception:
@@ -618,6 +783,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             try:
                 system = (
                     "You are LoreKeeperAgent. Audit a chapter for Strong KB mode evidence. "
+                    f"{lang_hint_json} "
                     "You will be given Local KB excerpts with IDs and a chapter markdown. "
                     "Identify canon claims not supported by the Local KB excerpts. "
                     "Return JSON only."
@@ -708,6 +874,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 try:
                     system2 = (
                         "You are LoreKeeperAgent. Rewrite a chapter Markdown to comply with Strong KB mode. "
+                        f"{lang_hint_md} "
                         "Replace each unsafe canon claim with [[TBD]] or neutral phrasing that does NOT assert canon. "
                         "Append/refresh a '## 待确认 / To Confirm' section listing all missing facts. "
                         "Do not add new plot points. Output Markdown only."
@@ -729,7 +896,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     )
                     sanitized = await generate_text(system_prompt=system2, user_prompt=user2, cfg=cfg)
                     if isinstance(sanitized, str) and sanitized.strip():
-                        edited_text = sanitized
+                        edited_text = strip_think_blocks(sanitized)
                         rewritten = True
                         tbd_count = edited_text.count("[[TBD]]")
                 except Exception as e:
@@ -778,19 +945,21 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         yield emit("agent_finished", "LoreKeeper", {})
 
         # Persist Chapter + add to KB as manuscript chunk
-        chapter_title = f"Chapter {chapter_index}"
+        edited_text = strip_think_blocks(edited_text)
+        chapter_title = _default_chapter_title(output_lang, chapter_index)
         for ln in edited_text.splitlines():
             if ln.strip().startswith("# "):
                 chapter_title = ln.strip().lstrip("#").strip()
                 break
         with get_session() as s6:
+            ch_obj = Chapter(
+                project_id=project_id,
+                chapter_index=chapter_index,
+                title=chapter_title,
+                markdown=edited_text,
+            )
             s6.add(
-                Chapter(
-                    project_id=project_id,
-                    chapter_index=chapter_index,
-                    title=chapter_title,
-                    markdown=edited_text,
-                )
+                ch_obj
             )
             s6.add(
                 KBChunk(
@@ -798,7 +967,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     source_type="manuscript",
                     title=chapter_title,
                     content=edited_text,
-                    tags="manuscript",
+                    tags=f"manuscript,chapter_id={ch_obj.id}",
                 )
             )
             s6.commit()

@@ -220,3 +220,13 @@ Versioning policy (from v1.0.x onward):
   - The pipeline continues with existing settings so Extractor/Outliner/Writer can still run.
 - Backend tests: added a regression test to ensure continue runs still complete and emit chapter artifacts when ConfigAutofill fails.
 - Version alignment: frontend bumped to `1.2.10` to match the API version.
+
+### v1.3.0 (Think Stripping + Gemini Fallback + Manage UI)
+- Backend: strips `<think>...</think>` blocks before persisting chapter/agent outputs (prevents hidden reasoning from being saved/exported).
+- Gemini (PackyAPI/proxy): detects “无可用渠道 / distributor” model-unavailable errors and falls back to `gemini-2.5-flash` / `gemini-2.0-flash` / `gemini-1.5-flash` automatically; default Gemini model switched to `gemini-2.5-flash`.
+- Writing UI: added delete + drag-reorder for Projects (localStorage order) and Chapters (persisted `chapter_index` reorder + delete endpoint).
+- API: added management endpoints:
+  - `DELETE /api/projects/{project_id}` (cascade delete: runs/events/chapters/KB)
+  - `DELETE /api/projects/{project_id}/chapters/{chapter_id}`
+  - `POST /api/projects/{project_id}/chapters/reorder`
+- Tests: added regressions for think-stripping + chapter/project delete/reorder APIs.

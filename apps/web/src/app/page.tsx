@@ -67,6 +67,62 @@ type OutlineChapter = {
   goal?: string;
 };
 
+const PROJECT_ORDER_KEY = "ai-writer:project_order:v1";
+
+function loadProjectOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(PROJECT_ORDER_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (x): x is string => typeof x === "string" && x.trim().length > 0,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveProjectOrder(order: string[]) {
+  try {
+    localStorage.setItem(PROJECT_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // ignore
+  }
+}
+
+function applyProjectOrder(list: Project[]): Project[] {
+  const order = loadProjectOrder();
+  const uniqOrder = Array.from(new Set(order));
+  const byId = new Map(list.map((p) => [p.id, p]));
+  const ordered: Project[] = [];
+  for (const id of uniqOrder) {
+    const p = byId.get(id);
+    if (p) ordered.push(p);
+  }
+  const remaining = list
+    .filter((p) => !uniqOrder.includes(p.id))
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+  const merged = [...ordered, ...remaining];
+  saveProjectOrder(merged.map((p) => p.id));
+  return merged;
+}
+
+function moveById<T extends { id: string }>(
+  list: T[],
+  movingId: string,
+  beforeId: string,
+): T[] {
+  const from = list.findIndex((x) => x.id === movingId);
+  const to = list.findIndex((x) => x.id === beforeId);
+  if (from < 0 || to < 0 || from === to) return list;
+  const next = [...list];
+  const [item] = next.splice(from, 1);
+  const insertAt = from < to ? to - 1 : to;
+  next.splice(insertAt, 0, item);
+  return next;
+}
+
 export default function Home() {
   const [uiLoaded, setUiLoaded] = useState<boolean>(false);
   const [lang, setLang] = useState<Lang>(DEFAULT_UI_PREFS.lang);
@@ -126,6 +182,8 @@ export default function Home() {
   const [outline, setOutline] = useState<unknown>(null);
   const [chapters, setChapters] = useState<ChapterItem[]>([]);
   const [chapterIndex, setChapterIndex] = useState<number>(1);
+  const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
+  const [draggingChapterId, setDraggingChapterId] = useState<string | null>(null);
   const [researchQuery, setResearchQuery] = useState<string>("");
   // Continue Mode input can be either:
   // - A stored local source_id (recommended for large files)
@@ -436,9 +494,10 @@ export default function Home() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as Project[];
         if (cancelled) return;
-        setProjects(data);
-        if (!selectedProjectId && data.length > 0) {
-          setSelectedProjectId(data[0].id);
+        const sorted = applyProjectOrder(data);
+        setProjects(sorted);
+        if (!selectedProjectId && sorted.length > 0) {
+          setSelectedProjectId(sorted[0].id);
         }
       } catch (e) {
         if (!cancelled) setProjectsError((e as Error).message);
@@ -717,6 +776,69 @@ export default function Home() {
     }
   }
 
+  async function deleteProject(projectId: string) {
+    if (!projectId) return;
+    const ok = window.confirm(
+      lang === "zh" ? "确定删除该项目？（不可恢复）" : "Delete this project? (cannot be undone)",
+    );
+    if (!ok) return;
+    const res = await fetch(`${apiBase}/api/projects/${projectId}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    setProjects((prev) => {
+      const next = prev.filter((p) => p.id !== projectId);
+      saveProjectOrder(next.map((p) => p.id));
+      if (selectedProjectId === projectId) {
+        setSelectedProjectId(next[0]?.id ?? null);
+      }
+      return next;
+    });
+  }
+
+  async function deleteChapter(chapterId: string) {
+    if (!selectedProjectId) return;
+    if (!chapterId) return;
+    const ok = window.confirm(
+      lang === "zh" ? "确定删除该章节？（不可恢复）" : "Delete this chapter? (cannot be undone)",
+    );
+    if (!ok) return;
+    const res = await fetch(
+      `${apiBase}/api/projects/${selectedProjectId}/chapters/${chapterId}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    setChapters((prev) => prev.filter((c) => c.id !== chapterId));
+  }
+
+  async function persistChapterOrder(nextChapters: ChapterItem[]) {
+    if (!selectedProjectId) return;
+    setChapters(nextChapters);
+    const res = await fetch(
+      `${apiBase}/api/projects/${selectedProjectId}/chapters/reorder`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chapter_ids: nextChapters.map((c) => c.id),
+          start_index: 1,
+        }),
+      },
+    );
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as ChapterItem[];
+    setChapters(data);
+  }
+
   async function createProject() {
     const title = newProjectTitle.trim();
     if (!title) return;
@@ -730,7 +852,11 @@ export default function Home() {
       throw new Error(txt || `HTTP ${res.status}`);
     }
     const p = (await res.json()) as Project;
-    setProjects((prev) => [p, ...prev]);
+    setProjects((prev) => {
+      const next = [p, ...prev.filter((x) => x.id !== p.id)];
+      saveProjectOrder([p.id, ...loadProjectOrder().filter((id) => id !== p.id)]);
+      return applyProjectOrder(next);
+    });
     setSelectedProjectId(p.id);
   }
 
@@ -787,7 +913,7 @@ export default function Home() {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind, ...extra }),
+          body: JSON.stringify({ kind, ui_lang: lang, ...extra }),
         },
       );
       if (!res.ok || !res.body) {
@@ -1424,17 +1550,63 @@ export default function Home() {
                           const active = p.id === selectedProjectId;
                           return (
                             <li key={p.id}>
-                              <button
+                              <div
                                 onClick={() => setSelectedProjectId(p.id)}
+                                onDragOver={(e) => {
+                                  if (!draggingProjectId) return;
+                                  e.preventDefault();
+                                }}
+                                onDrop={(e) => {
+                                  const moving =
+                                    draggingProjectId ||
+                                    e.dataTransfer.getData("text/plain");
+                                  if (!moving || moving === p.id) return;
+                                  e.preventDefault();
+                                  setProjects((prev) => {
+                                    const next = moveById(prev, moving, p.id);
+                                    saveProjectOrder(next.map((x) => x.id));
+                                    return next;
+                                  });
+                                  setDraggingProjectId(null);
+                                }}
                                 className={[
-                                  "w-full px-3 py-2 text-left text-sm",
+                                  "flex items-center gap-2 px-3 py-2 text-left text-sm",
                                   active
                                     ? "bg-zinc-100 dark:bg-zinc-800"
                                     : "hover:bg-zinc-50 dark:hover:bg-zinc-900",
                                 ].join(" ")}
                               >
-                                {p.title}
-                              </button>
+                                <button
+                                  type="button"
+                                  draggable
+                                  onClick={(e) => e.stopPropagation()}
+                                  onDragStart={(e) => {
+                                    setDraggingProjectId(p.id);
+                                    e.dataTransfer.setData("text/plain", p.id);
+                                    e.dataTransfer.effectAllowed = "move";
+                                  }}
+                                  onDragEnd={() => setDraggingProjectId(null)}
+                                  className="cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
+                                  title={lang === "zh" ? "拖拽排序" : "Drag to reorder"}
+                                >
+                                  ⋮⋮
+                                </button>
+                                <div className="min-w-0 flex-1 truncate">
+                                  {p.title}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    deleteProject(p.id).catch((err) =>
+                                      setProjectsError((err as Error).message),
+                                    );
+                                  }}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                >
+                                  {lang === "zh" ? "删除" : "Delete"}
+                                </button>
+                              </div>
                             </li>
                           );
                         })}
@@ -1487,12 +1659,47 @@ export default function Home() {
                     <div className="mt-3 max-h-80 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
                       <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
                         {chapters.map((ch) => (
-                          <li key={ch.id} className="p-3">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="font-medium">
+                          <li
+                            key={ch.id}
+                            className="p-3"
+                            onDragOver={(e) => {
+                              if (!draggingChapterId) return;
+                              e.preventDefault();
+                            }}
+                            onDrop={(e) => {
+                              const moving =
+                                draggingChapterId ||
+                                e.dataTransfer.getData("text/plain");
+                              if (!moving || moving === ch.id) return;
+                              e.preventDefault();
+                              const next = moveById(chapters, moving, ch.id);
+                              persistChapterOrder(next).catch((err) =>
+                                setRunError((err as Error).message),
+                              );
+                              setDraggingChapterId(null);
+                            }}
+                          >
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                draggable
+                                onClick={(e) => e.stopPropagation()}
+                                onDragStart={(e) => {
+                                  setDraggingChapterId(ch.id);
+                                  e.dataTransfer.setData("text/plain", ch.id);
+                                  e.dataTransfer.effectAllowed = "move";
+                                }}
+                                onDragEnd={() => setDraggingChapterId(null)}
+                                className="cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
+                                title={lang === "zh" ? "拖拽排序" : "Drag to reorder"}
+                              >
+                                ⋮⋮
+                              </button>
+                              <div className="min-w-0 flex-1 truncate font-medium">
                                 {ch.chapter_index}. {ch.title}
                               </div>
                               <button
+                                type="button"
                                 onClick={() => {
                                   setGeneratedMarkdown(ch.markdown);
                                   setEditorView("split");
@@ -1500,6 +1707,17 @@ export default function Home() {
                                 className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
                               >
                                 {tt("open")}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  deleteChapter(ch.id).catch((err) =>
+                                    setRunError((err as Error).message),
+                                  );
+                                }}
+                                className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                              >
+                                {lang === "zh" ? "删除" : "Delete"}
                               </button>
                             </div>
                           </li>
@@ -3172,7 +3390,7 @@ export default function Home() {
                       <input
                         defaultValue={getSettingsValue(
                           "llm.gemini.model",
-                          "gemini-2.5-pro",
+                          "gemini-2.5-flash",
                         )}
                         onBlur={(e) =>
                           saveProjectSettings({

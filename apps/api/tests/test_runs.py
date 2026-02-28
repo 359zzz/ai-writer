@@ -48,9 +48,9 @@ def test_continue_run_softfails_config_autofill(monkeypatch: pytest.MonkeyPatch)
                 ensure_ascii=True,
             )
         if "WriterAgent" in system_prompt:
-            return "# Chapter 1: Test Chapter\n\nHello world.\n"
+            return "<think>planning</think>\n# Chapter 1: Test Chapter\n\nHello world.\n"
         if "EditorAgent" in system_prompt:
-            return "# Chapter 1: Test Chapter\n\nHello world (edited).\n"
+            return "<think>edit</think>\n# Chapter 1: Test Chapter\n\nHello world (edited).\n"
 
         raise AssertionError("Unexpected agent system prompt")
 
@@ -105,3 +105,92 @@ def test_continue_run_softfails_config_autofill(monkeypatch: pytest.MonkeyPatch)
         and (e.get("data") or {}).get("artifact_type") == "chapter_markdown"
         for e in events
     )
+
+    chapter_evts = [
+        e
+        for e in events
+        if e.get("type") == "artifact"
+        and e.get("agent") == "Writer"
+        and (e.get("data") or {}).get("artifact_type") == "chapter_markdown"
+    ]
+    assert chapter_evts
+    md = (chapter_evts[-1].get("data") or {}).get("markdown")
+    assert isinstance(md, str)
+    assert "<think>" not in md
+
+
+def test_run_prompts_follow_ui_lang(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Regression test:
+    - Frontend passes ui_lang.
+    - Backend should inject an explicit language hint into prompts so models
+      like Codex do not default to English.
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    captured: dict[str, str] = {}
+
+    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        if "ConfigAutofillAgent" in system_prompt:
+            return "{}"
+        if "OutlinerAgent" in system_prompt:
+            return json.dumps(
+                {
+                    "chapters": [
+                        {
+                            "index": 1,
+                            "title": "Test Chapter",
+                            "summary": "demo",
+                            "goal": "demo",
+                        }
+                    ]
+                },
+                ensure_ascii=True,
+            )
+        if "OutlineTranslatorAgent" in system_prompt:
+            return json.dumps(
+                {
+                    "chapters": [
+                        {
+                            "index": 1,
+                            "title": "第1章：测试章节",
+                            "summary": "示例",
+                            "goal": "示例",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        if "WriterAgent" in system_prompt:
+            captured["writer_system"] = system_prompt
+            captured["writer_user"] = user_prompt
+            return "# Chapter 1: Test Chapter\n\nHello world.\n"
+        if "EditorAgent" in system_prompt:
+            return "# Chapter 1: Test Chapter\n\nHello world (edited).\n"
+
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Run Test"}).json()
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={"kind": "chapter", "chapter_index": 1, "ui_lang": "zh"},
+        ) as res:
+            assert res.status_code == 200
+
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if raw.startswith("data:"):
+                    evt = json.loads(raw.replace("data:", "", 1).strip())
+                    if evt.get("type") == "run_completed":
+                        break
+
+    assert "Simplified Chinese (zh-CN)" in captured.get("writer_system", "")
+    # When ui_lang=zh, the example title should NOT be the English placeholder.
+    assert "Chapter X: Title" not in captured.get("writer_user", "")
