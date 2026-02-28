@@ -239,3 +239,9 @@ Versioning policy (from v1.0.x onward):
 - Web: run buttons now wait for any in-flight Settings/Secrets save to complete before starting a run (prevents “I set gemini-3-* but tool_call still shows old gemini-2.5-*” races).
 - API: run pipeline snapshots the LLM config at run start and includes it in `run_started` trace payload; prevents mid-run settings edits from mixing models across agents.
 - Gemini (PackyAPI): prefer OpenAI-compatible `chat/completions` first (per PackyAPI third-party guidance), then fall back to Gemini v1beta + model fallback set.
+
+### v1.3.3 (PackyAPI Gemini: Writer 503 Resilience)
+- Gemini (PackyAPI/proxy): strengthened retry + fallback behavior for flaky gateways so “Writer: gemini_http_503 无可用渠道（distributor）” is much less likely to abort runs:
+  - OpenAI-compatible calls treat `empty_completion` as retryable (some distributors return reasoning-only outputs with empty text).
+  - Gemini v1beta calls now retry/backoff on transient 5xx/429 **including** distributor-like 503s (previously raised immediately).
+  - Fallback model set includes `gemini-2.5-pro`, and fallbacks also trigger on transient `http_5xx` errors (not only on “model unavailable”/empty outputs).

@@ -416,7 +416,12 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
 
                     content_s = content if isinstance(content, str) else str(content)
                     if not content_s.strip():
+                        # Some gateways (especially OpenAI-compatible proxies for
+                        # non-OpenAI models) may return an empty message content
+                        # while still charging reasoning tokens. Treat this as
+                        # retryable to reduce flakiness.
                         record_err("empty_completion")
+                        attempt_had_transient = True
                         continue
 
                     return content_s
@@ -565,10 +570,10 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
                         if detail:
                             msg += f":{detail}"
 
-                        # A 503 can be either a transient gateway hiccup OR a
-                        # "model unavailable" situation (no distributor/channel).
-                        # Only treat it as retryable when it looks transient.
-                        if r.status_code in transient_status and not _looks_like_model_unavailable(msg):
+                        # Most 5xx/429 situations from proxies are transient
+                        # (including PackyAPI "no distributor" cases). Retry with
+                        # backoff before giving up or switching models.
+                        if r.status_code in transient_status:
                             last_err = msg
                             attempt_had_transient = True
                             continue
@@ -643,6 +648,8 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",
         "gemini-3.1-pro-preview",
+        # Widely available 2.5 fallbacks.
+        "gemini-2.5-pro",
         # Older/common flash fallbacks (some gateways expose these instead).
         "gemini-2.5-flash",
         "gemini-2.0-flash",
@@ -664,7 +671,11 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
             return await openai_chat(cfg.model)
         except LLMError as e:
             best = str(e)
-            if _looks_like_model_unavailable(best) or best.startswith("empty_completion"):
+            if (
+                _looks_like_model_unavailable(best)
+                or best.startswith("empty_completion")
+                or re.match(r"^openai_http_(429|500|502|503|504)", best)
+            ):
                 for fb in fallbacks:
                     try:
                         return await openai_chat(fb)
@@ -680,7 +691,11 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
             return await gemini_v1beta(cfg.model)
         except LLMError as e:
             best = str(e)
-            if _looks_like_model_unavailable(best) or best.startswith("empty_completion"):
+            if (
+                _looks_like_model_unavailable(best)
+                or best.startswith("empty_completion")
+                or re.match(r"^gemini_http_(429|500|502|503|504)", best)
+            ):
                 for fb in fallbacks:
                     try:
                         return await gemini_v1beta(fb)
@@ -705,7 +720,7 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
     if prefer_openai_first and _looks_like_model_unavailable(best):
         best += (
             " | packyapi_hint=try gemini-3-pro-preview or gemini-3-flash-preview"
-            " (and if needed: gemini-2.5-flash)"
+            " (and if needed: gemini-2.5-pro / gemini-2.5-flash)"
         )
     raise LLMError(best)
 
