@@ -67,6 +67,16 @@ type OutlineChapter = {
   goal?: string;
 };
 
+type KBChunkItem = {
+  id: number;
+  project_id: string;
+  source_type: string;
+  title: string;
+  content: string;
+  tags: string;
+  created_at: string;
+};
+
 const PROJECT_ORDER_KEY = "ai-writer:project_order:v1";
 
 function loadProjectOrder(): string[] {
@@ -112,6 +122,21 @@ function moveById<T extends { id: string }>(
   list: T[],
   movingId: string,
   beforeId: string,
+): T[] {
+  const from = list.findIndex((x) => x.id === movingId);
+  const to = list.findIndex((x) => x.id === beforeId);
+  if (from < 0 || to < 0 || from === to) return list;
+  const next = [...list];
+  const [item] = next.splice(from, 1);
+  const insertAt = from < to ? to - 1 : to;
+  next.splice(insertAt, 0, item);
+  return next;
+}
+
+function moveByNumId<T extends { id: number }>(
+  list: T[],
+  movingId: number,
+  beforeId: number,
 ): T[] {
   const from = list.findIndex((x) => x.id === movingId);
   const to = list.findIndex((x) => x.id === beforeId);
@@ -217,6 +242,12 @@ export default function Home() {
     Array<{ id: number; title: string; content: string; score: number }>
   >([]);
   const [kbError, setKbError] = useState<string | null>(null);
+  const [kbChunks, setKbChunks] = useState<KBChunkItem[]>([]);
+  const [kbChunksError, setKbChunksError] = useState<string | null>(null);
+  const [kbEditingId, setKbEditingId] = useState<number | null>(null);
+  const [kbSelectedIds, setKbSelectedIds] = useState<number[]>([]);
+  const [kbExportFormat, setKbExportFormat] = useState<"json" | "txt">("json");
+  const [draggingKbId, setDraggingKbId] = useState<number | null>(null);
   const [webQuery, setWebQuery] = useState<string>("");
   const [webResults, setWebResults] = useState<
     Array<{ title: string; url: string; snippet: string }>
@@ -669,6 +700,68 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     async function run() {
+      if (!selectedProjectId) {
+        setKbChunks([]);
+        setKbSelectedIds([]);
+        return;
+      }
+      try {
+        setKbChunksError(null);
+        const res = await fetch(
+          `${apiBase}/api/projects/${selectedProjectId}/kb/chunks`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(txt || `HTTP ${res.status}`);
+        }
+        const data = (await res.json()) as KBChunkItem[];
+
+        // Apply persisted order (if any) from settings.
+        const kb = (selectedProject?.settings as Record<string, unknown> | undefined)?.kb;
+        const raw =
+          kb && typeof kb === "object"
+            ? (kb as Record<string, unknown>).chunk_order
+            : null;
+        const order: number[] = [];
+        if (Array.isArray(raw)) {
+          for (const x of raw) {
+            const n = typeof x === "number" ? x : Number(x);
+            if (Number.isFinite(n)) order.push(n);
+          }
+        }
+        const byId = new Map(data.map((c) => [c.id, c]));
+        const ordered: KBChunkItem[] = [];
+        for (const id of order) {
+          const item = byId.get(id);
+          if (item) ordered.push(item);
+        }
+        const seen = new Set(ordered.map((c) => c.id));
+        const remaining = data.filter((c) => !seen.has(c.id));
+        const merged = order.length > 0 ? [...ordered, ...remaining] : data;
+
+        if (cancelled) return;
+        setKbChunks(merged);
+        setKbSelectedIds((prev) => {
+          if (prev.length === 0) return prev;
+          const live = new Set(data.map((c) => c.id));
+          return prev.filter((id) => live.has(id));
+        });
+      } catch (e) {
+        if (cancelled) return;
+        setKbChunks([]);
+        setKbChunksError((e as Error).message);
+      }
+    }
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, selectedProjectId, selectedProject]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
       if (tab !== "agents") return;
       if (!selectedProjectId) return;
       if (runInProgress) return;
@@ -1034,6 +1127,7 @@ export default function Home() {
   async function addKbChunk() {
     if (!selectedProjectId) return;
     setKbError(null);
+    setKbChunksError(null);
     const res = await fetch(`${apiBase}/api/projects/${selectedProjectId}/kb/chunks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1048,7 +1142,196 @@ export default function Home() {
       const txt = await res.text();
       throw new Error(txt || `HTTP ${res.status}`);
     }
+    const created = (await res.json()) as KBChunkItem;
+
+    // Keep a visible list in sync (best-effort; background pane uses it).
+    setKbChunks((prev) => {
+      const next = [created, ...prev.filter((x) => x.id !== created.id)];
+      return next;
+    });
+    // Keep the saved order stable and prepend the new chunk so it shows up first.
+    const prevOrder = (() => {
+      const kb = (selectedProject?.settings as Record<string, unknown> | undefined)?.kb;
+      const raw =
+        kb && typeof kb === "object"
+          ? (kb as Record<string, unknown>).chunk_order
+          : null;
+      if (!Array.isArray(raw)) return [] as number[];
+      const out: number[] = [];
+      for (const x of raw) {
+        const n = typeof x === "number" ? x : Number(x);
+        if (Number.isFinite(n)) out.push(n);
+      }
+      return out;
+    })();
+    const nextOrder = [created.id, ...prevOrder.filter((id) => id !== created.id)];
+    saveProjectSettings({ kb: { chunk_order: nextOrder } }).catch(() => {
+      // ignore order persistence failures (non-critical)
+    });
+
+    setKbEditingId(null);
     setKbContent("");
+  }
+
+  async function refreshKbChunks() {
+    if (!selectedProjectId) return;
+    setKbChunksError(null);
+    const res = await fetch(`${apiBase}/api/projects/${selectedProjectId}/kb/chunks`, {
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as KBChunkItem[];
+
+    // Apply persisted order (if any) from settings.
+    const kb = (selectedProject?.settings as Record<string, unknown> | undefined)?.kb;
+    const raw =
+      kb && typeof kb === "object" ? (kb as Record<string, unknown>).chunk_order : null;
+    const order: number[] = [];
+    if (Array.isArray(raw)) {
+      for (const x of raw) {
+        const n = typeof x === "number" ? x : Number(x);
+        if (Number.isFinite(n)) order.push(n);
+      }
+    }
+    if (order.length > 0) {
+      const byId = new Map(data.map((c) => [c.id, c]));
+      const ordered: KBChunkItem[] = [];
+      for (const id of order) {
+        const item = byId.get(id);
+        if (item) ordered.push(item);
+      }
+      const seen = new Set(ordered.map((c) => c.id));
+      const remaining = data.filter((c) => !seen.has(c.id));
+      setKbChunks([...ordered, ...remaining]);
+    } else {
+      setKbChunks(data);
+    }
+
+    setKbSelectedIds((prev) => {
+      if (prev.length === 0) return prev;
+      const live = new Set(data.map((c) => c.id));
+      return prev.filter((id) => live.has(id));
+    });
+  }
+
+  async function updateKbChunk(chunkId: number) {
+    if (!selectedProjectId) return;
+    setKbChunksError(null);
+    const res = await fetch(
+      `${apiBase}/api/projects/${selectedProjectId}/kb/chunks/${chunkId}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: kbTitle,
+          tags: kbTags.split(",").map((t) => t.trim()).filter(Boolean),
+          content: kbContent,
+        }),
+      },
+    );
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    const updated = (await res.json()) as KBChunkItem;
+    setKbChunks((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+    setKbEditingId(null);
+    setKbTitle("");
+    setKbTags("");
+    setKbContent("");
+  }
+
+  async function deleteKbChunk(chunkId: number) {
+    if (!selectedProjectId) return;
+    const ok = window.confirm(
+      lang === "zh" ? "确定删除该知识库条目？（不可恢复）" : "Delete this KB item? (cannot be undone)",
+    );
+    if (!ok) return;
+    setKbChunksError(null);
+    const res = await fetch(
+      `${apiBase}/api/projects/${selectedProjectId}/kb/chunks/${chunkId}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    setKbChunks((prev) => prev.filter((x) => x.id !== chunkId));
+    setKbSelectedIds((prev) => prev.filter((id) => id !== chunkId));
+    if (kbEditingId === chunkId) {
+      setKbEditingId(null);
+      setKbTitle("");
+      setKbTags("");
+      setKbContent("");
+    }
+    // Persist updated order (best-effort).
+    const nextOrder = kbChunks.filter((x) => x.id !== chunkId).map((x) => x.id);
+    saveProjectSettings({ kb: { chunk_order: nextOrder } }).catch(() => {
+      // ignore
+    });
+  }
+
+  function exportSelectedKbChunks() {
+    if (!selectedProjectId) return;
+    const ids = new Set(kbSelectedIds);
+    const chosen = kbChunks.filter((c) => ids.has(c.id));
+    if (chosen.length === 0) {
+      window.alert(lang === "zh" ? "请先勾选要导出的条目。" : "Select items to export first.");
+      return;
+    }
+
+    const safeTitle = (selectedProject?.title || "project")
+      .replace(/[\\/:*?\"<>|]+/g, "-")
+      .slice(0, 40);
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+
+    let content = "";
+    let filename = "";
+    let mime = "text/plain;charset=utf-8";
+
+    if (kbExportFormat === "json") {
+      mime = "application/json;charset=utf-8";
+      filename = `ai-writer_kb_${safeTitle}_${ts}.json`;
+      content = JSON.stringify(
+        {
+          exported_at: new Date().toISOString(),
+          project_id: selectedProjectId,
+          project_title: selectedProject?.title ?? null,
+          chunks: chosen,
+        },
+        null,
+        2,
+      );
+    } else {
+      filename = `ai-writer_kb_${safeTitle}_${ts}.txt`;
+      content = chosen
+        .map((c) => {
+          const header = c.title?.trim()
+            ? `# ${c.title.trim()}`
+            : `# Chunk #${c.id}`;
+          const tags = (c.tags || "").trim();
+          const meta = [
+            tags ? `Tags: ${tags}` : "",
+            c.source_type ? `Source: ${c.source_type}` : "",
+            c.created_at ? `Created: ${c.created_at}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n");
+          return `${header}\n${meta}\n\n${c.content}\n`;
+        })
+        .join("\n---\n\n");
+    }
+
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   async function searchKb() {
@@ -2613,118 +2896,386 @@ export default function Home() {
                 </div>
               ) : createPane === "background" ? (
                 <div className="mt-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-6 dark:border-zinc-800">
-                  <div className="text-sm font-semibold">{tt("create_nav_background")}</div>
-                  <div className="mt-2 text-xs text-[var(--ui-muted)]">
-                    {lang === "zh"
-                      ? "v1.5.0 起这里会升级为：知识库条目列表（显式展示/拖拽/删改）+ 单选/多选导出（json/txt）+ 联网检索配置。"
-                      : "From v1.5.0: KB list (visible/drag/edit/delete) + export selection (json/txt) + web research config."}
-                  </div>
-                  <div className="mt-4 grid gap-6 lg:grid-cols-2">
-                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
-                      <div className="text-sm font-medium">{tt("local_kb")}</div>
-                      <div className="mt-3 grid gap-2">
-                        <div className="grid gap-2 md:grid-cols-2">
-                          <label className="grid gap-1 text-sm">
-                            <span className="text-xs text-[var(--ui-muted)]">
-                              {tt("kb_chunk_title")}
-                            </span>
-                            <input
-                              value={kbTitle}
-                              onChange={(e) => setKbTitle(e.target.value)}
-                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                              placeholder={tt("kb_chunk_title_placeholder")}
-                            />
-                          </label>
-                          <label className="grid gap-1 text-sm">
-                            <span className="text-xs text-[var(--ui-muted)]">
-                              {tt("kb_chunk_tags")}
-                            </span>
-                            <input
-                              value={kbTags}
-                              onChange={(e) => setKbTags(e.target.value)}
-                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                              placeholder={tt("kb_chunk_tags_placeholder")}
-                            />
-                          </label>
-                        </div>
-                        <textarea
-                          value={kbContent}
-                          onChange={(e) => setKbContent(e.target.value)}
-                          className="min-h-[140px] w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                          placeholder={tt("kb_chunk_content_placeholder")}
-                        />
-                        <div className="flex items-center gap-2">
-                          <button
-                            disabled={!selectedProjectId || !kbContent.trim()}
-                            onClick={() => {
-                              addKbChunk().catch((e) =>
-                                setKbError((e as Error).message),
-                              );
-                            }}
-                            className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
-                          >
-                            {tt("save_to_kb")}
-                          </button>
-                          <span className="text-xs text-[var(--ui-muted)]">
-                            {tt("stored_locally")}
-                          </span>
-                        </div>
-
-                        <div className="mt-2 flex items-center gap-2">
-                          <input
-                            value={kbQuery}
-                            onChange={(e) => setKbQuery(e.target.value)}
-                            className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                            placeholder={`${tt("search_kb")}...`}
-                          />
-                          <button
-                            disabled={!kbQuery.trim()}
-                            onClick={() => {
-                              searchKb().catch((e) =>
-                                setKbError((e as Error).message),
-                              );
-                            }}
-                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
-                          >
-                            {tt("search_kb")}
-                          </button>
-                        </div>
-                        {kbError ? (
-                          <div className="text-sm text-red-600 dark:text-red-400">
-                            {kbError}
-                          </div>
-                        ) : null}
-                        {kbResults.length > 0 ? (
-                          <div className="mt-2 max-h-64 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
-                            <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-                              {kbResults.map((r) => (
-                                <li key={r.id} className="p-3">
-                                  <div className="font-medium">
-                                    {r.title || `Chunk #${r.id}`}
-                                  </div>
-                                  <div className="mt-1 line-clamp-3 text-xs text-[var(--ui-muted)]">
-                                    {r.content}
-                                  </div>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold">
+                        {tt("create_nav_background")}
                       </div>
-                    </div>
-
-                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
-                      <div className="text-sm font-medium">{tt("web_search")}</div>
                       <div className="mt-2 text-xs text-[var(--ui-muted)]">
-                        {tt("web_search_desc")}
-                      </div>
-                      <div className="mt-3 text-sm text-[var(--ui-muted)]">
                         {lang === "zh"
-                          ? "联网检索的开关与提供商配置暂时仍在 Settings → 模型与工具。"
-                          : "Web research toggles/provider config currently remains in Settings → Model & Tools."}
+                          ? "在这里维护知识库与联网检索配置。支持：条目显式列表 / 拖拽排序 / 编辑 / 删除 / 选中导出（json/txt）。"
+                          : "Manage your local KB and web research config here. Supports: list / drag reorder / edit / delete / export selection (json/txt)."}
                       </div>
                     </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        disabled={!selectedProjectId}
+                        onClick={() => {
+                          refreshKbChunks().catch((e) =>
+                            setKbChunksError((e as Error).message),
+                          );
+                        }}
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                      >
+                        {lang === "zh" ? "刷新列表" : "Refresh"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setKbEditingId(null);
+                          setKbTitle("");
+                          setKbTags("");
+                          setKbContent("");
+                          setKbError(null);
+                        }}
+                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                      >
+                        {tt("clear")}
+                      </button>
+                    </div>
                   </div>
+
+                  {!selectedProjectId ? (
+                    <div className="mt-4 text-sm text-[var(--ui-muted)]">
+                      {tt("select_project_first")}
+                    </div>
+                  ) : (
+                    <div className="mt-4 grid gap-6 lg:grid-cols-2">
+                      <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm font-medium">{tt("local_kb")}</div>
+                          {kbEditingId ? (
+                            <div className="text-xs text-[var(--ui-muted)]">
+                              {lang === "zh"
+                                ? `编辑中 #${kbEditingId}`
+                                : `Editing #${kbEditingId}`}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-3 grid gap-2">
+                          <div className="grid gap-2 md:grid-cols-2">
+                            <label className="grid gap-1 text-sm">
+                              <span className="text-xs text-[var(--ui-muted)]">
+                                {tt("kb_chunk_title")}
+                              </span>
+                              <input
+                                value={kbTitle}
+                                onChange={(e) => setKbTitle(e.target.value)}
+                                className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                                placeholder={tt("kb_chunk_title_placeholder")}
+                              />
+                            </label>
+                            <label className="grid gap-1 text-sm">
+                              <span className="text-xs text-[var(--ui-muted)]">
+                                {tt("kb_chunk_tags")}
+                              </span>
+                              <input
+                                value={kbTags}
+                                onChange={(e) => setKbTags(e.target.value)}
+                                className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                                placeholder={tt("kb_chunk_tags_placeholder")}
+                              />
+                            </label>
+                          </div>
+
+                          <textarea
+                            value={kbContent}
+                            onChange={(e) => setKbContent(e.target.value)}
+                            className="min-h-[180px] w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                            placeholder={tt("kb_chunk_content_placeholder")}
+                          />
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              disabled={!kbContent.trim() || settingsSaving}
+                              onClick={() => {
+                                const p = kbEditingId
+                                  ? updateKbChunk(kbEditingId)
+                                  : addKbChunk();
+                                p.catch((e) => setKbError((e as Error).message));
+                              }}
+                              className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                            >
+                              {kbEditingId
+                                ? lang === "zh"
+                                  ? "更新条目"
+                                  : "Update"
+                                : tt("save_to_kb")}
+                            </button>
+                            {kbEditingId ? (
+                              <button
+                                onClick={() => {
+                                  setKbEditingId(null);
+                                  setKbTitle("");
+                                  setKbTags("");
+                                  setKbContent("");
+                                }}
+                                className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                              >
+                                {lang === "zh" ? "取消编辑" : "Cancel"}
+                              </button>
+                            ) : null}
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("stored_locally")}
+                            </span>
+                          </div>
+
+                          {kbError ? (
+                            <div className="text-sm text-red-600 dark:text-red-400">
+                              {kbError}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="text-sm font-medium">
+                            {lang === "zh" ? "知识库条目" : "KB Items"}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={kbExportFormat}
+                              onChange={(e) =>
+                                setKbExportFormat(e.target.value as "json" | "txt")
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-2 text-xs text-[var(--ui-control-text)]"
+                              aria-label={lang === "zh" ? "导出格式" : "Export format"}
+                            >
+                              <option value="json">JSON</option>
+                              <option value="txt">TXT</option>
+                            </select>
+                            <button
+                              disabled={kbSelectedIds.length === 0}
+                              onClick={() => exportSelectedKbChunks()}
+                              className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                            >
+                              {lang === "zh" ? "导出选中" : "Export"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                          {lang === "zh"
+                            ? "拖拽 ⋮⋮ 调整顺序；勾选后可导出。"
+                            : "Drag ⋮⋮ to reorder; select items to export."}
+                        </div>
+
+                        {kbChunksError ? (
+                          <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                            {kbChunksError}
+                          </div>
+                        ) : null}
+
+                        <div className="mt-3 max-h-[420px] overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                          {kbChunks.length === 0 ? (
+                            <div className="p-3 text-sm text-[var(--ui-muted)]">
+                              {lang === "zh" ? "暂无条目。" : "No items yet."}
+                            </div>
+                          ) : (
+                            <ul className="divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                              {kbChunks.map((c) => {
+                                const checked = kbSelectedIds.includes(c.id);
+                                return (
+                                  <li
+                                    key={c.id}
+                                    className="p-3"
+                                    onDragOver={(e) => {
+                                      if (draggingKbId == null) return;
+                                      e.preventDefault();
+                                    }}
+                                    onDrop={(e) => {
+                                      const movingRaw =
+                                        draggingKbId ?? Number(e.dataTransfer.getData("text/plain"));
+                                      const moving = Number(movingRaw);
+                                      if (!Number.isFinite(moving) || moving === c.id) return;
+                                      e.preventDefault();
+                                      const next = moveByNumId(kbChunks, moving, c.id);
+                                      setKbChunks(next);
+                                      setDraggingKbId(null);
+                                      saveProjectSettings({ kb: { chunk_order: next.map((x) => x.id) } }).catch(() => {
+                                        // ignore
+                                      });
+                                    }}
+                                  >
+                                    <div className="flex items-start gap-2">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() => {
+                                          setKbSelectedIds((prev) =>
+                                            prev.includes(c.id)
+                                              ? prev.filter((id) => id !== c.id)
+                                              : [...prev, c.id],
+                                          );
+                                        }}
+                                        className="mt-1 h-4 w-4"
+                                      />
+                                      <button
+                                        type="button"
+                                        draggable
+                                        onClick={(e) => e.stopPropagation()}
+                                        onDragStart={(e) => {
+                                          setDraggingKbId(c.id);
+                                          e.dataTransfer.setData("text/plain", String(c.id));
+                                          e.dataTransfer.effectAllowed = "move";
+                                        }}
+                                        onDragEnd={() => setDraggingKbId(null)}
+                                        className="mt-0.5 cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
+                                        title={lang === "zh" ? "拖拽排序" : "Drag to reorder"}
+                                      >
+                                        ⋮⋮
+                                      </button>
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="truncate font-medium">
+                                            {c.title?.trim()
+                                              ? c.title.trim()
+                                              : `Chunk #${c.id}`}
+                                          </div>
+                                          <div className="shrink-0 text-[11px] text-[var(--ui-muted)]">
+                                            {c.source_type}
+                                          </div>
+                                        </div>
+                                        <div className="mt-1 line-clamp-2 text-xs text-[var(--ui-muted)]">
+                                          {c.content}
+                                        </div>
+                                        {c.tags?.trim() ? (
+                                          <div className="mt-1 text-[11px] text-[var(--ui-muted)]">
+                                            {c.tags}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                      <div className="flex shrink-0 flex-col gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setKbEditingId(c.id);
+                                            setKbTitle(c.title || "");
+                                            setKbTags(c.tags || "");
+                                            setKbContent(c.content || "");
+                                          }}
+                                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                        >
+                                          {lang === "zh" ? "编辑" : "Edit"}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            deleteKbChunk(c.id).catch((e) =>
+                                              setKbChunksError((e as Error).message),
+                                            );
+                                          }}
+                                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                        >
+                                          {lang === "zh" ? "删除" : "Delete"}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ui-muted)]">
+                          <div>
+                            {lang === "zh"
+                              ? `已选 ${kbSelectedIds.length} 条`
+                              : `Selected: ${kbSelectedIds.length}`}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setKbSelectedIds(kbChunks.map((c) => c.id))}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                            >
+                              {lang === "zh" ? "全选" : "Select all"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setKbSelectedIds([])}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                            >
+                              {lang === "zh" ? "清空" : "Clear"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                          <div className="text-sm font-medium">{tt("kb_mode")}</div>
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            {(["weak", "strong"] as const).map((mode) => {
+                              const current = getSettingsValue("kb.mode", "weak");
+                              const active = current === mode;
+                              return (
+                                <button
+                                  key={mode}
+                                  disabled={settingsSaving}
+                                  onClick={() => {
+                                    saveProjectSettings({ kb: { mode } }).catch((e) =>
+                                      setSettingsError((e as Error).message),
+                                    );
+                                  }}
+                                  className={[
+                                    "rounded-md px-3 py-2 text-sm transition-colors",
+                                    active
+                                      ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                                      : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
+                                  ].join(" ")}
+                                >
+                                  {mode === "weak" ? tt("kb_weak") : tt("kb_strong")}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-surface)] p-4 dark:border-zinc-800">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-medium">{tt("web_search_tool")}</div>
+                            <button
+                              type="button"
+                              disabled={settingsSaving}
+                              onClick={() => {
+                                const cur = getSettingsBool("tools.web_search.enabled", true);
+                                saveProjectSettings({ tools: { web_search: { enabled: !cur } } }).catch((e) =>
+                                  setSettingsError((e as Error).message),
+                                );
+                              }}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                            >
+                              {getSettingsBool("tools.web_search.enabled", true)
+                                ? tt("enabled")
+                                : tt("disabled")}
+                            </button>
+                          </div>
+                          <label className="mt-3 grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("web_search_provider")}
+                            </span>
+                            <select
+                              value={getSettingsValue("tools.web_search.provider", "auto")}
+                              onChange={(e) => {
+                                saveProjectSettings({
+                                  tools: { web_search: { provider: e.target.value } },
+                                }).catch((err) => setSettingsError((err as Error).message));
+                              }}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                            >
+                              <option value="auto">{tt("web_search_provider_auto")}</option>
+                              <option value="bing">{tt("web_search_provider_bing")}</option>
+                              <option value="duckduckgo">{tt("web_search_provider_duckduckgo")}</option>
+                            </select>
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("web_search_provider_desc")}
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="mt-6 rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-6 dark:border-zinc-800">

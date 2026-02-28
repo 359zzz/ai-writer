@@ -19,3 +19,25 @@ def test_kb_chunk_create_and_search() -> None:
         items = res.json()
         assert any(int(it["id"]) == int(chunk["id"]) for it in items)
 
+        updated = client.patch(
+            f"/api/projects/{p['id']}/kb/chunks/{chunk['id']}",
+            json={"title": "Lore v2", "tags": ["magic", "mana"], "content": "Mana is stored in crystals."},
+        )
+        assert updated.status_code == 200
+        updated_chunk = updated.json()
+        assert updated_chunk["title"] == "Lore v2"
+        assert "magic" in (updated_chunk.get("tags") or "")
+        assert "crystals" in updated_chunk["content"]
+
+        chunks = client.get(f"/api/projects/{p['id']}/kb/chunks")
+        assert chunks.status_code == 200
+        listed = chunks.json()
+        assert any(int(it["id"]) == int(chunk["id"]) and it["title"] == "Lore v2" for it in listed)
+
+        deleted = client.delete(f"/api/projects/{p['id']}/kb/chunks/{chunk['id']}")
+        assert deleted.status_code == 200
+
+        chunks2 = client.get(f"/api/projects/{p['id']}/kb/chunks")
+        assert chunks2.status_code == 200
+        listed2 = chunks2.json()
+        assert all(int(it["id"]) != int(chunk["id"]) for it in listed2)

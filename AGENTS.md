@@ -267,3 +267,12 @@ Versioning policy (from v1.0.x onward):
   - 续写: 文章续写 / 书籍续写
   Non-writing panes are scaffolds for now and will be upgraded in subsequent minor releases.
 - i18n (zh): replaces “KB” wording with “知识库” in user-facing copy (keeps internal key names unchanged).
+
+### v1.5.0 (Background: KB CRUD + List/Export + Web Search Config)
+- API: KB router adds chunk update/delete endpoints:
+  - `PATCH /api/projects/{id}/kb/chunks/{chunk_id}`
+  - `DELETE /api/projects/{id}/kb/chunks/{chunk_id}`
+- Web → 创作 → 背景设定:
+  - Shows an explicit KB item list (with checkbox selection), supports drag reorder, edit, and delete.
+  - Adds export for selected KB items in `json` or `txt`.
+  - Moves “知识库模式（弱/强）” and “联网检索工具（开关/提供商）” controls into this pane for faster iteration.

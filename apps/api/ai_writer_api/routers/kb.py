@@ -56,6 +56,53 @@ def create_chunk(project_id: str, payload: dict[str, Any]) -> KBChunk:
         return chunk
 
 
+@router.patch("/chunks/{chunk_id}")
+def update_chunk(project_id: str, chunk_id: int, payload: dict[str, Any]) -> KBChunk:
+    with get_session() as session:
+        if not session.get(Project, project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        chunk = session.get(KBChunk, chunk_id)
+        if not chunk or chunk.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Chunk not found")
+
+        if "title" in payload:
+            chunk.title = str(payload.get("title") or "").strip()
+
+        if "tags" in payload:
+            tags = payload.get("tags") or ""
+            if isinstance(tags, list):
+                tags = ",".join(str(t).strip() for t in tags if str(t).strip())
+            chunk.tags = str(tags).strip()
+
+        if "content" in payload:
+            content = str(payload.get("content") or "").strip()
+            if not content:
+                raise HTTPException(status_code=400, detail="content is required")
+            chunk.content = content
+
+        session.add(chunk)
+        session.commit()
+        session.refresh(chunk)
+        return chunk
+
+
+@router.delete("/chunks/{chunk_id}")
+def delete_chunk(project_id: str, chunk_id: int) -> dict[str, bool]:
+    with get_session() as session:
+        if not session.get(Project, project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        chunk = session.get(KBChunk, chunk_id)
+        if not chunk or chunk.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Chunk not found")
+
+        session.delete(chunk)
+        session.commit()
+
+    return {"ok": True}
+
+
 @router.get("/search")
 def search_kb(
     project_id: str,
@@ -90,4 +137,3 @@ def search_kb(
     with ENGINE.connect() as conn:
         rows = conn.execute(sql, params).mappings().all()
     return [dict(r) for r in rows]
-
