@@ -255,3 +255,7 @@ Versioning policy (from v1.0.x onward):
 - LLM (PackyAPI): reduces bursty traffic risk:
   - Adds gentle throttling + in-flight limiting for PackyAPI requests.
   - Uses only documented `/v1/...` endpoints for Packy base URLs; Gemini-on-Packy uses chat-only (avoids `/responses`) to reduce “probing noise”.
+
+### v1.3.5 (Dev Script: Stable Backend Python)
+- `scripts/dev.ps1`: always launches backend with the project venv’s `python.exe` (instead of relying on PATH activation) to prevent “restarted but still running old API version” confusion under Uvicorn `--reload`.
+- `scripts/dev.ps1`: warns when port `8000` is already in use and prints the existing process command line (best-effort), so you can stop the old server before starting a new one.
