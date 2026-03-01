@@ -1219,6 +1219,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         # ---- Book Continue (single chapter) ----
         book_kb_context: list[dict[str, Any]] = []
         book_excerpt_for_writer = ""
+        book_recent_chapters_for_writer = ""
+        book_recent_chapters_loaded = 0
         if kind == "book_continue":
             book_source_id = str(payload.get("source_id") or payload.get("book_source_id") or "").strip()
             if not book_source_id:
@@ -1271,6 +1273,34 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     {"tool": "continue_sources.load_excerpt", "error": type(e).__name__},
                 )
 
+            # Include the most recently written chapters (if any) as context for multi-chapter continuation,
+            # since the uploaded book source itself does not include newly generated chapters.
+            try:
+                with get_session() as s_prev:
+                    prev_rows = list(
+                        s_prev.exec(
+                            select(Chapter)
+                            .where(
+                                Chapter.project_id == project_id,
+                                Chapter.chapter_index < chapter_index,
+                            )
+                            .order_by(Chapter.chapter_index.desc())
+                            .limit(2)
+                        )
+                    )
+                if prev_rows:
+                    parts: list[str] = []
+                    for ch in reversed(prev_rows):
+                        md = (ch.markdown or "").strip()
+                        if len(md) > 3200:
+                            md = md[-3200:]
+                        parts.append(f"# Prev Chapter {ch.chapter_index}: {ch.title}\n\n{md}")
+                    book_recent_chapters_for_writer = "\n\n".join(parts).strip()
+                    book_recent_chapters_loaded = len(prev_rows)
+            except Exception:
+                book_recent_chapters_for_writer = ""
+                book_recent_chapters_loaded = 0
+
             with get_session() as s_book:
                 state_row = s_book.exec(
                     select(KBChunk)
@@ -1317,6 +1347,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "book_state_kb_id": int(state_row.id),
                     "summary_chunks_loaded": len(summary_rows),
                     "excerpt_chars": len(book_excerpt),
+                    "recent_chapters_loaded": book_recent_chapters_loaded,
                 },
             )
             yield emit("agent_finished", "BookContinue", {})
@@ -1378,7 +1409,12 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     f"Chapter index to write: {chapter_index}\n"
                     "Use the compiled book state + latest excerpt to decide what happens next.\n\n"
                     f"CompiledBookStateJSON:\n{json_dumps(compiled_state or {})}\n\n"
-                    f"LatestExcerpt:\n{book_excerpt[:4000]}\n"
+                    + (
+                        f"RecentWrittenChaptersMarkdown:\n{book_recent_chapters_for_writer[:4000]}\n\n"
+                        if book_recent_chapters_for_writer
+                        else ""
+                    )
+                    + f"LatestExcerpt:\n{book_excerpt[:4000]}\n"
                 )
                 cfg0 = llm_cfg()
                 planner_cfg = replace(
@@ -1430,7 +1466,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         # Tool: local KB retrieval
         kb_context: list[dict[str, Any]] = []
         try:
-            q_terms = []
+            q_terms: list[str] = []
             if isinstance(story, dict):
                 logline = story.get("logline")
                 if isinstance(logline, str) and logline.strip():
@@ -1443,16 +1479,36 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     for c in chars[:5]:
                         if isinstance(c, dict) and isinstance(c.get("name"), str):
                             q_terms.append(c["name"])
-            query = " ".join(q_terms) or (project.title or "story")
+            # Continue/Book flows often rely on StoryState more than Story settings.
+            if isinstance(story_state, dict):
+                ss_world = story_state.get("world")
+                if isinstance(ss_world, str) and ss_world.strip():
+                    q_terms.append(ss_world.strip()[:120])
+                ss_chars = story_state.get("characters")
+                if isinstance(ss_chars, list):
+                    for c in ss_chars[:8]:
+                        if isinstance(c, dict) and isinstance(c.get("name"), str):
+                            q_terms.append(c["name"])
+
+            uniq: list[str] = []
+            seen_terms: set[str] = set()
+            for t in q_terms:
+                tt = str(t).strip()
+                if not tt or tt in seen_terms:
+                    continue
+                seen_terms.add(tt)
+                uniq.append(tt)
+
+            query = " ".join(uniq) or (project.title or "story")
             kb_context = kb_search(query, limit=5)
             yield emit("tool_result", "Retriever", {"tool": "kb_search", "hits": len(kb_context)})
         except Exception:
             kb_context = []
 
-            if kind == "book_continue" and book_kb_context:
-                # Ensure book state/summaries are present in Writer prompt, and keep IDs stable for Strong mode citations.
-                seen: set[int] = set()
-                merged: list[dict[str, Any]] = []
+        if kind == "book_continue" and book_kb_context:
+            # Ensure book state/summaries are present in Writer prompt, and keep IDs stable for Strong mode citations.
+            seen: set[int] = set()
+            merged: list[dict[str, Any]] = []
             for it in book_kb_context + kb_context:
                 try:
                     kid = int(it.get("id") or 0)  # type: ignore[arg-type]
@@ -1538,6 +1594,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 user_parts.append(f"Chapter plan:\n{json_dumps(chapter_plan)}")
             if story_state:
                 user_parts.append(f"StoryState:\n{json_dumps(story_state)}")
+            if kind == "book_continue" and book_recent_chapters_for_writer.strip():
+                user_parts.append(
+                    "Recent chapters already written in this project (keep continuity with these):\n"
+                    f"{book_recent_chapters_for_writer[:3500]}"
+                )
             if kind == "book_continue" and book_excerpt_for_writer.strip():
                 user_parts.append(
                     "Latest manuscript excerpt (continue from this context, keep continuity):\n"

@@ -348,3 +348,9 @@ Versioning policy (from v1.0.x onward):
   - “进入续写工作台（书籍模式）”：一键把书籍源加载到工作台，并切换到 `book_continue` 链路进行续写与批量生成。
 - Tests:
   - Added regression test for `book_continue` (writes chapter + strips `<think>`).
+
+### v1.12.1 (Book Continue: Better Multi-Chapter Continuity)
+- API:
+  - `book_continue` 在 BookPlanner/Writer 提示词中自动加入“最近已写章节”（来自本项目章节库，截取尾部），提高批量多章生成的连续性。
+  - KB 检索（`kb_search`）的 query 构造增强：当 Story 设置较少时，会额外利用 `StoryState`（world/角色名）做检索，提高命中“既有章节/设定”的概率。
+  - 修复：确保 `book_state + book_summary` 上下文在 `kb_search` 成功/失败两种情况下都会合并进 Writer 提示词（避免偶发丢上下文）。
