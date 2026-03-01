@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 import { MarkdownPreview } from "@/components/MarkdownPreview";
+import { BookStructureGraph, type BookStructureGraphData } from "@/components/BookStructureGraph";
 import {
   OutlineGraphEditor,
   type OutlineEdgeData,
@@ -22,7 +23,7 @@ import {
   type UiTheme,
 } from "@/lib/uiPrefs";
 
-type TabKey = "create" | "continue" | "agents" | "settings";
+type TabKey = "create" | "continue" | "graph" | "agents" | "settings";
 
 type Health = {
   ok: boolean;
@@ -67,6 +68,17 @@ type RunItem = {
   error: string | null;
 };
 
+type RunMeta = {
+  id: string;
+  project_id: string;
+  kind: string;
+  status: string;
+  created_at: string;
+  finished_at: string | null;
+  error: string | null;
+  last_seq: number;
+};
+
 type OutlineChapter = {
   id?: string;
   index: number;
@@ -89,6 +101,14 @@ type KBChunkItem = {
   source_type: string;
   title: string;
   content: string;
+  tags: string;
+  created_at: string;
+};
+
+type KBChunkMetaItem = {
+  id: number;
+  source_type: string;
+  title: string;
   tags: string;
   created_at: string;
 };
@@ -466,6 +486,9 @@ export default function Home() {
     "projects" | "background" | "outline" | "writing"
   >("writing");
   const [continuePane, setContinuePane] = useState<"article" | "book">("article");
+  const [graphPane, setGraphPane] = useState<"process" | "outline" | "book">(
+    "process",
+  );
   const [showQuickStart, setShowQuickStart] = useState<boolean>(false);
   const [agentsView, setAgentsView] = useState<"timeline" | "graph">("timeline");
   const [expandedEventKey, setExpandedEventKey] = useState<string | null>(null);
@@ -506,6 +529,8 @@ export default function Home() {
   >([]);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunMeta, setSelectedRunMeta] = useState<RunMeta | null>(null);
+  const [graphPollError, setGraphPollError] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [runInProgress, setRunInProgress] = useState<boolean>(false);
   const [activeRunKind, setActiveRunKind] = useState<string | null>(null);
@@ -597,6 +622,10 @@ export default function Home() {
   const [bookSummarizeStats, setBookSummarizeStats] =
     useState<BookSummarizeStats | null>(null);
   const [bookState, setBookState] = useState<BookStateArtifact | null>(null);
+  const [bookGraphLoading, setBookGraphLoading] = useState<boolean>(false);
+  const [bookGraphError, setBookGraphError] = useState<string | null>(null);
+  const [bookGraphData, setBookGraphData] =
+    useState<BookStructureGraphData | null>(null);
   const [outlinePaneError, setOutlinePaneError] = useState<string | null>(null);
   const [outlineDraft, setOutlineDraft] = useState<OutlineBlock[]>([]);
   const [outlineDraftProjectId, setOutlineDraftProjectId] = useState<string | null>(
@@ -1121,6 +1150,29 @@ export default function Home() {
     [fetchChapters],
   );
 
+  const fetchKbChunksMeta = useCallback(
+    async (
+      projectId: string,
+      params: {
+        source_type?: string;
+        tag_contains?: string;
+        limit?: number;
+      },
+    ): Promise<KBChunkMetaItem[]> => {
+      const qs = new URLSearchParams();
+      if (params.source_type) qs.set("source_type", params.source_type);
+      if (params.tag_contains) qs.set("tag_contains", params.tag_contains);
+      qs.set("limit", String(params.limit ?? 200));
+      const res = await fetch(
+        `${apiBase}/api/projects/${projectId}/kb/chunks_meta?${qs.toString()}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return (await res.json()) as KBChunkMetaItem[];
+    },
+    [apiBase],
+  );
+
   useEffect(() => {
     let cancelled = false;
     async function run() {
@@ -1206,7 +1258,7 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     async function run() {
-      if (tab !== "agents") return;
+      if (tab !== "agents" && tab !== "graph") return;
       if (!selectedProjectId) return;
       if (runInProgress) return;
 
@@ -1266,6 +1318,99 @@ export default function Home() {
     runInProgress,
     runEventsRunId,
     runEvents.length,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function poll() {
+      if (tab !== "graph") return;
+      if (!selectedRunId) return;
+      if (runInProgress) return;
+      setGraphPollError(null);
+
+      let afterSeq = 0;
+
+      while (!cancelled) {
+        try {
+          const metaRes = await fetch(`${apiBase}/api/runs/${selectedRunId}`, {
+            cache: "no-store",
+          });
+          if (!metaRes.ok) throw new Error(`HTTP ${metaRes.status}`);
+          const meta = (await metaRes.json()) as RunMeta;
+          if (cancelled) return;
+          setSelectedRunMeta(meta);
+
+          const eventsRes = await fetch(
+            `${apiBase}/api/runs/${selectedRunId}/events?after_seq=${encodeURIComponent(String(afterSeq))}&limit=5000`,
+            { cache: "no-store" },
+          );
+          if (!eventsRes.ok) throw new Error(`HTTP ${eventsRes.status}`);
+          const evts = (await eventsRes.json()) as Array<{
+            run_id: string;
+            seq: number;
+            ts: string;
+            event_type: string;
+            agent: string | null;
+            payload: Record<string, unknown>;
+          }>;
+          if (cancelled) return;
+          if (evts.length > 0) {
+            const mapped = evts.map((e) => ({
+              run_id: e.run_id,
+              seq: e.seq,
+              ts: e.ts,
+              type: e.event_type,
+              agent: e.agent,
+              data: e.payload ?? {},
+            }));
+            setRunEvents((prev) => {
+              if (afterSeq === 0) return mapped;
+              if (prev.length === 0 || prev[0]?.run_id !== selectedRunId) {
+                return mapped;
+              }
+              return [...prev, ...mapped];
+            });
+            afterSeq = mapped[mapped.length - 1]?.seq ?? afterSeq;
+          }
+
+          if (meta.status !== "running") return;
+        } catch (e) {
+          if (!cancelled) setGraphPollError((e as Error).message);
+          return;
+        }
+
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    tab,
+    apiBase,
+    selectedRunId,
+    runInProgress,
+  ]);
+
+  useEffect(() => {
+    if (tab !== "graph") return;
+    if (graphPane !== "book") return;
+    if (!selectedProjectId || !bookSourceId) return;
+    // Lazy-load book graph data when entering Graph → Book.
+    if (bookGraphData?.source_id === bookSourceId && !bookGraphError) return;
+    refreshBookStructureGraphData().catch(() => {
+      // errors are surfaced via bookGraphError
+    });
+  }, [
+    tab,
+    graphPane,
+    selectedProjectId,
+    bookSourceId,
+    bookGraphData?.source_id,
+    bookGraphError,
   ]);
 
   useEffect(() => {
@@ -2672,6 +2817,58 @@ export default function Home() {
     }
   }
 
+  async function refreshBookStructureGraphData(): Promise<void> {
+    if (!selectedProjectId) return;
+    if (!bookSourceId) return;
+    setBookGraphError(null);
+    setBookGraphLoading(true);
+    try {
+      const tag = `book_source:${bookSourceId}`;
+      const [summaries, states, manuscripts] = await Promise.all([
+        fetchKbChunksMeta(selectedProjectId, {
+          source_type: "book_summary",
+          tag_contains: tag,
+          limit: 5000,
+        }),
+        fetchKbChunksMeta(selectedProjectId, {
+          source_type: "book_state",
+          tag_contains: tag,
+          limit: 40,
+        }),
+        fetchKbChunksMeta(selectedProjectId, {
+          source_type: "manuscript",
+          tag_contains: tag,
+          limit: 5000,
+        }),
+      ]);
+
+      const chapters =
+        bookChapterDraft.length > 0
+          ? bookChapterDraft
+          : (bookChapterIndex?.chapters ?? []);
+
+      const payload: BookStructureGraphData = {
+        source_id: bookSourceId,
+        chapters: chapters.map((c) => ({
+          index: c.index,
+          label: c.label,
+          title: c.title,
+          start_char: c.start_char,
+          end_char: c.end_char,
+          chars: c.chars,
+        })),
+        summaries,
+        book_state: states[0] ?? null,
+        continuation_manuscripts: manuscripts,
+      };
+      setBookGraphData(payload);
+    } catch (e) {
+      setBookGraphError((e as Error).message);
+    } finally {
+      setBookGraphLoading(false);
+    }
+  }
+
   async function uploadContinueText(text: string): Promise<string> {
     setContinueSourceError(null);
     setContinueSourceLoading(true);
@@ -2931,6 +3128,7 @@ export default function Home() {
                   [
                     ["create", tt("tab_writing")],
                     ["continue", tt("tab_continue")],
+                    ["graph", tt("tab_graph")],
                     ["agents", tt("tab_agents")],
                     ["settings", tt("tab_settings")],
                   ] as const
@@ -6290,6 +6488,298 @@ export default function Home() {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+          </section>
+        ) : null}
+
+        {tab === "graph" ? (
+          <section className="rounded-xl border border-zinc-200 bg-[var(--ui-surface)] p-6">
+            <h1 className="text-lg font-semibold">{tt("tab_graph")}</h1>
+            <p className="mt-2 text-sm text-[var(--ui-muted)]">
+              {lang === "zh"
+                ? "把长任务的阶段、进度与产物关系可视化（支持轮询恢复）。先提供三类只读图：运行流程 / 大纲 / 书籍结构。"
+                : "Visualize long-task stages, progress, and artifacts (pollable & recoverable). Read-only graphs: Run DAG / Outline / Book structure."}
+            </p>
+
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              {(
+                [
+                  ["process", lang === "zh" ? "运行流程图" : "Run DAG"],
+                  ["outline", lang === "zh" ? "大纲图" : "Outline graph"],
+                  ["book", lang === "zh" ? "书籍结构图" : "Book structure"],
+                ] as const
+              ).map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setGraphPane(k)}
+                  className={[
+                    "rounded-lg px-3 py-2 text-sm transition-colors",
+                    graphPane === k
+                      ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                      : "border border-zinc-200 bg-[var(--ui-control)] text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
+                  ].join(" ")}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {graphPane === "process" ? (
+              <div className="mt-6 grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+                <aside className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                  <div className="text-sm font-medium">
+                    {lang === "zh" ? "选择任务（Run）" : "Select a job (Run)"}
+                  </div>
+                  <div className="mt-3 grid gap-2">
+                    <select
+                      value={selectedRunId ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value || null;
+                        setSelectedRunId(v);
+                        setSelectedRunMeta(null);
+                        setRunEvents([]);
+                        setGraphPollError(null);
+                      }}
+                      className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                    >
+                      {runs.length === 0 ? (
+                        <option value="">{tt("no_runs")}</option>
+                      ) : (
+                        runs.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {formatRunKind(r.kind)} · {formatRunStatus(r.status)} ·{" "}
+                            {new Date(r.created_at).toLocaleString()}
+                          </option>
+                        ))
+                      )}
+                    </select>
+
+                    <button
+                      type="button"
+                      disabled={!selectedRunId || runInProgress}
+                      onClick={async () => {
+                        if (!selectedRunId) return;
+                        setGraphPollError(null);
+                        try {
+                          const metaRes = await fetch(
+                            `${apiBase}/api/runs/${selectedRunId}`,
+                            { cache: "no-store" },
+                          );
+                          if (!metaRes.ok) throw new Error(`HTTP ${metaRes.status}`);
+                          const meta = (await metaRes.json()) as RunMeta;
+                          setSelectedRunMeta(meta);
+
+                          const eventsRes = await fetch(
+                            `${apiBase}/api/runs/${selectedRunId}/events?after_seq=0&limit=5000`,
+                            { cache: "no-store" },
+                          );
+                          if (!eventsRes.ok) throw new Error(`HTTP ${eventsRes.status}`);
+                          const evts = (await eventsRes.json()) as Array<{
+                            run_id: string;
+                            seq: number;
+                            ts: string;
+                            event_type: string;
+                            agent: string | null;
+                            payload: Record<string, unknown>;
+                          }>;
+                          setRunEvents(
+                            evts.map((e) => ({
+                              run_id: e.run_id,
+                              seq: e.seq,
+                              ts: e.ts,
+                              type: e.event_type,
+                              agent: e.agent,
+                              data: e.payload ?? {},
+                            })),
+                          );
+                        } catch (e) {
+                          setGraphPollError((e as Error).message);
+                        }
+                      }}
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                    >
+                      {lang === "zh" ? "刷新" : "Refresh"}
+                    </button>
+                  </div>
+
+                  {selectedRunMeta ? (
+                    <div className="mt-3 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] dark:border-zinc-800">
+                      <div className="text-[var(--ui-muted)]">
+                        {lang === "zh" ? "状态" : "Status"}:{" "}
+                        {formatRunStatus(selectedRunMeta.status)}
+                      </div>
+                      <div className="mt-1 text-[11px] text-[var(--ui-muted)]">
+                        {lang === "zh" ? "事件" : "Events"}:{" "}
+                        {selectedRunMeta.last_seq}
+                        {selectedRunMeta.error
+                          ? ` · error=${selectedRunMeta.error}`
+                          : ""}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {graphPollError ? (
+                    <div className="mt-3 text-xs text-red-600 dark:text-red-400">
+                      {tt("error")}: {graphPollError}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-3 text-[11px] text-[var(--ui-muted)]">
+                    {lang === "zh"
+                      ? "提示：如果刷新页面，仍可在此通过轮询恢复进度与图谱。"
+                      : "Tip: after a refresh, this view can recover via polling."}
+                  </div>
+                </aside>
+
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">
+                    {lang === "zh" ? "运行流程图" : "Run DAG"}
+                  </div>
+                  <div className="mt-3">
+                    <RunTraceGraph
+                      lang={lang === "zh" ? "zh" : "en"}
+                      events={runEvents}
+                      formatAgentName={formatAgentName}
+                      agentColor={agentColor}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : graphPane === "outline" ? (
+              <div className="mt-6">
+                <div className="text-sm font-medium">
+                  {lang === "zh" ? "大纲图（只读）" : "Outline graph (read-only)"}
+                </div>
+                <div className="mt-3">
+                  {(() => {
+                    const saved = loadOutlineGraphFromProject(selectedProject);
+                    const graph =
+                      saved ??
+                      (() => {
+                        const story = (selectedProject?.settings as Record<string, unknown> | undefined)?.story;
+                        const raw =
+                          story && typeof story === "object"
+                            ? (story as Record<string, unknown>).outline
+                            : null;
+                        if (!Array.isArray(raw)) return null;
+                        const blocks = raw
+                          .map((ch, i) => {
+                            if (!ch || typeof ch !== "object") return null;
+                            const rec = ch as Record<string, unknown>;
+                            const idx = Number(rec.index ?? i + 1);
+                            const title = String(rec.title ?? "").trim();
+                            if (!Number.isFinite(idx) || idx <= 0 || !title) return null;
+                            const out: OutlineBlock = {
+                              id: typeof rec.id === "string" ? rec.id : `ch_${idx}`,
+                              index: Math.floor(idx),
+                              title,
+                            };
+                            if (typeof rec.summary === "string" && rec.summary.trim()) {
+                              out.summary = rec.summary;
+                            }
+                            if (typeof rec.goal === "string" && rec.goal.trim()) {
+                              out.goal = rec.goal;
+                            }
+                            return out;
+                          })
+                          .filter((x): x is OutlineBlock => Boolean(x));
+                        if (blocks.length === 0) return null;
+                        return outlineGraphFromBlocks(blocks);
+                      })();
+
+                    return graph ? (
+                      <OutlineGraphEditor
+                        lang={lang === "zh" ? "zh" : "en"}
+                        graph={graph}
+                        onChange={() => {
+                          // read-only
+                        }}
+                        readOnly
+                      />
+                    ) : (
+                      <div className="text-sm text-[var(--ui-muted)]">
+                        {lang === "zh"
+                          ? "暂无可视化大纲。请先在「创作 → 大纲编辑」保存大纲导图，或至少保存文字大纲。"
+                          : "No outline to visualize yet. Save an outline mindmap (Create → Outline), or save a text outline first."}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm font-medium">
+                    {lang === "zh" ? "书籍结构图" : "Book structure"}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={!bookSourceId || bookGraphLoading}
+                      onClick={() => {
+                        if (!bookSourceId) return;
+                        refreshBookStructureGraphData().catch(() => {
+                          // error surfaced via state
+                        });
+                      }}
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                    >
+                      {bookGraphLoading
+                        ? lang === "zh"
+                          ? "加载中..."
+                          : "Loading..."
+                        : lang === "zh"
+                          ? "刷新"
+                          : "Refresh"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTab("continue");
+                        setContinuePane("book");
+                      }}
+                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
+                    >
+                      {lang === "zh" ? "去书籍续写" : "Open Book Continue"}
+                    </button>
+                  </div>
+                </div>
+
+                {bookSourceId ? (
+                  <div className="mt-3 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3 text-xs text-[var(--ui-muted)] dark:border-zinc-800">
+                    {lang === "zh"
+                      ? `书籍源：${bookSourceMeta?.filename ?? bookSourceId}`
+                      : `Book source: ${bookSourceMeta?.filename ?? bookSourceId}`}
+                  </div>
+                ) : (
+                  <div className="mt-3 text-sm text-[var(--ui-muted)]">
+                    {lang === "zh"
+                      ? "暂无书籍源。请先在「续写 → 书籍续写」上传文件。"
+                      : "No book source. Upload one in Continue → Book Continue first."}
+                  </div>
+                )}
+
+                {bookGraphError ? (
+                  <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                    {tt("error")}: {bookGraphError}
+                  </div>
+                ) : null}
+
+                <div className="mt-4">
+                  {bookGraphData ? (
+                    <BookStructureGraph
+                      lang={lang === "zh" ? "zh" : "en"}
+                      data={bookGraphData}
+                    />
+                  ) : (
+                    <div className="text-sm text-[var(--ui-muted)]">
+                      {lang === "zh"
+                        ? "暂无数据。请先执行章节分块（并可手动微调保存），再做总结入库/编译书籍状态。"
+                        : "No data yet. Detect chapters (optionally tune & save), then summarize/compile."}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </section>

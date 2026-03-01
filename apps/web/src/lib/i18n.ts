@@ -5,6 +5,7 @@ export type I18nKey =
   | "app_tagline"
   | "tab_writing"
   | "tab_continue"
+  | "tab_graph"
   | "tab_agents"
   | "tab_settings"
   | "backend"
@@ -201,6 +202,7 @@ const ZH: Record<I18nKey, string> = {
   app_tagline: "多智能体小说工作台（MVP）",
   tab_writing: "创作",
   tab_continue: "续写",
+  tab_graph: "图谱",
   tab_agents: "Agent 协作",
   tab_settings: "设置",
   backend: "后端",
@@ -409,6 +411,7 @@ const EN: Record<I18nKey, string> = {
   app_tagline: "Multi-agent novel workspace (MVP)",
   tab_writing: "Create",
   tab_continue: "Continue",
+  tab_graph: "Graph",
   tab_agents: "Agent Collaboration",
   tab_settings: "Settings",
   backend: "Backend",

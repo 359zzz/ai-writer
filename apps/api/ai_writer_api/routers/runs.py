@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlmodel import select
@@ -242,9 +242,39 @@ def list_runs(project_id: str) -> list[Run]:
 
 
 @router.get("/api/runs/{run_id}/events")
-def list_run_events(run_id: str) -> list[TraceEvent]:
+def list_run_events(
+    run_id: str,
+    after_seq: int = Query(default=0, ge=0),
+    limit: int = Query(default=5000, ge=1, le=50000),
+) -> list[TraceEvent]:
     with get_session() as session:
-        return list(session.exec(select(TraceEvent).where(TraceEvent.run_id == run_id).order_by(TraceEvent.seq.asc())))
+        q = select(TraceEvent).where(TraceEvent.run_id == run_id)
+        if after_seq > 0:
+            q = q.where(TraceEvent.seq > after_seq)
+        q = q.order_by(TraceEvent.seq.asc()).limit(limit)
+        return list(session.exec(q))
+
+
+@router.get("/api/runs/{run_id}")
+def get_run(run_id: str) -> dict[str, Any]:
+    with get_session() as session:
+        run = session.get(Run, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        last = session.exec(
+            select(TraceEvent).where(TraceEvent.run_id == run_id).order_by(TraceEvent.seq.desc()).limit(1)
+        ).first()
+        last_seq = int(last.seq) if last else 0
+        return {
+            "id": run.id,
+            "project_id": run.project_id,
+            "kind": run.kind,
+            "status": run.status,
+            "created_at": run.created_at,
+            "finished_at": run.finished_at,
+            "error": run.error,
+            "last_seq": last_seq,
+        }
 
 
 @router.post("/api/projects/{project_id}/runs/stream")
@@ -1604,6 +1634,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         book_excerpt_for_writer = ""
         book_recent_chapters_for_writer = ""
         book_recent_chapters_loaded = 0
+        book_source_id_for_chapter: str | None = None
         if kind == "book_continue":
             book_source_id = str(payload.get("source_id") or payload.get("book_source_id") or "").strip()
             if not book_source_id:
@@ -1612,6 +1643,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 mark_run_failed(msg)
                 yield emit("run_completed", "Director", {})
                 return
+            book_source_id_for_chapter = book_source_id
 
             excerpt_mode = str(payload.get("source_slice_mode") or "tail")
             try:
@@ -2432,6 +2464,9 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 title=chapter_title,
                 markdown=edited_text,
             )
+            tags_parts = ["manuscript", f"chapter_id={ch_obj.id}"]
+            if book_source_id_for_chapter:
+                tags_parts.extend([f"book_source:{book_source_id_for_chapter}", "book_continue"])
             s6.add(
                 ch_obj
             )
@@ -2441,7 +2476,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     source_type="manuscript",
                     title=chapter_title,
                     content=edited_text,
-                    tags=f"manuscript,chapter_id={ch_obj.id}",
+                    tags=",".join(tags_parts),
                 )
             )
             s6.commit()

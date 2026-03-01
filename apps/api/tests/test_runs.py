@@ -868,6 +868,68 @@ def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.Mo
         listed = chapters.json()
         assert any(int(c.get("chapter_index") or 0) == 1 for c in listed)
 
+        # The persisted manuscript KB chunk should be tagged with book_source
+        # so Book Structure graph can link continuation chapters back to this book.
+        meta = client.get(
+            f"/api/projects/{p['id']}/kb/chunks_meta",
+            params={"source_type": "manuscript", "tag_contains": f"book_source:{sid}", "limit": 50},
+        )
+        assert meta.status_code == 200
+        meta_items = meta.json()
+        assert any("book_source" in (it.get("tags") or "") for it in meta_items)
+
+
+def test_run_meta_and_event_polling() -> None:
+    """
+    Job/Progress (runs + trace) should be pollable:
+    - /api/runs/{run_id} returns status + last_seq
+    - /api/runs/{run_id}/events supports after_seq + limit
+    """
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Run Meta Test"}).json()
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={"kind": "demo"},
+        ) as res:
+            assert res.status_code == 200
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+        assert events
+        run_id = str(events[0].get("run_id") or "").strip()
+        assert run_id
+        last_seq = int(events[-1].get("seq") or 0)
+        assert last_seq > 0
+
+        meta = client.get(f"/api/runs/{run_id}").json()
+        assert meta["id"] == run_id
+        assert meta["project_id"] == p["id"]
+        assert meta["status"] in {"completed", "failed", "running"}
+        assert int(meta["last_seq"]) == last_seq
+
+        # Limit should cap returned events.
+        evts_limited = client.get(f"/api/runs/{run_id}/events?limit=3").json()
+        assert 1 <= len(evts_limited) <= 3
+
+        # after_seq should return strictly newer events.
+        after_seq = max(0, last_seq - 2)
+        evts_after = client.get(
+            f"/api/runs/{run_id}/events?after_seq={after_seq}&limit=10"
+        ).json()
+        assert evts_after
+        assert all(int(e["seq"]) > after_seq for e in evts_after)
+
 
 def test_book_continue_budgets_compiled_state_for_writer_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     """

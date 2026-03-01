@@ -423,6 +423,19 @@ Versioning policy (from v1.0.x onward):
 - 可观测性:
   - Agent 协作页新增 ReactFlow 图谱视图（按 Agent 聚合 tool/artifact，并展示产物类型计数），用于理解长流程与排障。
 
+### v2.1.0 (Graph Workspace + Job/Progress Polling)
+- Job/Progress（长任务机制，SQLite 持久化）:
+  - 新增轮询友好的 Run 查询能力：`GET /api/runs/{run_id}` 返回 `status + last_seq`；`GET /api/runs/{run_id}/events?after_seq=...&limit=...` 支持增量拉取事件，刷新页面也可恢复进度。
+- 图谱工作区（Writing 内）:
+  - 顶部导航新增 `图谱`（与 `创作/续写` 并列），不改变既有 Agent 协作与设置页。
+  - 图谱工作区先提供三类只读图：
+    - 运行流程图（Run DAG）：基于 trace events 聚合 agent/耗时/tool/artifact/错误（ReactFlow）。
+    - 大纲图（OutlineGraph）：把已保存的大纲导图/文字大纲可视化回放（只读预览）。
+    - 书籍结构图：章节链（chapter_index）+ 章节总结（book_summary）+ 书籍状态（book_state）+ 续写章节（manuscript）关联展示。
+- KB 大书优化:
+  - 新增 `GET /kb/chunks_meta` 仅返回 KB 元数据（不返回大段 content），便于长书图谱与统计。
+  - `book_continue` 生成章节写入 manuscript KB 时会附带 `book_source:*` 标签，支持书籍结构图关联续写产物。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

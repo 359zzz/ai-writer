@@ -41,3 +41,29 @@ def test_kb_chunk_create_and_search() -> None:
         assert chunks2.status_code == 200
         listed2 = chunks2.json()
         assert all(int(it["id"]) != int(chunk["id"]) for it in listed2)
+
+
+def test_kb_chunks_meta_filters_and_no_content() -> None:
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "KB Meta Test"}).json()
+
+        a = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={"title": "S1", "content": "aaa", "source_type": "book_summary", "tags": ["book_source:SID", "x"]},
+        )
+        assert a.status_code == 200
+
+        b = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={"title": "S2", "content": "bbb", "source_type": "note", "tags": ["y"]},
+        )
+        assert b.status_code == 200
+
+        meta = client.get(
+            f"/api/projects/{p['id']}/kb/chunks_meta",
+            params={"source_type": "book_summary", "tag_contains": "book_source:SID", "limit": 20},
+        )
+        assert meta.status_code == 200
+        items = meta.json()
+        assert any(it.get("title") == "S1" for it in items)
+        assert all("content" not in it for it in items)

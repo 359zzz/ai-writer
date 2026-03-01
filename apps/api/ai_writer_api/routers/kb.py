@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -23,6 +24,50 @@ def list_chunks(project_id: str) -> list[KBChunk]:
                 select(KBChunk).where(KBChunk.project_id == project_id).order_by(KBChunk.created_at.desc())
             )
         )
+
+
+@router.get("/chunks_meta")
+def list_chunks_meta(
+    project_id: str,
+    source_type: str | None = Query(default=None, min_length=1, max_length=40),
+    tag_contains: str | None = Query(default=None, min_length=1, max_length=120),
+    limit: int = Query(default=200, ge=1, le=5000),
+) -> list[dict[str, Any]]:
+    """
+    List KB chunks metadata without returning full content (useful for large books).
+
+    Optional filters:
+    - source_type: exact match
+    - tag_contains: LIKE match on tags
+    """
+    with get_session() as session:
+        if not session.get(Project, project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        q = select(KBChunk.id, KBChunk.source_type, KBChunk.title, KBChunk.tags, KBChunk.created_at).where(
+            KBChunk.project_id == project_id
+        )
+        if source_type:
+            q = q.where(KBChunk.source_type == source_type)
+        if tag_contains:
+            needle = tag_contains.strip()
+            if needle:
+                q = q.where(KBChunk.tags.like(f"%{needle}%"))
+        q = q.order_by(KBChunk.created_at.desc()).limit(limit)
+
+        rows = list(session.exec(q))
+        out: list[dict[str, Any]] = []
+        for rid, st, title, tags, created_at in rows:
+            out.append(
+                {
+                    "id": int(rid),
+                    "source_type": st,
+                    "title": title,
+                    "tags": tags,
+                    "created_at": created_at if isinstance(created_at, datetime) else created_at,
+                }
+            )
+        return out
 
 
 @router.post("/chunks")

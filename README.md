@@ -8,6 +8,7 @@ Local, single-user, multi-agent collaborative novel writing platform (FastAPI + 
 
 - Notion-like writing workspace: Projects/Outline/Chapters + Markdown editor/preview + tool panels
 - Multi-agent pipeline with SSE streaming trace, plus visualization (timeline + graph)
+- Graph workspace: Run DAG / Outline graph / Book structure graph (pollable & recoverable)
 - Local Knowledge Base (SQLite + FTS5) with **Weak/Strong** dependency modes
 - Optional web search tool (transient; never auto-imported into KB)
 - Continue mode: upload/paste manuscript → extract StoryState → continue writing
@@ -43,9 +44,11 @@ Open the UI at: http://localhost:3000
 
 ## Using the App (UI Guide)
 
+Top navigation: `Create / Continue / Graph / Agents / Settings`.
+
 ### 1) Create/select a project
 
-- Writing tab → left panel → Projects → Create
+- Create tab → left panel → Projects → Create
 - Select the project in the list
 
 All story fields are optional; missing fields can be autofilled by LLM in **Weak** KB mode.
@@ -65,7 +68,7 @@ Security note: the UI only shows key presence (present/missing). It never displa
 
 ### 3) Add Local KB (optional but recommended)
 
-- Writing tab → right panel → Local KB
+- Create tab → right panel → Local KB
 - Add chunks with title/tags/content
 - Use search to retrieve canon/style notes quickly
 
@@ -89,9 +92,21 @@ Security note: the UI only shows key presence (present/missing). It never displa
 For large books, uploading is recommended: the backend stores the full text locally under `apps/api/data/continue_sources/`
 (gitignored) and only returns a short preview to the browser.
 
-### 5) Export
+### 5) Graph (long-task progress + visualization)
 
-- Writing tab → right panel → Export
+- Graph → Run DAG:
+  - Select a run to view the aggregated DAG (agents/tools/artifacts/errors).
+  - If you refresh the page mid-run, the Graph view can recover by polling the stored trace.
+- Graph → Outline graph:
+  - Visualizes your saved outline mindmap (or the saved text outline as a simple chapter chain).
+  - This view is read-only (pan/zoom only).
+- Graph → Book structure:
+  - Visualizes: `chapter_index` → `book_summary` (per chapter) → `book_state` → continuation manuscripts.
+  - Recommended flow: upload book → detect/tune chapters → summarize into KB → compile book state → write chapters.
+
+### 6) Export
+
+- Create tab → right panel → Export
 - Choose DOCX / EPUB / PDF
 
 ## Smoke Test (LLM)

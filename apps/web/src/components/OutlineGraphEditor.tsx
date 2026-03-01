@@ -138,10 +138,12 @@ export function OutlineGraphEditor({
   lang,
   graph,
   onChange,
+  readOnly = false,
 }: {
   lang: "zh" | "en";
   graph: OutlineGraph;
   onChange: (next: OutlineGraph) => void;
+  readOnly?: boolean;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -301,40 +303,46 @@ export function OutlineGraphEditor({
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <div className="text-xs text-[var(--ui-muted)]">
-          {lang === "zh"
-            ? "拖拽节点；拖拽连线生成关系箭头；点击节点/边可编辑。"
-            : "Drag nodes; connect to create edges; click nodes/edges to edit."}
+          {readOnly
+            ? lang === "zh"
+              ? "只读预览：可拖拽画布/缩放查看。"
+              : "Read-only view: pan/zoom to inspect."
+            : lang === "zh"
+              ? "拖拽节点；拖拽连线生成关系箭头；点击节点/边可编辑。"
+              : "Drag nodes; connect to create edges; click nodes/edges to edit."}
         </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => spawnNode("chapter")}
-            className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
-          >
-            {lang === "zh" ? "新增章节" : "Add chapter"}
-          </button>
-          <button
-            type="button"
-            onClick={() => spawnNode("plot")}
-            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
-          >
-            {lang === "zh" ? "新增情节" : "Add plot"}
-          </button>
-          <button
-            type="button"
-            onClick={() => spawnNode("character")}
-            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
-          >
-            {lang === "zh" ? "新增人物" : "Add character"}
-          </button>
-          <button
-            type="button"
-            onClick={deleteSelected}
-            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
-          >
-            {lang === "zh" ? "删除选中" : "Delete selected"}
-          </button>
-        </div>
+        {!readOnly ? (
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => spawnNode("chapter")}
+              className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
+            >
+              {lang === "zh" ? "新增章节" : "Add chapter"}
+            </button>
+            <button
+              type="button"
+              onClick={() => spawnNode("plot")}
+              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+            >
+              {lang === "zh" ? "新增情节" : "Add plot"}
+            </button>
+            <button
+              type="button"
+              onClick={() => spawnNode("character")}
+              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+            >
+              {lang === "zh" ? "新增人物" : "Add character"}
+            </button>
+            <button
+              type="button"
+              onClick={deleteSelected}
+              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+            >
+              {lang === "zh" ? "删除选中" : "Delete selected"}
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <div className="grid gap-3 lg:grid-cols-[1fr_320px]">
@@ -342,18 +350,29 @@ export function OutlineGraphEditor({
           <ReactFlow
             nodes={nodes}
             edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
+            onNodesChange={readOnly ? undefined : onNodesChange}
+            onEdgesChange={readOnly ? undefined : onEdgesChange}
+            onConnect={readOnly ? undefined : onConnect}
             nodeTypes={nodeTypes}
-            onNodeClick={(_, n) => {
-              setSelectedEdgeId(null);
-              setSelectedNodeId(n.id);
-            }}
-            onEdgeClick={(_, e) => {
-              setSelectedNodeId(null);
-              setSelectedEdgeId(e.id);
-            }}
+            nodesDraggable={!readOnly}
+            nodesConnectable={!readOnly}
+            elementsSelectable={!readOnly}
+            onNodeClick={
+              readOnly
+                ? undefined
+                : (_, n) => {
+                    setSelectedEdgeId(null);
+                    setSelectedNodeId(n.id);
+                  }
+            }
+            onEdgeClick={
+              readOnly
+                ? undefined
+                : (_, e) => {
+                    setSelectedNodeId(null);
+                    setSelectedEdgeId(e.id);
+                  }
+            }
             defaultEdgeOptions={{
               markerEnd: { type: MarkerType.ArrowClosed },
               style: { stroke: "rgba(100,116,139,0.9)", strokeWidth: 2 },
@@ -373,6 +392,7 @@ export function OutlineGraphEditor({
           </ReactFlow>
         </div>
 
+        {!readOnly ? (
         <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-3">
           <div className="text-sm font-medium">
             {lang === "zh" ? "检查器" : "Inspector"}
@@ -548,6 +568,36 @@ export function OutlineGraphEditor({
             </div>
           ) : null}
         </div>
+        ) : (
+          <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-3">
+            <div className="text-sm font-medium">
+              {lang === "zh" ? "图例" : "Legend"}
+            </div>
+            <div className="mt-2 grid gap-1 text-xs text-[var(--ui-muted)]">
+              {lang === "zh" ? (
+                <>
+                  <div>• 橙：章节</div>
+                  <div>• 蓝：情节</div>
+                  <div>• 绿：人物</div>
+                  <div>• 紫：时间</div>
+                  <div>• 青：地点</div>
+                  <div>• 黄：物件</div>
+                  <div>• 红：伏笔</div>
+                </>
+              ) : (
+                <>
+                  <div>• Orange: chapter</div>
+                  <div>• Blue: plot</div>
+                  <div>• Green: character</div>
+                  <div>• Purple: time</div>
+                  <div>• Teal: place</div>
+                  <div>• Yellow: item</div>
+                  <div>• Red: foreshadow</div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
