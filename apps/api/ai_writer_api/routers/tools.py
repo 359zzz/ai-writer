@@ -11,6 +11,11 @@ from ..tools.continue_sources import (
     save_continue_source_from_text,
 )
 from ..tools.book_index import BookIndexError, build_book_index
+from ..tools.chapter_index import (
+    ChapterIndexError,
+    build_chapter_index,
+    update_chapter_index,
+)
 from ..tools.text_extract import TextExtractError, extract_text_from_bytes
 from ..tools.web_search import WebSearchError, web_search as perform_web_search
 
@@ -220,3 +225,69 @@ def build_continue_source_book_index(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except BookIndexError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/continue_sources/{source_id}/chapter_index")
+def build_continue_source_chapter_index(
+    source_id: str,
+    preview_chars: int = Query(default=160, ge=0, le=2000),
+    max_chapters: int = Query(default=2000, ge=1, le=20_000),
+    overwrite: bool = Query(default=False),
+) -> dict[str, Any]:
+    """
+    Build (or load) a chapter-aware index for a stored book source.
+
+    This endpoint does NOT call any LLM. It uses rule-based heading detection
+    (e.g. "第十二章/回/卷/节").
+
+    - overwrite=false (default): if a cached chapter_index.json exists, return it.
+    - overwrite=true: force rebuild by rescanning the text.
+    """
+    try:
+        return build_chapter_index(
+            source_id=source_id,
+            preview_chars=preview_chars,
+            max_chapters=max_chapters,
+            overwrite=overwrite,
+        )
+    except ContinueSourceError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ChapterIndexError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(
+            status_code=500, detail=f"chapter_index_failed:{type(e).__name__}"
+        ) from e
+
+
+@router.patch("/continue_sources/{source_id}/chapter_index")
+def patch_continue_source_chapter_index(
+    source_id: str,
+    payload: dict[str, Any],
+    preview_chars: int = Query(default=160, ge=0, le=2000),
+    max_chapters: int = Query(default=2000, ge=1, le=20_000),
+) -> dict[str, Any]:
+    """
+    Update chapter index (manual micro-tune).
+
+    Expected payload:
+      { "chapters": [ {start_char, header?, label?, title?}, ... ] }
+    """
+    chapters = payload.get("chapters")
+    if not isinstance(chapters, list) or not chapters:
+        raise HTTPException(status_code=400, detail="chapters_required")
+    try:
+        return update_chapter_index(
+            source_id=source_id,
+            chapters=[c for c in chapters if isinstance(c, dict)],
+            preview_chars=preview_chars,
+            max_chapters=max_chapters,
+        )
+    except ContinueSourceError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ChapterIndexError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(
+            status_code=500, detail=f"chapter_index_update_failed:{type(e).__name__}"
+        ) from e

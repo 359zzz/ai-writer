@@ -111,3 +111,65 @@ def test_continue_source_book_index() -> None:
         assert first["index"] == 1
         assert isinstance(first.get("preview_head"), str)
         assert isinstance(first.get("preview_tail"), str)
+
+
+def test_continue_source_chapter_index_build_and_update() -> None:
+    txt = (
+        "第1章：开端\n"
+        + ("A" * 120)
+        + "\n\n"
+        + "第2章 继续\n"
+        + ("B" * 180)
+        + "\n"
+    ).encode("utf-8")
+
+    with TestClient(app) as client:
+        src = client.post(
+            "/api/tools/continue_sources/upload?preview_mode=head&preview_chars=200",
+            files={"file": ("book.txt", txt, "text/plain")},
+        ).json()
+        sid = src["source_id"]
+
+        res = client.get(
+            f"/api/tools/continue_sources/{sid}/chapter_index?overwrite=true&preview_chars=40&max_chapters=100"
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body.get("source_id") == sid
+        assert body.get("total_chapters") == 2
+        assert isinstance(body.get("chapters"), list)
+        ch1 = body["chapters"][0]
+        assert ch1.get("index") == 1
+        assert "第" in (ch1.get("label") or "")
+
+        # Micro-tune: merge by deleting chapter #2 and renaming title.
+        chapters = body["chapters"]
+        chapters = [dict(chapters[0], title="第1章：微调后的标题")]
+        res2 = client.patch(
+            f"/api/tools/continue_sources/{sid}/chapter_index?preview_chars=30&max_chapters=100",
+            json={"chapters": chapters},
+        )
+        assert res2.status_code == 200
+        body2 = res2.json()
+        assert body2.get("total_chapters") == 1
+        assert body2["chapters"][0]["title"] == "第1章：微调后的标题"
+
+        # Cached load path (overwrite=false default).
+        res3 = client.get(f"/api/tools/continue_sources/{sid}/chapter_index?preview_chars=30")
+        assert res3.status_code == 200
+        body3 = res3.json()
+        assert body3.get("total_chapters") == 1
+
+
+def test_continue_source_chapter_index_no_headings() -> None:
+    with TestClient(app) as client:
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
+            json={"text": "no headings here\njust text\n", "filename": "book.txt"},
+        ).json()
+        sid = src["source_id"]
+
+        res = client.get(
+            f"/api/tools/continue_sources/{sid}/chapter_index?overwrite=true&preview_chars=40&max_chapters=100"
+        )
+        assert res.status_code == 400

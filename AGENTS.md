@@ -382,6 +382,16 @@ Versioning policy (from v1.0.x onward):
   - 新增“章节排序”：按当前节点 Y 坐标对章节节点自动编号，并顺带整理章节节点布局（更利于 `导图 → 草稿` 转换）。
   - 导图 JSON 有更稳健的解析/校验（避免非法数据导致页面崩溃）。
 
+### v1.14.0 (Book: Chapter Index Tool)
+- API（不调用 LLM）:
+  - 新增章节索引端点：
+    - `GET /api/tools/continue_sources/{source_id}/chapter_index`：构建/读取章节索引（`overwrite=false` 默认读缓存）。
+    - `PATCH /api/tools/continue_sources/{source_id}/chapter_index`：手动微调后保存（重算 end_char/预览）。
+- Backend tools:
+  - 新增 `tools/chapter_index.py`：规则识别“第X章/回/卷/节”，将 `chapter_index.json` 落盘到书籍源目录旁。
+- Tests:
+  - 新增 tools 侧回归：章节索引构建 + 更新 + 无标题报错。
+
 ---
 
 ### Roadmap (Planned, Living Doc)
