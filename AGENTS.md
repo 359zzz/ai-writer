@@ -412,6 +412,17 @@ Versioning policy (from v1.0.x onward):
 - i18n:
   - Graph 文案从“图”升级为“图谱”，并更新描述为“聚合图谱”。
 
+### v2.0.0 (Milestone: Million-Word Book Continuation, Usable & Robust)
+- 书籍续写（推荐流程）:
+  - 上传书籍源（本地落盘，gitignored）→ 章节分块 → 手动微调 → 按章节总结入库（LLM）→ 编译书籍状态（LLM）→ 进入续写工作台（书籍模式）生成章节（支持批量与落库可见）。
+- 章节能力:
+  - 规则优先识别“第X章/回/卷/节”，生成 `chapter_index.json`，并支持在前端做删除/改标题并保存（微调后会重算边界与预览）。
+- 可用性与健壮性:
+  - BookSummarizer/BookCompiler 优先按章节工作（更贴近用户心智）；同时保留分片模式作为无标题文本兜底。
+  - PackyAPI/Gemini 在 `network_error/timeout` 场景下会做保守的模型 fallback；Writer 阶段也有“缩短上下文 + 更含蓄写作模式”的救援重试，降低断连风险。
+- 可观测性:
+  - Agent 协作页新增 ReactFlow 图谱视图（按 Agent 聚合 tool/artifact，并展示产物类型计数），用于理解长流程与排障。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

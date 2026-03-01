@@ -78,6 +78,12 @@
   - 使用同一个“续写素材”输入框（拖拽文件 / 点击上传 / 粘贴文本或文件）
   - 选择“截断位置（尾部/开头）”与“截断长度（字符）”
   - 点击“抽取 + 续写”
+- 书籍续写（长书）：
+  - 续写页 → 书籍续写
+  - 上传书籍源（本地落盘）
+  - 章节分块（可手动微调并保存）
+  - 按章节总结入库（LLM）→ 编译书籍状态（LLM）
+  - 进入续写工作台（书籍模式）续写章节（支持批量 + 落库可见）
 
 大文件建议直接上传：后端会把全文保存到 `apps/api/data/continue_sources/`（已 gitignore），前端只拿到一段预览，
 避免“把 60 万字全文塞进 textarea / 再次 POST”导致的卡死问题。
@@ -98,6 +104,7 @@
 
 ```powershell
 .\apps\api\.venv\Scripts\python.exe .\apps\api\scripts\smoke_llm.py --provider openai
+.\apps\api\.venv\Scripts\python.exe .\apps\api\scripts\smoke_llm.py --provider gemini
 ```
 
 ## 项目结构

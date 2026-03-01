@@ -78,6 +78,13 @@ Security note: the UI only shows key presence (present/missing). It never displa
   - Use the single “Continue source” box (drag-drop / click upload / paste text or a file)
   - Choose excerpt position (tail/head) and excerpt length (chars)
   - Click “Extract + Continue”
+- Book continuation (long books):
+  - Continue tab → Book Continue
+  - Upload a book as a local “book source”
+  - Step 1: Detect chapters (and optionally tune + save)
+  - Step 2: Summarize into KB (chapter mode)
+  - Step 3: Compile book state
+  - Step 4: Open Continue workspace (book mode) and write chapters (supports batch + persisted chapters)
 
 For large books, uploading is recommended: the backend stores the full text locally under `apps/api/data/continue_sources/`
 (gitignored) and only returns a short preview to the browser.
@@ -98,6 +105,7 @@ Run a short, safe smoke test (<=500 chars output):
 
 ```powershell
 .\apps\api\.venv\Scripts\python.exe .\apps\api\scripts\smoke_llm.py --provider openai
+.\apps\api\.venv\Scripts\python.exe .\apps\api\scripts\smoke_llm.py --provider gemini
 ```
 
 ## Project Structure
