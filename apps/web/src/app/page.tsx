@@ -360,6 +360,7 @@ export default function Home() {
   const [batchContinuing, setBatchContinuing] = useState<
     | {
         status: "running" | "stopping" | "stopped" | "failed" | "completed";
+        kind: "continue" | "book_continue";
         sourceId: string;
         startIndex: number;
         total: number;
@@ -388,6 +389,9 @@ export default function Home() {
   );
   const [continueExcerptChars, setContinueExcerptChars] = useState<number>(8000);
   const [continueDropActive, setContinueDropActive] = useState<boolean>(false);
+  const [continueRunKind, setContinueRunKind] = useState<
+    "continue" | "book_continue"
+  >("continue");
   // Book Continue (scaffold): file upload first, store as a local continue_source.
   const [bookSourceId, setBookSourceId] = useState<string | null>(null);
   const [bookSourceMeta, setBookSourceMeta] = useState<
@@ -484,6 +488,8 @@ export default function Home() {
       Retriever: "检索器",
       BookSummarizer: "书籍总结",
       BookCompiler: "书籍编译",
+      BookContinue: "书籍续写准备",
+      BookPlanner: "书籍续写规划",
     };
     const zh = map[agent];
     return zh ? `${zh}（${agent}）` : agent;
@@ -504,6 +510,8 @@ export default function Home() {
       Retriever: "#64748B",
       BookSummarizer: "#A855F7",
       BookCompiler: "#06B6D4",
+      BookContinue: "#7C3AED",
+      BookPlanner: "#EC4899",
     };
     return palette[a] ?? "rgba(120,120,120,0.35)";
   };
@@ -527,6 +535,7 @@ export default function Home() {
       continue: "续写",
       book_summarize: "书籍总结入库",
       book_compile: "书籍编译",
+      book_continue: "书籍续写",
     };
     return map[kind] ?? kind;
   };
@@ -1558,7 +1567,7 @@ export default function Home() {
 
   async function runBatchContinueChapters(
     sourceId: string,
-    opts: { startIndex?: number; total?: number } = {},
+    opts: { startIndex?: number; total?: number; kind?: "continue" | "book_continue" } = {},
   ) {
     if (!selectedProjectId) return;
     const sid = (sourceId || "").trim();
@@ -1567,6 +1576,7 @@ export default function Home() {
       return;
     }
 
+    const runKind = opts.kind ?? "continue";
     const startIndex = Math.max(
       1,
       Number.isFinite(opts.startIndex) ? Number(opts.startIndex) : chapterIndex,
@@ -1577,30 +1587,34 @@ export default function Home() {
     const hasSavedOutline = Boolean(outlineChapters && outlineChapters.length > 0);
 
     batchContinueStopRequestedRef.current = false;
-    setBatchContinuing({ status: "running", sourceId: sid, startIndex, total, done: 0 });
+    setBatchContinuing({ status: "running", kind: runKind, sourceId: sid, startIndex, total, done: 0 });
 
     let done = 0;
     for (let i = 0; i < total; i += 1) {
       if (batchContinueStopRequestedRef.current) {
-        setBatchContinuing({ status: "stopped", sourceId: sid, startIndex, total, done });
+        setBatchContinuing({ status: "stopped", kind: runKind, sourceId: sid, startIndex, total, done });
         return;
       }
 
       const idx = Math.max(1, startIndex + i);
       try {
-        const r = await runPipeline("continue", {
+        const payload: Record<string, unknown> = {
           chapter_index: idx,
           source_id: sid,
           source_slice_mode: continueExcerptMode,
           source_slice_chars: continueExcerptChars,
           research_query: researchQuery.trim() || undefined,
+        };
+        if (runKind === "continue") {
           // If the user already has an explicitly saved outline, avoid re-running
           // Outliner; otherwise, run it once for the first chapter then skip.
-          skip_outliner: hasSavedOutline ? true : i > 0,
-        });
+          payload.skip_outliner = hasSavedOutline ? true : i > 0;
+        }
+        const r = await runPipeline(runKind, payload);
         if (!r.ok) {
           setBatchContinuing({
             status: "failed",
+            kind: runKind,
             sourceId: sid,
             startIndex,
             total,
@@ -1612,6 +1626,7 @@ export default function Home() {
       } catch (e) {
         setBatchContinuing({
           status: "failed",
+          kind: runKind,
           sourceId: sid,
           startIndex,
           total,
@@ -1622,11 +1637,11 @@ export default function Home() {
       }
 
       done = i + 1;
-      setBatchContinuing({ status: "running", sourceId: sid, startIndex, total, done });
+      setBatchContinuing({ status: "running", kind: runKind, sourceId: sid, startIndex, total, done });
       setChapterIndex(idx + 1);
     }
 
-    setBatchContinuing({ status: "completed", sourceId: sid, startIndex, total, done });
+    setBatchContinuing({ status: "completed", kind: runKind, sourceId: sid, startIndex, total, done });
   }
 
   async function addKbChunk() {
@@ -2401,6 +2416,14 @@ export default function Home() {
       ],
       book_summarize: ["BookSummarizer"],
       book_compile: ["BookCompiler"],
+      book_continue: [
+        "ConfigAutofill",
+        "BookContinue",
+        "BookPlanner",
+        "Writer",
+        "LoreKeeper",
+        "Editor",
+      ],
     };
 
     const plan = expectedAgents[activeRunKind] ?? [];
@@ -2799,6 +2822,7 @@ export default function Home() {
                                       setSelectedProjectId(p.id);
                                       setTab("continue");
                                       setContinuePane("article");
+                                      setContinueRunKind("continue");
                                       clearContinueInput();
                                     }}
                                     className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
@@ -2814,6 +2838,7 @@ export default function Home() {
                                       setSelectedProjectId(p.id);
                                       setTab("continue");
                                       setContinuePane("book");
+                                      setContinueRunKind("book_continue");
                                       clearBookContinueInput();
                                     }}
                                     className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
@@ -3542,6 +3567,46 @@ export default function Home() {
                           />
 
                           <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {lang === "zh" ? "续写类型" : "Continue type"}
+                            </span>
+                            <select
+                              value={continueRunKind}
+                              disabled={
+                                runInProgress ||
+                                batchContinuing?.status === "running" ||
+                                batchContinuing?.status === "stopping"
+                              }
+                              onChange={(e) =>
+                                setContinueRunKind(
+                                  e.target.value === "book_continue"
+                                    ? "book_continue"
+                                    : "continue",
+                                )
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)]"
+                            >
+                              <option value="continue">
+                                {lang === "zh"
+                                  ? "文章续写（抽取+续写）"
+                                  : "Article (extract + continue)"}
+                              </option>
+                              <option value="book_continue">
+                                {lang === "zh"
+                                  ? "书籍续写（基于书籍状态）"
+                                  : "Book (compiled state)"}
+                              </option>
+                            </select>
+                            {continueRunKind === "book_continue" ? (
+                              <span className="text-xs text-[var(--ui-muted)]">
+                                {lang === "zh"
+                                  ? "需要先在「书籍续写」完成：总结入库 → 编译书籍状态。"
+                                  : "Requires: Summarize into KB → Compile book state first."}
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
                             <button
                               disabled={
                                 !selectedProjectId ||
@@ -3561,7 +3626,7 @@ export default function Home() {
                                       continueInputText,
                                     );
                                   }
-                                  await runPipeline("continue", {
+                                  await runPipeline(continueRunKind, {
                                     chapter_index: chapterIndex,
                                     source_id: sid,
                                     source_slice_mode: continueExcerptMode,
@@ -3575,7 +3640,11 @@ export default function Home() {
                               }}
                               className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-sm text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
                             >
-                              {tt("extract_continue")}
+                              {continueRunKind === "book_continue"
+                                ? lang === "zh"
+                                  ? "书籍续写（生成下一章）"
+                                  : "Continue book (next chapter)"
+                                : tt("extract_continue")}
                             </button>
                             <button
                               disabled={
@@ -3599,6 +3668,7 @@ export default function Home() {
                                   await runBatchContinueChapters(sid, {
                                     startIndex: chapterIndex,
                                     total: writeChapterCount,
+                                    kind: continueRunKind,
                                   });
                                 } catch (e) {
                                   setRunError((e as Error).message);
@@ -3607,10 +3677,20 @@ export default function Home() {
                               className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                             >
                               {batchContinuing?.status === "running"
-                                ? `${lang === "zh" ? "批量续写中…" : "Batch continuing…"} (${batchContinuing.done}/${batchContinuing.total})`
-                                : lang === "zh"
-                                  ? `批量续写 ${writeChapterCount} 章`
-                                  : `Continue ${writeChapterCount} chapters`}
+                                ? `${lang === "zh"
+                                    ? batchContinuing.kind === "book_continue"
+                                      ? "批量书籍续写中…"
+                                      : "批量续写中…"
+                                    : batchContinuing.kind === "book_continue"
+                                      ? "Batch book continuing…"
+                                      : "Batch continuing…"} (${batchContinuing.done}/${batchContinuing.total})`
+                                : continueRunKind === "book_continue"
+                                  ? lang === "zh"
+                                    ? `批量书籍续写 ${writeChapterCount} 章`
+                                    : `Continue book ${writeChapterCount} chapters`
+                                  : lang === "zh"
+                                    ? `批量续写 ${writeChapterCount} 章`
+                                    : `Continue ${writeChapterCount} chapters`}
                             </button>
                             <span className="text-xs text-[var(--ui-muted)]">
                               {tt("uses_settings")}
@@ -3678,7 +3758,11 @@ export default function Home() {
                                         setWriteChapterCount(remaining);
                                         runBatchContinueChapters(
                                           batchContinuing.sourceId,
-                                          { startIndex: nextIndex, total: remaining },
+                                          {
+                                            startIndex: nextIndex,
+                                            total: remaining,
+                                            kind: batchContinuing.kind,
+                                          },
                                         ).catch((e) =>
                                           setRunError((e as Error).message),
                                         );
@@ -4061,6 +4145,7 @@ export default function Home() {
                                           setSelectedProjectId(p.id);
                                           setTab("continue");
                                           setContinuePane("article");
+                                          setContinueRunKind("continue");
                                           clearContinueInput();
                                         }}
                                         className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
@@ -4076,6 +4161,7 @@ export default function Home() {
                                           setSelectedProjectId(p.id);
                                           setTab("continue");
                                           setContinuePane("book");
+                                          setContinueRunKind("book_continue");
                                           clearBookContinueInput();
                                         }}
                                         className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
@@ -4827,8 +4913,8 @@ export default function Home() {
                       </div>
                       <div className="mt-2 text-xs text-[var(--ui-muted)]">
                         {lang === "zh"
-                          ? "现支持：上传书籍源（txt/json）→ 预览截取 → 分片索引 → 总结入库 → 编译书籍状态（角色卡/时间线）。下一步会在此基础上做“书籍续写”。"
-                          : "Now supports: upload (txt/json) → sliced preview → chunk index → chunk summaries into KB → compile book state (character cards/timeline). Next: full book continuation."}
+                          ? "现支持：上传书籍源（txt/json）→ 预览截取 → 分片索引 → 总结入库 → 编译书籍状态（角色卡/时间线）→ 书籍续写（工作台）。"
+                          : "Now supports: upload (txt/json) → sliced preview → chunk index → chunk summaries into KB → compile book state (character cards/timeline) → continue book (workspace)."}
                       </div>
 
                       <div
@@ -5036,18 +5122,19 @@ export default function Home() {
                             setContinueSourceId(bookSourceId);
                             setContinueSourceMeta(bookSourceMeta);
                             setContinueInputText(bookInputText);
+                            setContinueRunKind("book_continue");
                             setContinuePane("article");
                           }}
                           className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
                         >
                           {lang === "zh"
-                            ? "用此书籍源进入续写工作台"
-                            : "Use this book in Continue workspace"}
+                            ? "进入续写工作台（书籍模式）"
+                            : "Open Continue workspace (book mode)"}
                         </button>
                         <span className="text-xs text-[var(--ui-muted)]">
                           {lang === "zh"
-                            ? "会把书籍源加载到「文章续写」工作台，便于编辑、批量续写与查看章节落库结果。"
-                            : "Loads the book source into the Article Continue workspace (editor + batch + saved chapters)."}
+                            ? "会把书籍源加载到工作台，并使用「书籍续写」链路（基于书籍状态）生成章节，支持批量与落库可见。"
+                            : "Loads the book source into the workspace and uses the Book continuation pipeline (compiled book state), with batch + persisted chapters."}
                         </span>
                       </div>
 

@@ -334,3 +334,17 @@ Versioning policy (from v1.0.x onward):
   - “总结入库（LLM）”旁新增“编译书籍状态（LLM）”，并在页面内展示编译结果预览与 KB 编号。
 - Tests:
   - Added regression test for `book_compile` run kind.
+
+### v1.12.0 (Book Continue: State-Based Writing + Workspace Toggle)
+- API:
+  - Runs: 新增 `kind=book_continue`：基于已编译的 `book_state`（来自 `book_compile`）+ 书籍源最新截取，生成“下一章”并落库。
+  - BookContinue: 运行内会加载书籍截取（`continue_sources.load_excerpt`）并把 `book_state + book_summary` 合并进 Writer 的 KB 上下文（便于 Strong 模式引用 [KB#ID]）。
+  - BookPlanner: 新增轻量规划步骤（JSON 章计划），用于把长书的“下一章目标/摘要”显式传给 Writer，提高连续性与可控性。
+  - ConfigAutofill: 对 `book_*` 流程自动跳过（避免随机补全污染长书既有设定）。
+- Web → 续写 → 文章续写（工作台）:
+  - 新增“续写类型”切换：`文章续写（抽取+续写）` / `书籍续写（基于书籍状态）`。
+  - 批量续写复用同一套控制（停止/继续剩余/清除），并在批量状态里记录本次运行的 kind（避免切换后恢复跑错链路）。
+- Web → 续写 → 书籍续写:
+  - “进入续写工作台（书籍模式）”：一键把书籍源加载到工作台，并切换到 `book_continue` 链路进行续写与批量生成。
+- Tests:
+  - Added regression test for `book_continue` (writes chapter + strips `<think>`).

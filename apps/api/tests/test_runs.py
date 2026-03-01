@@ -576,3 +576,122 @@ def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> No
         assert chunks.status_code == 200
         listed = chunks.json()
         assert any(it.get("source_type") == "book_state" for it in listed)
+
+
+def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    v1.12 regression test:
+    - book_continue should use compiled book_state + local excerpt and persist a chapter.
+    - Think blocks must be stripped before persisting/emitting chapter markdown.
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        if "BookPlannerAgent" in system_prompt:
+            return "<think>plan</think>\n" + json.dumps(
+                {"index": 1, "title": "第1章：续写测试", "summary": "示例", "goal": "继续推进"},
+                ensure_ascii=False,
+            )
+        if "WriterAgent" in system_prompt:
+            body = "这是续写正文。\n" + ("继续推进剧情。" * 80) + "\n"
+            return "<think>write</think>\n# 第1章：续写测试\n\n" + body
+        if "EditorAgent" in system_prompt:
+            body = "这是续写正文（润色）。\n" + ("继续推进剧情。" * 80) + "\n"
+            return "<think>edit</think>\n# 第1章：续写测试\n\n" + body
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Book Continue Test"}).json()
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=tail&preview_chars=200",
+            json={"text": "第一章内容……\n第二章内容……\n（结尾）\n", "filename": "book.txt"},
+        ).json()
+        sid = src["source_id"]
+
+        # Seed a compiled book_state KB chunk (as if book_compile already ran).
+        compiled_state = {
+            "book_summary": "demo",
+            "style_profile": {"pov": "third", "tense": "past", "tone": "neutral"},
+            "world": "demo",
+            "character_cards": [
+                {
+                    "name": "Alice",
+                    "role": "protagonist",
+                    "traits": "brave",
+                    "relationships": "none",
+                    "current_status": "ok",
+                    "arc": "demo",
+                }
+            ],
+            "timeline": [],
+            "open_loops": [],
+            "continuation_seed": {"where_to_resume": "end", "next_scene": "demo", "constraints": []},
+        }
+        created_state = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={
+                "title": "book state",
+                "content": json.dumps({"book_source_id": sid, "state": compiled_state}, ensure_ascii=False),
+                "source_type": "book_state",
+                "tags": [f"book_source:{sid}", "book_state"],
+            },
+        )
+        assert created_state.status_code == 200
+
+        # Seed at least one book_summary chunk (optional context; book_continue should not require it).
+        created_sum = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={
+                "title": "sum 1",
+                "content": json.dumps({"book_source_id": sid, "chunk_index": 1, "data": {"summary": "demo"}}, ensure_ascii=False),
+                "source_type": "book_summary",
+                "tags": [f"book_source:{sid}", "book_chunk:1"],
+            },
+        )
+        assert created_sum.status_code == 200
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={
+                "kind": "book_continue",
+                "source_id": sid,
+                "chapter_index": 1,
+                "source_slice_mode": "tail",
+                "source_slice_chars": 200,
+                "ui_lang": "zh",
+            },
+        ) as res:
+            assert res.status_code == 200
+
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+        chapter_evts = [
+            e
+            for e in events
+            if e.get("type") == "artifact"
+            and e.get("agent") == "Writer"
+            and (e.get("data") or {}).get("artifact_type") == "chapter_markdown"
+        ]
+        assert chapter_evts
+        md = (chapter_evts[-1].get("data") or {}).get("markdown")
+        assert isinstance(md, str)
+        assert "<think>" not in md
+        assert "续写正文" in md
+
+        chapters = client.get(f"/api/projects/{p['id']}/chapters")
+        assert chapters.status_code == 200
+        listed = chapters.json()
+        assert any(int(c.get("chapter_index") or 0) == 1 for c in listed)

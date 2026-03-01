@@ -154,6 +154,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
     - chapter: write a chapter (LLM)
     - continue: extract story state + continue (LLM; minimal)
     - book_summarize: chunk a stored book source and summarize chunks into local KB (LLM)
+    - book_compile: compile stored book summaries into a compact book state (LLM)
+    - book_continue: continue writing a new chapter based on compiled book state (LLM)
     """
     with get_session() as session:
         project = session.get(Project, project_id)
@@ -836,7 +838,16 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         # - Weak mode: LLM can creatively fill missing fields.
         # - Strong mode: avoid inventing canon/settings. (User should provide KB or explicit settings.)
         yield emit("agent_started", "ConfigAutofill", {"kb_mode": kb_mode})
-        if kb_mode == "strong":
+        if kind.startswith("book_"):
+            # Book continuation flows are derived from the uploaded manuscript + summaries.
+            # Avoid random autofill that could conflict with existing canon.
+            yield emit(
+                "agent_output",
+                "ConfigAutofill",
+                {"skipped": True, "reason": "book_mode_skip_autofill"},
+            )
+            yield emit("agent_finished", "ConfigAutofill", {})
+        elif kb_mode == "strong":
             yield emit(
                 "agent_output",
                 "ConfigAutofill",
@@ -1205,6 +1216,217 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     outline_by_index[idx] = ch
         chapter_plan = outline_by_index.get(chapter_index)
 
+        # ---- Book Continue (single chapter) ----
+        book_kb_context: list[dict[str, Any]] = []
+        book_excerpt_for_writer = ""
+        if kind == "book_continue":
+            book_source_id = str(payload.get("source_id") or payload.get("book_source_id") or "").strip()
+            if not book_source_id:
+                msg = "source_id_required"
+                yield emit("run_error", "BookContinue", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            excerpt_mode = str(payload.get("source_slice_mode") or "tail")
+            try:
+                excerpt_chars = int(payload.get("source_slice_chars") or 8000)
+            except Exception:
+                excerpt_chars = 8000
+            excerpt_chars = max(200, min(excerpt_chars, 50_000))
+
+            yield emit(
+                "agent_started",
+                "BookContinue",
+                {"source_id": book_source_id, "chapter_index": chapter_index},
+            )
+
+            try:
+                yield emit(
+                    "tool_call",
+                    "BookContinue",
+                    {
+                        "tool": "continue_sources.load_excerpt",
+                        "source_id": book_source_id,
+                        "mode": excerpt_mode,
+                        "limit_chars": excerpt_chars,
+                    },
+                )
+                book_excerpt = load_continue_source_excerpt(
+                    source_id=book_source_id,
+                    mode=excerpt_mode,
+                    limit_chars=excerpt_chars,
+                ).strip()
+                book_excerpt_for_writer = book_excerpt
+                yield emit(
+                    "tool_result",
+                    "BookContinue",
+                    {"tool": "continue_sources.load_excerpt", "chars": len(book_excerpt)},
+                )
+            except Exception as e:
+                book_excerpt = ""
+                yield emit(
+                    "tool_result",
+                    "BookContinue",
+                    {"tool": "continue_sources.load_excerpt", "error": type(e).__name__},
+                )
+
+            with get_session() as s_book:
+                state_row = s_book.exec(
+                    select(KBChunk)
+                    .where(
+                        KBChunk.project_id == project_id,
+                        KBChunk.source_type == "book_state",
+                        KBChunk.tags.like(f"%book_source:{book_source_id}%"),
+                    )
+                    .order_by(KBChunk.created_at.desc())
+                ).first()
+                summary_rows = list(
+                    s_book.exec(
+                        select(KBChunk)
+                        .where(
+                            KBChunk.project_id == project_id,
+                            KBChunk.source_type == "book_summary",
+                            KBChunk.tags.like(f"%book_source:{book_source_id}%"),
+                        )
+                        .order_by(KBChunk.created_at.desc())
+                        .limit(6)
+                    )
+                )
+
+            if not state_row:
+                msg = "book_state_missing"
+                yield emit("run_error", "BookContinue", {"error": msg})
+                yield emit("agent_finished", "BookContinue", {})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            book_kb_context = [
+                {"id": int(state_row.id), "title": state_row.title, "content": state_row.content},
+                *[
+                    {"id": int(r.id), "title": r.title, "content": r.content}
+                    for r in summary_rows
+                    if r and r.id is not None
+                ],
+            ]
+            yield emit(
+                "agent_output",
+                "BookContinue",
+                {
+                    "book_state_kb_id": int(state_row.id),
+                    "summary_chunks_loaded": len(summary_rows),
+                    "excerpt_chars": len(book_excerpt),
+                },
+            )
+            yield emit("agent_finished", "BookContinue", {})
+
+            compiled_state: dict[str, Any] | None = None
+            try:
+                rec = json.loads(state_row.content)
+                if isinstance(rec, dict) and isinstance(rec.get("state"), dict):
+                    compiled_state = rec.get("state")  # type: ignore[assignment]
+            except Exception:
+                compiled_state = None
+
+            if isinstance(compiled_state, dict):
+                # Convert to the same StoryState schema that WriterAgent expects.
+                cards = compiled_state.get("character_cards")
+                characters: list[dict[str, Any]] = []
+                if isinstance(cards, list):
+                    for c in cards[:16]:
+                        if not isinstance(c, dict):
+                            continue
+                        name = c.get("name")
+                        if not isinstance(name, str) or not name.strip():
+                            continue
+                        characters.append(
+                            {
+                                "name": name.strip(),
+                                "current_status": str(c.get("current_status") or "").strip(),
+                                "relationships": str(c.get("relationships") or "").strip(),
+                            }
+                        )
+                story_state = {
+                    "summary_so_far": str(compiled_state.get("book_summary") or "").strip(),
+                    "characters": characters,
+                    "world": str(compiled_state.get("world") or "").strip(),
+                    "timeline": compiled_state.get("timeline") if isinstance(compiled_state.get("timeline"), list) else [],
+                    "open_loops": compiled_state.get("open_loops") if isinstance(compiled_state.get("open_loops"), list) else [],
+                    "style_profile": compiled_state.get("style_profile")
+                    if isinstance(compiled_state.get("style_profile"), dict)
+                    else {},
+                }
+
+            # BookPlanner: generate a small chapter plan for this continuation chapter.
+            try:
+                yield emit("agent_started", "BookPlanner", {"chapter_index": chapter_index})
+                system = (
+                    "You are BookPlannerAgent. Plan the next continuation chapter for a long book. "
+                    f"{lang_hint_json} "
+                    "Return JSON only.\n"
+                    "Schema:\n"
+                    "{\n"
+                    '  "index": 1,\n'
+                    '  "title": "...",\n'
+                    '  "summary": "...",\n'
+                    '  "goal": "..." \n'
+                    "}\n"
+                )
+                user = (
+                    f"Book source_id: {book_source_id}\n"
+                    f"Chapter index to write: {chapter_index}\n"
+                    "Use the compiled book state + latest excerpt to decide what happens next.\n\n"
+                    f"CompiledBookStateJSON:\n{json_dumps(compiled_state or {})}\n\n"
+                    f"LatestExcerpt:\n{book_excerpt[:4000]}\n"
+                )
+                cfg0 = llm_cfg()
+                planner_cfg = replace(
+                    cfg0,
+                    temperature=0.3,
+                    max_tokens=max(220, min(int(cfg0.max_tokens or 500), 700)),
+                )
+                yield emit(
+                    "tool_call",
+                    "BookPlanner",
+                    {
+                        "tool": "llm.generate_text",
+                        "provider": planner_cfg.provider,
+                        "model": planner_cfg.model,
+                        "max_tokens": planner_cfg.max_tokens,
+                    },
+                )
+                plan_text = await generate_text(system_prompt=system, user_prompt=user, cfg=planner_cfg)
+                plan_text = strip_think_blocks(plan_text)
+                plan_parsed = parse_json_loose(plan_text)
+                if isinstance(plan_parsed, dict):
+                    chapter_plan = plan_parsed
+                    chapter_plan["index"] = chapter_index
+                else:
+                    chapter_plan = {"index": chapter_index}
+                yield emit("artifact", "BookPlanner", {"artifact_type": "chapter_plan", "plan": chapter_plan})
+                yield emit("agent_finished", "BookPlanner", {})
+            except Exception as e:
+                # Soft-fail: Writer can proceed without an explicit plan.
+                yield emit(
+                    "agent_output",
+                    "BookPlanner",
+                    {"error": f"book_planner_failed:{type(e).__name__}", "soft_fail": True},
+                )
+                yield emit("agent_finished", "BookPlanner", {})
+
+            if not isinstance(chapter_plan, dict):
+                title = _default_chapter_title(output_lang, chapter_index)
+                chapter_plan = {
+                    "index": chapter_index,
+                    "title": title,
+                    "summary": "",
+                    "goal": "Continue the story" if output_lang != "zh" else "继续推进剧情",
+                }
+            else:
+                if not isinstance(chapter_plan.get("title"), str) or not str(chapter_plan.get("title") or "").strip():
+                    chapter_plan["title"] = _default_chapter_title(output_lang, chapter_index)
+
         # Tool: local KB retrieval
         kb_context: list[dict[str, Any]] = []
         try:
@@ -1226,6 +1448,22 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             yield emit("tool_result", "Retriever", {"tool": "kb_search", "hits": len(kb_context)})
         except Exception:
             kb_context = []
+
+            if kind == "book_continue" and book_kb_context:
+                # Ensure book state/summaries are present in Writer prompt, and keep IDs stable for Strong mode citations.
+                seen: set[int] = set()
+                merged: list[dict[str, Any]] = []
+            for it in book_kb_context + kb_context:
+                try:
+                    kid = int(it.get("id") or 0)  # type: ignore[arg-type]
+                except Exception:
+                    kid = 0
+                if kid and kid in seen:
+                    continue
+                if kid:
+                    seen.add(kid)
+                merged.append(it)
+            kb_context = merged
 
         if kb_mode == "strong" and not kb_context and not story:
             msg = "strong_kb_mode_requires_local_context"
@@ -1300,6 +1538,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 user_parts.append(f"Chapter plan:\n{json_dumps(chapter_plan)}")
             if story_state:
                 user_parts.append(f"StoryState:\n{json_dumps(story_state)}")
+            if kind == "book_continue" and book_excerpt_for_writer.strip():
+                user_parts.append(
+                    "Latest manuscript excerpt (continue from this context, keep continuity):\n"
+                    f"{book_excerpt_for_writer[:3500]}"
+                )
             if kb_context:
                 kb_text = "\n\n".join(
                     f"[KB#{k['id']}] {k.get('title','')}\n{k.get('content','')}" for k in kb_context
