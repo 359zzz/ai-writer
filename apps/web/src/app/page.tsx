@@ -4,6 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 import { MarkdownPreview } from "@/components/MarkdownPreview";
+import {
+  OutlineGraphEditor,
+  type OutlineEdgeData,
+  type OutlineGraph,
+  type OutlineNodeData,
+} from "@/components/OutlineGraphEditor";
 import { t, type I18nKey, type Lang } from "@/lib/i18n";
 import {
   DEFAULT_THEMES,
@@ -278,6 +284,143 @@ function loadOutlineBlocksFromProject(p: Project | null): OutlineBlock[] {
   return toOutlineBlocks(normalizeOutline(chapters));
 }
 
+function loadOutlineGraphFromProject(p: Project | null): OutlineGraph | null {
+  const settings = p?.settings as Record<string, unknown> | undefined;
+  const story = settings?.story as Record<string, unknown> | undefined;
+  const raw = story?.outline_graph as unknown;
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  const nodesRaw = Array.isArray(rec.nodes) ? rec.nodes : [];
+  const edgesRaw = Array.isArray(rec.edges) ? rec.edges : [];
+
+  const nodes: Array<{
+    id: string;
+    type?: string;
+    position: { x: number; y: number };
+    data: OutlineNodeData;
+  }> = [];
+  for (const it of nodesRaw) {
+    if (!it || typeof it !== "object") continue;
+    const n = it as Record<string, unknown>;
+    const id = typeof n.id === "string" ? n.id : "";
+    const pos = n.position as Record<string, unknown> | undefined;
+    const x = Number(pos?.x);
+    const y = Number(pos?.y);
+    const data = n.data as Record<string, unknown> | undefined;
+    const kind = typeof data?.kind === "string" ? data.kind : "";
+    const title = typeof data?.title === "string" ? data.title : "";
+    if (!id || !Number.isFinite(x) || !Number.isFinite(y) || !kind || !title) continue;
+    nodes.push({
+      id,
+      type: typeof n.type === "string" ? n.type : "outlineNode",
+      position: { x, y },
+      data: {
+        kind: kind as OutlineNodeData["kind"],
+        title,
+        text: typeof data?.text === "string" ? data.text : undefined,
+        summary: typeof data?.summary === "string" ? data.summary : undefined,
+        goal: typeof data?.goal === "string" ? data.goal : undefined,
+        order: Number.isFinite(Number(data?.order)) ? Number(data?.order) : undefined,
+      },
+    });
+  }
+
+  const edges: Array<{
+    id: string;
+    source: string;
+    target: string;
+    type?: string;
+    data?: OutlineEdgeData;
+    label?: string;
+  }> = [];
+  for (const it of edgesRaw) {
+    if (!it || typeof it !== "object") continue;
+    const e = it as Record<string, unknown>;
+    const id = typeof e.id === "string" ? e.id : "";
+    const source = typeof e.source === "string" ? e.source : "";
+    const target = typeof e.target === "string" ? e.target : "";
+    if (!id || !source || !target) continue;
+    const data = e.data as Record<string, unknown> | undefined;
+    const kind = typeof data?.kind === "string" ? data.kind : undefined;
+    const label = typeof (data?.label ?? e.label) === "string" ? String(data?.label ?? e.label) : undefined;
+    edges.push({
+      id,
+      source,
+      target,
+      type: typeof e.type === "string" ? e.type : "smoothstep",
+      data: kind ? ({ kind, label } as OutlineEdgeData) : undefined,
+      label,
+    });
+  }
+
+  if (nodes.length === 0) return null;
+  return {
+    version: 1,
+    nodes: nodes as unknown as OutlineGraph["nodes"],
+    edges: edges as unknown as OutlineGraph["edges"],
+  };
+}
+
+function outlineGraphFromBlocks(blocks: OutlineBlock[]): OutlineGraph {
+  const nodes = blocks.map((b, i) => ({
+    id: b.id,
+    type: "outlineNode",
+    position: { x: 40, y: 40 + i * 140 },
+    data: {
+      kind: "chapter",
+      title: b.title,
+      summary: b.summary,
+      goal: b.goal,
+      order: i + 1,
+    } satisfies OutlineNodeData,
+  }));
+  const edges = nodes.slice(1).map((n, i) => ({
+    id: `e_${nodes[i].id}_${n.id}_next`,
+    source: nodes[i].id,
+    target: n.id,
+    type: "smoothstep",
+    data: { kind: "next" } satisfies OutlineEdgeData,
+  }));
+  return {
+    version: 1,
+    nodes: nodes as unknown as OutlineGraph["nodes"],
+    edges: edges as unknown as OutlineGraph["edges"],
+  };
+}
+
+function outlineBlocksFromGraph(graph: OutlineGraph): OutlineBlock[] {
+  const chapters = (graph.nodes ?? []).filter((n) => n?.data?.kind === "chapter");
+  const sorted = [...chapters].sort((a, b) => {
+    const ao = Number(a.data?.order);
+    const bo = Number(b.data?.order);
+    const aHas = Number.isFinite(ao) && ao > 0;
+    const bHas = Number.isFinite(bo) && bo > 0;
+    if (aHas && bHas) return ao - bo;
+    if (aHas && !bHas) return -1;
+    if (!aHas && bHas) return 1;
+    const ay = Number((a.position as { x: number; y: number } | undefined)?.y ?? 0);
+    const by = Number((b.position as { x: number; y: number } | undefined)?.y ?? 0);
+    if (ay !== by) return ay - by;
+    const ax = Number((a.position as { x: number; y: number } | undefined)?.x ?? 0);
+    const bx = Number((b.position as { x: number; y: number } | undefined)?.x ?? 0);
+    return ax - bx;
+  });
+
+  const out: OutlineBlock[] = [];
+  for (const n of sorted) {
+    const title = String(n.data?.title ?? "").trim();
+    if (!title) continue;
+    out.push({
+      id: n.id,
+      index: 0,
+      title,
+      summary: typeof n.data?.summary === "string" ? n.data.summary : undefined,
+      goal: typeof n.data?.goal === "string" ? n.data.goal : undefined,
+    });
+  }
+  return reindexOutlineBlocks(out);
+}
+
 export default function Home() {
   const [uiLoaded, setUiLoaded] = useState<boolean>(false);
   const [lang, setLang] = useState<Lang>(DEFAULT_UI_PREFS.lang);
@@ -420,6 +563,16 @@ export default function Home() {
   );
   const [outlineDirty, setOutlineDirty] = useState<boolean>(false);
   const [draggingOutlineId, setDraggingOutlineId] = useState<string | null>(null);
+  const [outlineEditorMode, setOutlineEditorMode] = useState<
+    "blocks" | "mindmap"
+  >("blocks");
+  const [outlineGraphDraft, setOutlineGraphDraft] = useState<OutlineGraph | null>(
+    null,
+  );
+  const [outlineGraphProjectId, setOutlineGraphProjectId] = useState<
+    string | null
+  >(null);
+  const [outlineGraphDirty, setOutlineGraphDirty] = useState<boolean>(false);
   // Local KB chunk fields. Keep defaults empty to avoid confusing users
   // with pre-filled values like "设定" in multiple inputs.
   const [kbTitle, setKbTitle] = useState<string>("");
@@ -875,6 +1028,35 @@ export default function Home() {
     selectedProject,
     outlineDraftProjectId,
     outlineDirty,
+  ]);
+
+  useEffect(() => {
+    // Keep the outline mindmap draft bound to the selected project settings.
+    if (!selectedProjectId) {
+      setOutlineGraphDraft(null);
+      setOutlineGraphProjectId(null);
+      setOutlineGraphDirty(false);
+      return;
+    }
+
+    if (outlineGraphProjectId !== selectedProjectId) {
+      setOutlineGraphDraft(loadOutlineGraphFromProject(selectedProject));
+      setOutlineGraphProjectId(selectedProjectId);
+      setOutlineGraphDirty(false);
+      return;
+    }
+
+    if (tab === "create" && createPane === "outline" && outlineEditorMode === "mindmap" && !outlineGraphDirty) {
+      setOutlineGraphDraft(loadOutlineGraphFromProject(selectedProject));
+    }
+  }, [
+    tab,
+    createPane,
+    outlineEditorMode,
+    selectedProjectId,
+    selectedProject,
+    outlineGraphProjectId,
+    outlineGraphDirty,
   ]);
 
   useEffect(() => {
@@ -2047,6 +2229,119 @@ export default function Home() {
     setOutlineDraft(normalized);
     setOutlineDirty(false);
     setOutlineDraftProjectId(selectedProjectId);
+  }
+
+  function ensureOutlineGraphDraft() {
+    if (outlineGraphDraft && outlineGraphDraft.nodes.length > 0) return;
+    const saved = loadOutlineGraphFromProject(selectedProject);
+    if (saved) {
+      setOutlineGraphDraft(saved);
+      setOutlineGraphDirty(false);
+      setOutlineGraphProjectId(selectedProjectId);
+      return;
+    }
+
+    const sourceBlocks =
+      outlineDraft.length > 0
+        ? outlineDraft
+        : loadOutlineBlocksFromProject(selectedProject);
+    const g = outlineGraphFromBlocks(sourceBlocks);
+    setOutlineGraphDraft(g);
+    setOutlineGraphDirty(true);
+    setOutlineGraphProjectId(selectedProjectId);
+  }
+
+  function resetOutlineGraphDraft() {
+    if (!selectedProjectId) return;
+    if (outlineGraphDirty) {
+      const ok = window.confirm(
+        lang === "zh"
+          ? "丢弃未保存的导图修改并恢复为已保存版本？"
+          : "Discard unsaved mindmap changes and reload the saved version?",
+      );
+      if (!ok) return;
+    }
+    setOutlinePaneError(null);
+    const saved = loadOutlineGraphFromProject(selectedProject);
+    if (saved) {
+      setOutlineGraphDraft(saved);
+      setOutlineGraphDirty(false);
+      setOutlineGraphProjectId(selectedProjectId);
+      return;
+    }
+    // No saved graph yet; regenerate from the currently saved outline blocks.
+    const blocks = loadOutlineBlocksFromProject(selectedProject);
+    setOutlineGraphDraft(outlineGraphFromBlocks(blocks));
+    setOutlineGraphDirty(true);
+    setOutlineGraphProjectId(selectedProjectId);
+  }
+
+  function syncOutlineGraphFromBlocks() {
+    if (!selectedProjectId) return;
+    if (outlineGraphDirty) {
+      const ok = window.confirm(
+        lang === "zh"
+          ? "当前导图有未保存修改。用大纲块重新生成会覆盖这些修改，继续？"
+          : "Mindmap has unsaved changes. Regenerating from outline blocks will overwrite them. Continue?",
+      );
+      if (!ok) return;
+    }
+    setOutlinePaneError(null);
+    setOutlineGraphDraft(outlineGraphFromBlocks(outlineDraft));
+    setOutlineGraphDirty(true);
+    setOutlineGraphProjectId(selectedProjectId);
+  }
+
+  function syncOutlineBlocksFromGraph() {
+    if (!outlineGraphDraft) return;
+    if (outlineDirty) {
+      const ok = window.confirm(
+        lang === "zh"
+          ? "当前大纲块有未保存修改。用导图生成草稿会覆盖这些修改，继续？"
+          : "Outline blocks have unsaved changes. Syncing from mindmap will overwrite them. Continue?",
+      );
+      if (!ok) return;
+    }
+    setOutlinePaneError(null);
+    const blocks = outlineBlocksFromGraph(outlineGraphDraft);
+    setOutlineDraft(blocks);
+    setOutlineDirty(true);
+    setDraggingOutlineId(null);
+  }
+
+  async function saveOutlineGraph() {
+    if (!selectedProjectId) return;
+    if (!outlineGraphDraft) return;
+    setOutlinePaneError(null);
+
+    const blocks = outlineBlocksFromGraph(outlineGraphDraft);
+    if (blocks.length === 0) {
+      setOutlinePaneError(
+        lang === "zh"
+          ? "导图里没有可用的“章节”节点（chapter）。请先添加章节节点并填写标题。"
+          : "No usable chapter nodes found in mindmap. Add chapter nodes and fill titles first.",
+      );
+      return;
+    }
+
+    const chapters = blocks.map((b) => ({
+      id: b.id,
+      index: b.index,
+      title: b.title,
+      summary: b.summary,
+      goal: b.goal,
+    }));
+
+    await saveProjectSettings({
+      story: { outline_graph: outlineGraphDraft, outline: chapters },
+    });
+    // Keep UI consistent with saved outline.
+    setOutline({ chapters });
+    setOutlineDraft(blocks);
+    setOutlineDirty(false);
+    setOutlineDraftProjectId(selectedProjectId);
+    setOutlineGraphDirty(false);
+    setOutlineGraphProjectId(selectedProjectId);
   }
 
   async function searchKb() {
@@ -4688,172 +4983,293 @@ export default function Home() {
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <div className="text-sm font-medium">
-                                {lang === "zh"
-                                  ? "大纲块编辑（草稿）"
-                                  : "Outline blocks (draft)"}
+                                {outlineEditorMode === "mindmap"
+                                  ? lang === "zh"
+                                    ? "大纲思维导图（草稿）"
+                                    : "Outline mindmap (draft)"
+                                  : lang === "zh"
+                                    ? "大纲块编辑（草稿）"
+                                    : "Outline blocks (draft)"}
                               </div>
-                              {outlineDirty ? (
+                              {outlineEditorMode === "mindmap" ? (
+                                outlineGraphDirty ? (
+                                  <span className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
+                                    {lang === "zh" ? "未保存" : "Unsaved"}
+                                  </span>
+                                ) : null
+                              ) : outlineDirty ? (
                                 <span className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
                                   {lang === "zh" ? "未保存" : "Unsaved"}
                                 </span>
                               ) : null}
                             </div>
                             <div className="mt-2 text-xs text-[var(--ui-muted)]">
-                              {lang === "zh"
-                                ? "拖拽排序 / 增删改块；修改后点击“保存大纲”。"
-                                : "Drag to reorder / add/edit/delete blocks; click “Save outline” to persist."}
+                              {outlineEditorMode === "mindmap"
+                                ? lang === "zh"
+                                  ? "拖拽节点 / 连线关系箭头；修改后点击“保存导图”（会同步到已保存大纲用于写作）。"
+                                  : "Drag nodes / connect edges; click “Save mindmap” (also syncs to saved outline for writing)."
+                                : lang === "zh"
+                                  ? "拖拽排序 / 增删改块；修改后点击“保存大纲”。"
+                                  : "Drag to reorder / add/edit/delete blocks; click “Save outline” to persist."}
                             </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              disabled={settingsSaving}
-                              onClick={() => addOutlineBlock()}
-                              className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
-                            >
-                              {lang === "zh" ? "添加块" : "Add block"}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={settingsSaving || !outlineDirty}
-                              onClick={() => {
-                                saveOutlineDraft().catch((err) =>
-                                  setOutlinePaneError((err as Error).message),
-                                );
-                              }}
-                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
-                            >
-                              {lang === "zh" ? "保存大纲" : "Save outline"}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={settingsSaving}
-                              onClick={() => resetOutlineDraft()}
-                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
-                            >
-                              {lang === "zh" ? "重置" : "Reset"}
-                            </button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="inline-flex overflow-hidden rounded-md border border-zinc-200 bg-[var(--ui-control)]">
+                              <button
+                                type="button"
+                                onClick={() => setOutlineEditorMode("blocks")}
+                                className={[
+                                  "px-2 py-1 text-xs",
+                                  outlineEditorMode === "blocks"
+                                    ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                                    : "text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
+                                ].join(" ")}
+                              >
+                                {lang === "zh" ? "块" : "Blocks"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOutlineEditorMode("mindmap");
+                                  ensureOutlineGraphDraft();
+                                }}
+                                className={[
+                                  "px-2 py-1 text-xs",
+                                  outlineEditorMode === "mindmap"
+                                    ? "bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                                    : "text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]",
+                                ].join(" ")}
+                              >
+                                {lang === "zh" ? "导图" : "Mindmap"}
+                              </button>
+                            </div>
+
+                            {outlineEditorMode === "blocks" ? (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={settingsSaving}
+                                  onClick={() => addOutlineBlock()}
+                                  className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                                >
+                                  {lang === "zh" ? "添加块" : "Add block"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={settingsSaving || !outlineDirty}
+                                  onClick={() => {
+                                    saveOutlineDraft().catch((err) =>
+                                      setOutlinePaneError((err as Error).message),
+                                    );
+                                  }}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                                >
+                                  {lang === "zh" ? "保存大纲" : "Save outline"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={settingsSaving}
+                                  onClick={() => resetOutlineDraft()}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                                >
+                                  {lang === "zh" ? "重置" : "Reset"}
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={settingsSaving}
+                                  onClick={() => syncOutlineGraphFromBlocks()}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                                >
+                                  {lang === "zh"
+                                    ? "从草稿生成导图"
+                                    : "From blocks → mindmap"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={settingsSaving || !outlineGraphDraft}
+                                  onClick={() => syncOutlineBlocksFromGraph()}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                                >
+                                  {lang === "zh"
+                                    ? "导图 → 草稿"
+                                    : "Mindmap → blocks"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={
+                                    settingsSaving || !outlineGraphDirty || !outlineGraphDraft
+                                  }
+                                  onClick={() => {
+                                    saveOutlineGraph().catch((err) =>
+                                      setOutlinePaneError((err as Error).message),
+                                    );
+                                  }}
+                                  className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                                >
+                                  {lang === "zh" ? "保存导图" : "Save mindmap"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={settingsSaving}
+                                  onClick={() => resetOutlineGraphDraft()}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                                >
+                                  {lang === "zh" ? "重置" : "Reset"}
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
 
-                        {outlineDraft.length === 0 ? (
-                          <div className="mt-3 text-sm text-[var(--ui-muted)]">
-                            {lang === "zh"
-                              ? "还没有大纲块。你可以先上传导入，或点击“添加块”。"
-                              : "No outline blocks yet. Import a file or click “Add block”."}
-                          </div>
-                        ) : (
-                          <ul className="mt-3 space-y-3">
-                            {outlineDraft.map((b) => (
-                              <li
-                                key={b.id}
-                                onDragOver={(e) => {
-                                  if (!draggingOutlineId) return;
-                                  e.preventDefault();
-                                }}
-                                onDrop={(e) => {
-                                  const moving =
-                                    draggingOutlineId ||
-                                    e.dataTransfer.getData("text/plain");
-                                  if (!moving || moving === b.id) return;
-                                  e.preventDefault();
-                                  moveOutlineBlock(moving, b.id);
-                                }}
-                                className={[
-                                  "rounded-lg border p-3",
-                                  draggingOutlineId && draggingOutlineId !== b.id
-                                    ? "border-zinc-200"
-                                    : "border-zinc-200",
-                                ].join(" ")}
-                              >
-                                <div className="flex items-start gap-2">
-                                  <button
-                                    type="button"
-                                    draggable
-                                    onClick={(e) => e.stopPropagation()}
-                                    onDragStart={(e) => {
-                                      setDraggingOutlineId(b.id);
-                                      e.dataTransfer.setData("text/plain", b.id);
-                                      e.dataTransfer.effectAllowed = "move";
-                                    }}
-                                    onDragEnd={() => setDraggingOutlineId(null)}
-                                    className="mt-1 cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
-                                    title={lang === "zh" ? "拖拽排序" : "Drag to reorder"}
-                                  >
-                                    ⋮⋮
-                                  </button>
+                        {outlineEditorMode === "blocks" ? (
+                          outlineDraft.length === 0 ? (
+                            <div className="mt-3 text-sm text-[var(--ui-muted)]">
+                              {lang === "zh"
+                                ? "还没有大纲块。你可以先上传导入，或点击“添加块”。"
+                                : "No outline blocks yet. Import a file or click “Add block”."}
+                            </div>
+                          ) : (
+                            <ul className="mt-3 space-y-3">
+                              {outlineDraft.map((b) => (
+                                <li
+                                  key={b.id}
+                                  onDragOver={(e) => {
+                                    if (!draggingOutlineId) return;
+                                    e.preventDefault();
+                                  }}
+                                  onDrop={(e) => {
+                                    const moving =
+                                      draggingOutlineId ||
+                                      e.dataTransfer.getData("text/plain");
+                                    if (!moving || moving === b.id) return;
+                                    e.preventDefault();
+                                    moveOutlineBlock(moving, b.id);
+                                  }}
+                                  className={[
+                                    "rounded-lg border p-3",
+                                    draggingOutlineId && draggingOutlineId !== b.id
+                                      ? "border-zinc-200"
+                                      : "border-zinc-200",
+                                  ].join(" ")}
+                                >
+                                  <div className="flex items-start gap-2">
+                                    <button
+                                      type="button"
+                                      draggable
+                                      onClick={(e) => e.stopPropagation()}
+                                      onDragStart={(e) => {
+                                        setDraggingOutlineId(b.id);
+                                        e.dataTransfer.setData("text/plain", b.id);
+                                        e.dataTransfer.effectAllowed = "move";
+                                      }}
+                                      onDragEnd={() => setDraggingOutlineId(null)}
+                                      className="mt-1 cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
+                                      title={
+                                        lang === "zh" ? "拖拽排序" : "Drag to reorder"
+                                      }
+                                    >
+                                      ⋮⋮
+                                    </button>
 
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="text-xs text-[var(--ui-muted)]">
-                                        {lang === "zh"
-                                          ? `第${b.index}章`
-                                          : `#${b.index}`}
-                                      </span>
-                                      <input
-                                        value={b.title}
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="text-xs text-[var(--ui-muted)]">
+                                          {lang === "zh"
+                                            ? `第${b.index}章`
+                                            : `#${b.index}`}
+                                        </span>
+                                        <input
+                                          value={b.title}
+                                          onChange={(e) =>
+                                            updateOutlineBlock(b.id, {
+                                              title: e.target.value,
+                                            })
+                                          }
+                                          className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                                          placeholder={
+                                            lang === "zh"
+                                              ? "标题（必填）"
+                                              : "Title (required)"
+                                          }
+                                        />
+                                      </div>
+                                      <textarea
+                                        value={b.summary ?? ""}
                                         onChange={(e) =>
                                           updateOutlineBlock(b.id, {
-                                            title: e.target.value,
+                                            summary: e.target.value,
                                           })
                                         }
-                                        className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                                        className="mt-2 h-20 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
                                         placeholder={
                                           lang === "zh"
-                                            ? "标题（必填）"
-                                            : "Title (required)"
+                                            ? "简介/剧情概要（可选）"
+                                            : "Summary (optional)"
+                                        }
+                                      />
+                                      <input
+                                        value={b.goal ?? ""}
+                                        onChange={(e) =>
+                                          updateOutlineBlock(b.id, {
+                                            goal: e.target.value,
+                                          })
+                                        }
+                                        className="mt-2 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                                        placeholder={
+                                          lang === "zh"
+                                            ? "本章目标（可选）"
+                                            : "Chapter goal (optional)"
                                         }
                                       />
                                     </div>
-                                    <textarea
-                                      value={b.summary ?? ""}
-                                      onChange={(e) =>
-                                        updateOutlineBlock(b.id, {
-                                          summary: e.target.value,
-                                        })
-                                      }
-                                      className="mt-2 h-20 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                                      placeholder={
-                                        lang === "zh"
-                                          ? "简介/剧情概要（可选）"
-                                          : "Summary (optional)"
-                                      }
-                                    />
-                                    <input
-                                      value={b.goal ?? ""}
-                                      onChange={(e) =>
-                                        updateOutlineBlock(b.id, {
-                                          goal: e.target.value,
-                                        })
-                                      }
-                                      className="mt-2 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
-                                      placeholder={
-                                        lang === "zh"
-                                          ? "本章目标（可选）"
-                                          : "Chapter goal (optional)"
-                                      }
-                                    />
-                                  </div>
 
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const ok = window.confirm(
-                                        lang === "zh"
-                                          ? "删除这个大纲块？（不会影响已生成章节）"
-                                          : "Delete this outline block? (Won't delete generated chapters)",
-                                      );
-                                      if (!ok) return;
-                                      deleteOutlineBlock(b.id);
-                                    }}
-                                    className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
-                                  >
-                                    {lang === "zh" ? "删除" : "Delete"}
-                                  </button>
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const ok = window.confirm(
+                                          lang === "zh"
+                                            ? "删除这个大纲块？（不会影响已生成章节）"
+                                            : "Delete this outline block? (Won't delete generated chapters)",
+                                        );
+                                        if (!ok) return;
+                                        deleteOutlineBlock(b.id);
+                                      }}
+                                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                    >
+                                      {lang === "zh" ? "删除" : "Delete"}
+                                    </button>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          )
+                        ) : (
+                          <div className="mt-3">
+                            {outlineGraphDraft ? (
+                              <OutlineGraphEditor
+                                lang={lang}
+                                graph={outlineGraphDraft}
+                                onChange={(next) => {
+                                  setOutlineGraphDraft(next);
+                                  setOutlineGraphDirty(true);
+                                }}
+                              />
+                            ) : (
+                              <div className="text-sm text-[var(--ui-muted)]">
+                                {lang === "zh"
+                                  ? "还没有导图。你可以点击上方“导图”，或用“从草稿生成导图”。"
+                                  : "No mindmap yet. Click “Mindmap” or use “From blocks → mindmap”."}
+                              </div>
+                            )}
+                            <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                              {lang === "zh"
+                                ? "保存导图会写入 story.outline_graph，并同步更新 story.outline（用于写作/写章节）。"
+                                : "Saving mindmap writes story.outline_graph and also updates story.outline for writing."}
+                            </div>
+                          </div>
                         )}
                       </div>
 

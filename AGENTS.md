@@ -365,6 +365,17 @@ Versioning policy (from v1.0.x onward):
 - Web:
   - `apps/web/package-lock.json` 的 version 字段与 `package.json` 对齐（避免长时间迭代后版本漂移）。
 
+### v1.13.0 (OutlineGraph: Mindmap Outline Editor MVP)
+- Web → 创作 → 大纲编辑:
+  - 新增“大纲思维导图（草稿）”模式（基于 `@xyflow/react`）：自由拖拽节点、连线生成关系箭头、节点/边检查器编辑。
+  - 节点类型（typed nodes）：至少支持 `chapter/plot/character/time/place/item/foreshadow`，并有基础配色与标签。
+  - 互转能力：
+    - `大纲块草稿 (story.outline 的草稿编辑器)` → “从草稿生成导图”
+    - “导图 → 草稿”（用导图生成大纲块草稿）
+  - 保存导图：写入 `story.outline_graph`，并同步更新 `story.outline`（保证后续写章节链路可直接使用）。
+- Web:
+  - 全局样式引入 `@xyflow/react/dist/style.css`（保证控件/连线样式稳定）。
+
 ---
 
 ### Roadmap (Planned, Living Doc)
@@ -386,13 +397,6 @@ Versioning policy (from v1.0.x onward):
 - 关键差异：MiroFish 的任务管理是内存为主；本项目以本地单机为目标，优先做 SQLite 持久化与断点续跑（更贴合“百万字级”使用场景）。
 
 #### Planned Versions (Post v1.12.1 → v2.0.0)
-- v1.13.0 (OutlineGraph: Mindmap Outline Editor MVP)
-  - 引入大纲图谱数据结构 `OutlineGraph`（nodes/edges），并持久化到 DB（作为项目资源/产物的一部分）。
-  - 前端采用 `@xyflow/react`（XYFlow/React Flow 生态）实现：自由拖拽节点 + 关系箭头连线 + 选中编辑面板。
-  - 节点类型：至少支持 `chapter/plot/character/time/place/item`（后续可扩展）。
-  - 互转能力（必须）：`大纲块草稿 (outlineDraft)` ⇄ `OutlineGraph` ⇄ `已保存大纲 (story.outline 文本)`，保证信息尽量不丢失。
-  - 导入/导出：支持 `json/txt`（json 为完整图谱，txt 为可读大纲文本）。
-
 - v1.13.1 (OutlineGraph: UX + Conversion Polish)
   - 编辑体验：多选/框选、快捷键、对齐/吸附、自动排版（可选引入 `dagre`）。
   - 边能力：边类型/标签/权重（用于导出与后续生成控制）。
