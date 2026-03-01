@@ -190,6 +190,8 @@ export default function Home() {
   const [settingsSaving, setSettingsSaving] = useState<boolean>(false);
   const pendingSecretsSaveRef = useRef<Promise<void> | null>(null);
   const pendingProjectSettingsSaveRef = useRef<Promise<void> | null>(null);
+  const outlineFileInputRef = useRef<HTMLInputElement | null>(null);
+  const bookFileInputRef = useRef<HTMLInputElement | null>(null);
   const [runEvents, setRunEvents] = useState<
     Array<{
       run_id: string;
@@ -232,6 +234,17 @@ export default function Home() {
   );
   const [continueExcerptChars, setContinueExcerptChars] = useState<number>(8000);
   const [continueDropActive, setContinueDropActive] = useState<boolean>(false);
+  // Book Continue (scaffold): file upload first, store as a local continue_source.
+  const [bookSourceId, setBookSourceId] = useState<string | null>(null);
+  const [bookSourceMeta, setBookSourceMeta] = useState<
+    { filename?: string; chars?: number } | null
+  >(null);
+  const [bookInputText, setBookInputText] = useState<string>("");
+  const [bookSourceLoading, setBookSourceLoading] = useState<boolean>(false);
+  const [bookSourceError, setBookSourceError] = useState<string | null>(null);
+  const [bookSourceToken, setBookSourceToken] = useState<number>(0);
+  const [bookDropActive, setBookDropActive] = useState<boolean>(false);
+  const [outlinePaneError, setOutlinePaneError] = useState<string | null>(null);
   // Local KB chunk fields. Keep defaults empty to avoid confusing users
   // with pre-filled values like "设定" in multiple inputs.
   const [kbTitle, setKbTitle] = useState<string>("");
@@ -504,6 +517,56 @@ export default function Home() {
     };
   }, [continueSourceId, continueSourceLoading, refreshContinuePreview]);
 
+  const refreshBookContinuePreview = useCallback(
+    async (sourceId: string) => {
+      const res = await fetch(
+        `${apiBase}/api/tools/continue_sources/${encodeURIComponent(sourceId)}/preview?mode=${encodeURIComponent(continueExcerptMode)}&limit_chars=${encodeURIComponent(String(continueExcerptChars))}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as {
+        text?: unknown;
+        meta?: { filename?: unknown; chars?: unknown };
+      };
+      const text = typeof data.text === "string" ? data.text : "";
+      setBookInputText(text);
+      const filename =
+        typeof data.meta?.filename === "string" ? data.meta.filename : undefined;
+      const chars = typeof data.meta?.chars === "number" ? data.meta.chars : undefined;
+      setBookSourceMeta({ filename, chars });
+    },
+    [apiBase, continueExcerptMode, continueExcerptChars],
+  );
+
+  useEffect(() => {
+    if (!bookSourceId) return;
+    if (bookSourceLoading) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      refreshBookContinuePreview(bookSourceId)
+        .then(() => {
+          if (!cancelled) setBookSourceError(null);
+        })
+        .catch((e) => {
+          if (!cancelled) setBookSourceError((e as Error).message);
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [bookSourceId, bookSourceLoading, refreshBookContinuePreview]);
+
   useEffect(() => {
     let cancelled = false;
     async function run() {
@@ -672,6 +735,25 @@ export default function Home() {
     return runEvents[0]?.run_id ?? null;
   }, [runEvents]);
 
+  const fetchChapters = useCallback(
+    async (projectId: string): Promise<ChapterItem[]> => {
+      const res = await fetch(`${apiBase}/api/projects/${projectId}/chapters`, {
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return (await res.json()) as ChapterItem[];
+    },
+    [apiBase],
+  );
+
+  const refreshChapters = useCallback(
+    async (projectId: string) => {
+      const data = await fetchChapters(projectId);
+      setChapters(data);
+    },
+    [fetchChapters],
+  );
+
   useEffect(() => {
     let cancelled = false;
     async function run() {
@@ -680,12 +762,7 @@ export default function Home() {
         return;
       }
       try {
-        const res = await fetch(
-          `${apiBase}/api/projects/${selectedProjectId}/chapters`,
-          { cache: "no-store" },
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as ChapterItem[];
+        const data = await fetchChapters(selectedProjectId);
         if (!cancelled) setChapters(data);
       } catch {
         if (!cancelled) setChapters([]);
@@ -695,7 +772,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [apiBase, selectedProjectId, runEvents.length]);
+  }, [selectedProjectId, fetchChapters]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1026,6 +1103,7 @@ export default function Home() {
     extra: Record<string, unknown> = {},
   ) {
     if (!selectedProjectId) return;
+    const projectId = selectedProjectId;
     setRunError(null);
     setRunInProgress(true);
     setRunEvents([]);
@@ -1047,7 +1125,7 @@ export default function Home() {
       }
 
       const res = await fetch(
-        `${apiBase}/api/projects/${selectedProjectId}/runs/stream`,
+        `${apiBase}/api/projects/${projectId}/runs/stream`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1104,6 +1182,11 @@ export default function Home() {
               typeof evt.data.markdown === "string"
             ) {
               setGeneratedMarkdown(evt.data.markdown);
+              // Chapter is persisted by backend before emitting this artifact.
+              // Refresh chapter list once per chapter (avoid fetching on every SSE event).
+              refreshChapters(projectId).catch(() => {
+                // ignore refresh failures (non-critical for showing the markdown)
+              });
             }
             if (
               evt.type === "artifact" &&
@@ -1334,6 +1417,136 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  function downloadTextFile(filename: string, content: string, mime: string) {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  const normalizeOutline = (raw: OutlineChapter[]): OutlineChapter[] => {
+    const cleaned = raw
+      .map((c) => ({
+        index: Number.isFinite(c.index) && c.index >= 1 ? Math.floor(c.index) : 0,
+        title: String(c.title ?? "").trim(),
+        summary: typeof c.summary === "string" ? c.summary.trim() : undefined,
+        goal: typeof c.goal === "string" ? c.goal.trim() : undefined,
+      }))
+      .filter((c) => c.title.length > 0);
+
+    if (cleaned.length === 0) return [];
+
+    const hasValidUniqueIndexes = (() => {
+      const idxs = cleaned.map((c) => c.index).filter((x) => x >= 1);
+      if (idxs.length !== cleaned.length) return false;
+      const uniq = new Set(idxs);
+      return uniq.size === idxs.length;
+    })();
+
+    if (hasValidUniqueIndexes) return cleaned;
+
+    return cleaned.map((c, i) => ({ ...c, index: i + 1 }));
+  };
+
+  const parseOutlineText = (text: string): OutlineChapter[] => {
+    const lines = String(text ?? "")
+      .split(/\r?\n/g)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const out: OutlineChapter[] = [];
+    for (const ln of lines) {
+      // Accept formats like:
+      // - "1. Title"
+      // - "第1章：Title"
+      // - "# Title"
+      // - "Title"
+      const m =
+        /^(?:第?\s*(\d+)\s*(?:章|回|节)?\s*[:：.\-—]?\s*)?(.+)$/.exec(ln) ?? null;
+      const idx = m?.[1] ? Number(m[1]) : NaN;
+      const rest = (m?.[2] ?? ln).replace(/^#+\s*/, "").trim();
+      out.push({ index: Number.isFinite(idx) ? idx : 0, title: rest });
+    }
+    return normalizeOutline(out);
+  };
+
+  const parseOutlineJson = (jsonText: string): OutlineChapter[] => {
+    const parsed = JSON.parse(jsonText) as unknown;
+    const extract = (x: unknown): unknown => {
+      if (Array.isArray(x)) return x;
+      if (x && typeof x === "object") {
+        const rec = x as Record<string, unknown>;
+        if (Array.isArray(rec.chapters)) return rec.chapters;
+        if (Array.isArray(rec.outline)) return rec.outline;
+      }
+      return null;
+    };
+    const raw = extract(parsed);
+    if (!Array.isArray(raw)) return [];
+    const out: OutlineChapter[] = [];
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+      const idx = Number(rec.index);
+      const title = typeof rec.title === "string" ? rec.title : "";
+      if (!title.trim()) continue;
+      out.push({
+        index: Number.isFinite(idx) ? idx : 0,
+        title: title.trim(),
+        summary: typeof rec.summary === "string" ? rec.summary : undefined,
+        goal: typeof rec.goal === "string" ? rec.goal : undefined,
+      });
+    }
+    return normalizeOutline(out);
+  };
+
+  async function importOutlineFile(file: File) {
+    if (!selectedProjectId) return;
+    setOutlinePaneError(null);
+    const name = (file?.name ?? "").toLowerCase();
+    const rawText = await file.text();
+
+    const chapters =
+      name.endsWith(".json") ? parseOutlineJson(rawText) : parseOutlineText(rawText);
+    if (chapters.length === 0) {
+      throw new Error("outline_import_failed:no_chapters");
+    }
+
+    await saveProjectSettings({ story: { outline: chapters } });
+  }
+
+  function exportOutline(format: "json" | "txt") {
+    const chapters = outlineChapters ?? [];
+    if (format === "json") {
+      downloadTextFile(
+        "outline.json",
+        JSON.stringify({ chapters }, null, 2),
+        "application/json",
+      );
+      return;
+    }
+    const lines = chapters.map((ch) => {
+      const base = `${ch.index}. ${ch.title}`;
+      const parts: string[] = [];
+      if (ch.summary) parts.push(ch.summary);
+      if (ch.goal) parts.push(lang === "zh" ? `目标：${ch.goal}` : `Goal: ${ch.goal}`);
+      return parts.length > 0 ? `${base} - ${parts.join(" | ")}` : base;
+    });
+    downloadTextFile(
+      "outline.txt",
+      lines.join("\n") + "\n",
+      "text/plain;charset=utf-8",
+    );
+  }
+
+  async function clearOutline() {
+    if (!selectedProjectId) return;
+    setOutlinePaneError(null);
+    await saveProjectSettings({ story: { outline: [] } });
+  }
+
   async function searchKb() {
     if (!selectedProjectId) return;
     setKbError(null);
@@ -1394,6 +1607,14 @@ export default function Home() {
     setContinueSourceToken((x) => x + 1);
   }
 
+  function clearBookContinueInput() {
+    setBookSourceId(null);
+    setBookSourceMeta(null);
+    setBookInputText("");
+    setBookSourceError(null);
+    setBookSourceToken((x) => x + 1);
+  }
+
   async function uploadContinueFile(file: File): Promise<string> {
     setContinueSourceError(null);
     setContinueSourceLoading(true);
@@ -1436,6 +1657,49 @@ export default function Home() {
     }
   }
 
+  async function uploadBookContinueFile(file: File): Promise<string> {
+    setBookSourceError(null);
+    setBookSourceLoading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(
+        `${apiBase}/api/tools/continue_sources/upload?preview_mode=${encodeURIComponent(continueExcerptMode)}&preview_chars=${encodeURIComponent(String(continueExcerptChars))}`,
+        { method: "POST", body: form },
+      );
+      if (!res.ok) {
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+
+      const data = (await res.json()) as {
+        source_id?: unknown;
+        preview?: unknown;
+        meta?: { filename?: unknown; chars?: unknown };
+      };
+      const sid = typeof data.source_id === "string" ? data.source_id : null;
+      if (!sid) throw new Error("bad_response");
+      const preview = typeof data.preview === "string" ? data.preview : "";
+      const filename =
+        typeof data.meta?.filename === "string" ? data.meta.filename : file.name;
+      const chars = typeof data.meta?.chars === "number" ? data.meta.chars : undefined;
+      setBookSourceId(sid);
+      setBookSourceMeta({ filename, chars });
+      setBookInputText(preview);
+      setBookSourceToken((x) => x + 1);
+      return sid;
+    } finally {
+      setBookSourceLoading(false);
+    }
+  }
+
   async function uploadContinueText(text: string): Promise<string> {
     setContinueSourceError(null);
     setContinueSourceLoading(true);
@@ -1475,6 +1739,51 @@ export default function Home() {
       return sid;
     } finally {
       setContinueSourceLoading(false);
+    }
+  }
+
+  async function uploadBookContinueText(text: string): Promise<string> {
+    setBookSourceError(null);
+    setBookSourceLoading(true);
+    try {
+      const res = await fetch(
+        `${apiBase}/api/tools/continue_sources/text?preview_mode=${encodeURIComponent(continueExcerptMode)}&preview_chars=${encodeURIComponent(String(continueExcerptChars))}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text, filename: "book_pasted.txt" }),
+        },
+      );
+      if (!res.ok) {
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as {
+        source_id?: unknown;
+        preview?: unknown;
+        meta?: { filename?: unknown; chars?: unknown };
+      };
+      const sid = typeof data.source_id === "string" ? data.source_id : null;
+      if (!sid) throw new Error("bad_response");
+      const preview = typeof data.preview === "string" ? data.preview : "";
+      const filename =
+        typeof data.meta?.filename === "string"
+          ? data.meta.filename
+          : "book_pasted.txt";
+      const chars = typeof data.meta?.chars === "number" ? data.meta.chars : undefined;
+      setBookSourceId(sid);
+      setBookSourceMeta({ filename, chars });
+      setBookInputText(preview);
+      return sid;
+    } finally {
+      setBookSourceLoading(false);
     }
   }
 
@@ -1924,42 +2233,93 @@ export default function Home() {
                                   setDraggingProjectId(null);
                                 }}
                                 className={[
-                                  "flex items-center gap-2 px-3 py-2 text-left text-sm",
+                                  "px-3 py-3 text-left text-sm",
                                   active
                                     ? "bg-zinc-100 dark:bg-zinc-800"
                                     : "hover:bg-zinc-50 dark:hover:bg-zinc-900",
                                 ].join(" ")}
                               >
-                                <button
-                                  type="button"
-                                  draggable
-                                  onClick={(e) => e.stopPropagation()}
-                                  onDragStart={(e) => {
-                                    setDraggingProjectId(p.id);
-                                    e.dataTransfer.setData("text/plain", p.id);
-                                    e.dataTransfer.effectAllowed = "move";
-                                  }}
-                                  onDragEnd={() => setDraggingProjectId(null)}
-                                  className="cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
-                                  title={lang === "zh" ? "拖拽排序" : "Drag to reorder"}
-                                >
-                                  ⋮⋮
-                                </button>
-                                <div className="min-w-0 flex-1 truncate">
-                                  {p.title}
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedProjectId(p.id);
+                                      setTab("create");
+                                      setCreatePane("writing");
+                                    }}
+                                    className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
+                                  >
+                                    {lang === "zh" ? "进入写作" : "Go to Writing"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedProjectId(p.id);
+                                      setTab("continue");
+                                      setContinuePane("article");
+                                      clearContinueInput();
+                                    }}
+                                    className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                  >
+                                    {lang === "zh"
+                                      ? "文章续写（上传）"
+                                      : "Continue Article (upload)"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedProjectId(p.id);
+                                      setTab("continue");
+                                      setContinuePane("book");
+                                      clearBookContinueInput();
+                                    }}
+                                    className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                  >
+                                    {lang === "zh"
+                                      ? "书籍续写（上传）"
+                                      : "Continue Book (upload)"}
+                                  </button>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    deleteProject(p.id).catch((err) =>
-                                      setProjectsError((err as Error).message),
-                                    );
-                                  }}
-                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
-                                >
-                                  {lang === "zh" ? "删除" : "Delete"}
-                                </button>
+
+                                <div className="mt-2 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    draggable
+                                    onClick={(e) => e.stopPropagation()}
+                                    onDragStart={(e) => {
+                                      setDraggingProjectId(p.id);
+                                      e.dataTransfer.setData("text/plain", p.id);
+                                      e.dataTransfer.effectAllowed = "move";
+                                    }}
+                                    onDragEnd={() => setDraggingProjectId(null)}
+                                    className="cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
+                                    title={
+                                      lang === "zh"
+                                        ? "拖拽排序"
+                                        : "Drag to reorder"
+                                    }
+                                  >
+                                    ⋮⋮
+                                  </button>
+                                  <div className="min-w-0 flex-1 truncate font-medium">
+                                    {p.title}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      deleteProject(p.id).catch((err) =>
+                                        setProjectsError((err as Error).message),
+                                      );
+                                    }}
+                                    className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                  >
+                                    {lang === "zh" ? "删除" : "Delete"}
+                                  </button>
+                                </div>
                               </div>
                             </li>
                           );
@@ -2770,8 +3130,8 @@ export default function Home() {
                       <div className="text-sm font-semibold">{tt("create_nav_projects")}</div>
                       <div className="mt-2 text-xs text-[var(--ui-muted)]">
                         {lang === "zh"
-                          ? "v1.4.x：先迁移为独立分页。后续会在这里加入项目卡片（简介/统计/一键生成简介/拖拽/删除）。"
-                          : "v1.4.x: Split into a dedicated pane first. Next: project cards (synopsis/stats/AI synopsis button/drag/delete)."
+                          ? "在这里管理项目：支持拖拽排序/删除，并提供每个项目的快捷入口按钮。后续会加入项目简介/统计与一键生成简介。"
+                          : "Manage projects here: drag reorder / delete, plus quick-action buttons per project. Next: synopsis + stats + AI synopsis."
                         }
                       </div>
                     </div>
@@ -2846,44 +3206,95 @@ export default function Home() {
                                       setDraggingProjectId(null);
                                     }}
                                     className={[
-                                      "flex items-center gap-2 px-3 py-2 text-left text-sm",
+                                      "px-3 py-3 text-left text-sm",
                                       active
                                         ? "bg-zinc-100 dark:bg-zinc-800"
                                         : "hover:bg-zinc-50 dark:hover:bg-zinc-900",
                                     ].join(" ")}
                                   >
-                                    <button
-                                      type="button"
-                                      draggable
-                                      onClick={(e) => e.stopPropagation()}
-                                      onDragStart={(e) => {
-                                        setDraggingProjectId(p.id);
-                                        e.dataTransfer.setData("text/plain", p.id);
-                                        e.dataTransfer.effectAllowed = "move";
-                                      }}
-                                      onDragEnd={() => setDraggingProjectId(null)}
-                                      className="cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
-                                      title={
-                                        lang === "zh" ? "拖拽排序" : "Drag to reorder"
-                                      }
-                                    >
-                                      ⋮⋮
-                                    </button>
-                                    <div className="min-w-0 flex-1 truncate">
-                                      {p.title}
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedProjectId(p.id);
+                                          setTab("create");
+                                          setCreatePane("writing");
+                                        }}
+                                        className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
+                                      >
+                                        {lang === "zh" ? "进入写作" : "Go to Writing"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedProjectId(p.id);
+                                          setTab("continue");
+                                          setContinuePane("article");
+                                          clearContinueInput();
+                                        }}
+                                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                      >
+                                        {lang === "zh"
+                                          ? "文章续写（上传）"
+                                          : "Continue Article (upload)"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedProjectId(p.id);
+                                          setTab("continue");
+                                          setContinuePane("book");
+                                          clearBookContinueInput();
+                                        }}
+                                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                      >
+                                        {lang === "zh"
+                                          ? "书籍续写（上传）"
+                                          : "Continue Book (upload)"}
+                                      </button>
                                     </div>
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        deleteProject(p.id).catch((err) =>
-                                          setProjectsError((err as Error).message),
-                                        );
-                                      }}
-                                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
-                                    >
-                                      {lang === "zh" ? "删除" : "Delete"}
-                                    </button>
+
+                                    <div className="mt-2 flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        draggable
+                                        onClick={(e) => e.stopPropagation()}
+                                        onDragStart={(e) => {
+                                          setDraggingProjectId(p.id);
+                                          e.dataTransfer.setData("text/plain", p.id);
+                                          e.dataTransfer.effectAllowed = "move";
+                                        }}
+                                        onDragEnd={() => setDraggingProjectId(null)}
+                                        className="cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
+                                        title={
+                                          lang === "zh"
+                                            ? "拖拽排序"
+                                            : "Drag to reorder"
+                                        }
+                                      >
+                                        ⋮⋮
+                                      </button>
+                                      <div className="min-w-0 flex-1 truncate font-medium">
+                                        {p.title}
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          deleteProject(p.id).catch((err) =>
+                                            setProjectsError(
+                                              (err as Error).message,
+                                            ),
+                                          );
+                                        }}
+                                        className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                      >
+                                        {lang === "zh" ? "删除" : "Delete"}
+                                      </button>
+                                    </div>
                                   </div>
                                 </li>
                               );
@@ -3282,10 +3693,75 @@ export default function Home() {
                   <div className="text-sm font-semibold">{tt("create_nav_outline")}</div>
                   <div className="mt-2 text-xs text-[var(--ui-muted)]">
                     {lang === "zh"
-                      ? "v1.6.0 起这里会支持：文本/文档导入编辑大纲；v1.7.0 加入轻量图形大纲（节点/连线）。"
-                      : "From v1.6.0: outline text/doc import editing; v1.7.0: lightweight graph outline (nodes/edges)."
+                      ? "在这里维护大纲：支持上传 .txt/.json 导入，并可导出为 json/txt。更复杂的图形大纲（节点/连线）会在后续版本加入。"
+                      : "Manage outline here: import via .txt/.json upload and export to json/txt. A richer graph outline (nodes/edges) will land in later versions."
                     }
                   </div>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <input
+                      ref={outlineFileInputRef}
+                      type="file"
+                      accept=".txt,.json"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] ?? null;
+                        e.currentTarget.value = "";
+                        if (!f) return;
+                        importOutlineFile(f).catch((err) =>
+                          setOutlinePaneError((err as Error).message),
+                        );
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={!selectedProjectId || settingsSaving}
+                      onClick={() => outlineFileInputRef.current?.click()}
+                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                    >
+                      {lang === "zh" ? "上传导入（txt/json）" : "Import (txt/json)"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!outlineChapters || outlineChapters.length === 0}
+                      onClick={() => exportOutline("json")}
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                    >
+                      {lang === "zh" ? "导出 JSON" : "Export JSON"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!outlineChapters || outlineChapters.length === 0}
+                      onClick={() => exportOutline("txt")}
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                    >
+                      {lang === "zh" ? "导出 TXT" : "Export TXT"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!selectedProjectId || settingsSaving}
+                      onClick={() => {
+                        clearOutline().catch((err) =>
+                          setOutlinePaneError((err as Error).message),
+                        );
+                      }}
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                    >
+                      {lang === "zh" ? "清空大纲" : "Clear outline"}
+                    </button>
+                    <span className="text-xs text-[var(--ui-muted)]">
+                      {lang === "zh"
+                        ? "会保存到项目设置（story.outline）。"
+                        : "Saved to project settings (story.outline)."}
+                    </span>
+                  </div>
+
+                  {outlinePaneError ? (
+                    <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                      {outlinePaneError}
+                    </div>
+                  ) : null}
+
                   <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
                     <div className="text-sm font-medium">{tt("outline_latest")}</div>
                     {selectedProjectId ? (
@@ -3325,10 +3801,224 @@ export default function Home() {
                 <div className="text-sm font-semibold">{tt("continue_nav_book")}</div>
                 <div className="mt-2 text-xs text-[var(--ui-muted)]">
                   {lang === "zh"
-                    ? "v2.0.0 目标：百万字级书籍续写（分片→并行总结→角色卡→世界观/时间线→续写）。此分页先占位，后续逐步落地。"
-                    : "v2.0.0 goal: million-word book continuation (chunk → parallel summaries → character cards → world/timeline → continue). This pane is a scaffold for now."
+                    ? "v1.6.0：先支持上传 .txt/.json 作为“书籍源”（本地落盘 + 预览截取）。v2.0.0：再落地百万字级书籍续写（分片→并行总结→角色卡→世界观/时间线→续写）。"
+                    : "v1.6.0: Upload .txt/.json as a local book source (stored on disk with preview slicing). v2.0.0: million-word book continuation (chunk → parallel summaries → character cards → world/timeline → continue)."
                   }
                 </div>
+
+                {!selectedProjectId ? (
+                  <div className="mt-4 text-sm text-[var(--ui-muted)]">
+                    {tt("select_project_first")}
+                  </div>
+                ) : (
+                  <div className="mt-4 grid gap-6 lg:grid-cols-2">
+                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                      <div className="text-sm font-medium">
+                        {lang === "zh" ? "上传书籍文件（推荐）" : "Upload a book file (recommended)"}
+                      </div>
+                      <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                        {lang === "zh"
+                          ? "当前仅用于保存书籍源与预览（txt/json）。后续会在此基础上做分片/总结/角色卡/时间线等长文本流程。"
+                          : "For now this stores the book source and lets you preview it (txt/json). Next versions will add chunking/summaries/character cards/timeline."}
+                      </div>
+
+                      <div
+                        className={[
+                          "mt-3 rounded-lg border border-dashed p-4 transition-colors",
+                          bookDropActive
+                            ? "border-[var(--ui-accent)] bg-[var(--ui-surface)]"
+                            : "border-zinc-200 bg-[var(--ui-surface)]",
+                        ].join(" ")}
+                        onDragEnter={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setBookDropActive(true);
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setBookDropActive(true);
+                        }}
+                        onDragLeave={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setBookDropActive(false);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setBookDropActive(false);
+                          const f = e.dataTransfer.files?.[0] ?? null;
+                          if (!f) return;
+                          uploadBookContinueFile(f).catch((err) =>
+                            setBookSourceError((err as Error).message),
+                          );
+                        }}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="text-xs text-[var(--ui-muted)]">
+                            {lang === "zh"
+                              ? "拖拽文件到此处，或点击按钮选择文件。"
+                              : "Drag & drop a file here, or click to choose."}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              key={bookSourceToken}
+                              type="file"
+                              accept=".txt,.json"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0] ?? null;
+                                e.currentTarget.value = "";
+                                if (!f) return;
+                                uploadBookContinueFile(f).catch((err) =>
+                                  setBookSourceError((err as Error).message),
+                                );
+                              }}
+                              ref={bookFileInputRef}
+                            />
+                            <button
+                              type="button"
+                              disabled={bookSourceLoading}
+                              onClick={() => {
+                                bookFileInputRef.current?.click();
+                              }}
+                              className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                            >
+                              {lang === "zh"
+                                ? bookSourceLoading
+                                  ? "提取中…"
+                                  : "选择文件"
+                                : bookSourceLoading
+                                  ? "Extracting…"
+                                  : "Choose file"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={bookSourceLoading && !bookSourceId}
+                              onClick={() => clearBookContinueInput()}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                            >
+                              {lang === "zh" ? "清空" : "Clear"}
+                            </button>
+                          </div>
+                        </div>
+
+                        {bookSourceId ? (
+                          <div className="mt-3 text-xs text-[var(--ui-muted)]">
+                            {lang === "zh" ? "已保存书籍源：" : "Saved book source:"}{" "}
+                            <span className="font-medium text-[var(--ui-text)]">
+                              {bookSourceMeta?.filename ?? bookSourceId}
+                            </span>
+                            {typeof bookSourceMeta?.chars === "number" ? (
+                              <span className="ml-2">
+                                {lang === "zh"
+                                  ? `字符数≈${bookSourceMeta.chars}`
+                                  : `chars≈${bookSourceMeta.chars}`}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-3 grid gap-2 md:grid-cols-2">
+                        <label className="grid gap-1 text-sm">
+                          <span className="text-xs text-[var(--ui-muted)]">
+                            {tt("continue_excerpt_mode")}
+                          </span>
+                          <select
+                            value={continueExcerptMode}
+                            onChange={(e) =>
+                              setContinueExcerptMode(
+                                e.target.value === "head" ? "head" : "tail",
+                              )
+                            }
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                          >
+                            <option value="tail">{tt("continue_excerpt_tail")}</option>
+                            <option value="head">{tt("continue_excerpt_head")}</option>
+                          </select>
+                        </label>
+                        <label className="grid gap-1 text-sm">
+                          <span className="text-xs text-[var(--ui-muted)]">
+                            {tt("continue_excerpt_chars")}
+                          </span>
+                          <input
+                            type="number"
+                            min={1000}
+                            max={200000}
+                            value={continueExcerptChars}
+                            onChange={(e) =>
+                              setContinueExcerptChars(Number(e.target.value))
+                            }
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                          />
+                        </label>
+                      </div>
+
+                      {bookSourceError ? (
+                        <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                          {bookSourceError}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm font-medium">
+                          {lang === "zh" ? "书籍源预览（截取）" : "Book preview (sliced)"}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!bookSourceId || bookSourceLoading}
+                          onClick={() => {
+                            if (!bookSourceId) return;
+                            refreshBookContinuePreview(bookSourceId).catch((err) =>
+                              setBookSourceError((err as Error).message),
+                            );
+                          }}
+                          className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                        >
+                          {lang === "zh" ? "刷新预览" : "Refresh"}
+                        </button>
+                      </div>
+                      <textarea
+                        value={bookInputText}
+                        onChange={(e) => {
+                          if (bookSourceId) return;
+                          setBookInputText(e.target.value);
+                        }}
+                        readOnly={Boolean(bookSourceId)}
+                        className="mt-3 h-64 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                        placeholder={
+                          lang === "zh"
+                            ? "上传 .txt/.json 后会在这里显示预览（可配置头/尾截取）。也可以直接粘贴少量文本后点击“保存为书籍源”。"
+                            : "Upload .txt/.json to preview here (head/tail slicing). Or paste a small snippet and click “Save as book source”."
+                        }
+                      />
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={Boolean(bookSourceId) || !bookInputText.trim()}
+                          onClick={() => {
+                            if (bookSourceId) return;
+                            uploadBookContinueText(bookInputText).catch((err) =>
+                              setBookSourceError((err as Error).message),
+                            );
+                          }}
+                          className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                        >
+                          {lang === "zh" ? "保存为书籍源" : "Save as book source"}
+                        </button>
+                        <span className="text-xs text-[var(--ui-muted)]">
+                          {lang === "zh"
+                            ? "这一步不调用 LLM，只是把文本保存在本地（gitignored）。"
+                            : "No LLM call here — stored locally (gitignored)."}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </section>

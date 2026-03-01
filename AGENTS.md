@@ -276,3 +276,14 @@ Versioning policy (from v1.0.x onward):
   - Shows an explicit KB item list (with checkbox selection), supports drag reorder, edit, and delete.
   - Adds export for selected KB items in `json` or `txt`.
   - Moves “知识库模式（弱/强）” and “联网检索工具（开关/提供商）” controls into this pane for faster iteration.
+
+### v1.6.0 (Outline Import/Export + Book Source Upload + Project Quick Actions)
+- Web:
+  - 创作 → 大纲编辑: 支持上传 `.txt/.json` 导入大纲，导出 `json/txt`，清空大纲（保存到 `story.outline`）。
+  - 续写 → 书籍续写: 支持上传 `.txt/.json` 作为本地“书籍源”（落盘 + 头/尾截取预览）；长文本续写流程留到 v2.x。
+  - 项目列表: 每个项目块增加快捷按钮（进入写作 / 文章续写（上传） / 书籍续写（上传））。
+  - 运行中章节列表刷新: 不再随每条 SSE 事件拉取章节列表，改为写手产物（`chapter_markdown`）到达时刷新（降低请求风暴风险）。
+- API:
+  - Continue/Extract text: 支持 `.json` 作为纯文本输入（`extract_text` + `continue_sources/upload`）。
+- Tests:
+  - Added regressions for json extract + continue source upload.

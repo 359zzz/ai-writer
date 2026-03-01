@@ -17,6 +17,19 @@ def test_extract_text_txt() -> None:
     assert body["meta"]["ext"] == ".txt"
 
 
+def test_extract_text_json() -> None:
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/tools/extract_text",
+            files={"file": ("demo.json", b'{\"hello\": \"world\"}\\n', "application/json")},
+        )
+
+    assert res.status_code == 200
+    body = res.json()
+    assert "hello" in body["text"]
+    assert body["meta"]["ext"] == ".json"
+
+
 def test_extract_text_unsupported() -> None:
     with TestClient(app) as client:
         res = client.post(
@@ -48,6 +61,20 @@ def test_continue_source_upload_and_preview() -> None:
         body2 = res2.json()
         assert body2.get("source_id") == source_id
         assert "world" in (body2.get("text") or "")
+
+
+def test_continue_source_upload_json() -> None:
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/tools/continue_sources/upload?preview_mode=head&preview_chars=200",
+            files={"file": ("demo.json", b'{\"hello\": \"world\"}\\n', "application/json")},
+        )
+
+    assert res.status_code == 200
+    body = res.json()
+    assert isinstance(body.get("source_id"), str)
+    assert "hello" in (body.get("preview") or "")
+    assert body.get("meta", {}).get("ext") == ".json"
 
 
 def test_continue_source_text() -> None:

@@ -18,7 +18,7 @@ class TextExtractError(RuntimeError):
     pass
 
 
-_SUPPORTED_EXTS = {".txt", ".md", ".markdown", ".docx", ".pdf", ".epub"}
+_SUPPORTED_EXTS = {".txt", ".md", ".markdown", ".json", ".docx", ".pdf", ".epub"}
 
 
 def _normalize_text(text: str) -> str:
@@ -187,6 +187,7 @@ def extract_text_from_bytes(
 
     Supported extensions:
     - .txt / .md / .markdown
+    - .json (treated as plain text)
     - .docx
     - .pdf
     - .epub
@@ -210,7 +211,7 @@ def extract_text_from_bytes(
     if ext not in _SUPPORTED_EXTS:
         raise TextExtractError(f"unsupported_file_type: {ext or 'unknown'}")
 
-    if ext in {".txt", ".md", ".markdown"}:
+    if ext in {".txt", ".md", ".markdown", ".json"}:
         raw = _decode_text_bytes(data)
         text = raw
     elif ext == ".docx":
