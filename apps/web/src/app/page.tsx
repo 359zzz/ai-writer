@@ -318,6 +318,18 @@ export default function Home() {
     | null
   >(null);
   const batchStopRequestedRef = useRef<boolean>(false);
+  const [batchContinuing, setBatchContinuing] = useState<
+    | {
+        status: "running" | "stopping" | "stopped" | "failed" | "completed";
+        sourceId: string;
+        startIndex: number;
+        total: number;
+        done: number;
+        lastError?: string;
+      }
+    | null
+  >(null);
+  const batchContinueStopRequestedRef = useRef<boolean>(false);
   const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
   const [draggingChapterId, setDraggingChapterId] = useState<string | null>(null);
   const [researchQuery, setResearchQuery] = useState<string>("");
@@ -1425,6 +1437,79 @@ export default function Home() {
     }
 
     setBatchWriting({ status: "completed", startIndex, total, done });
+  }
+
+  async function runBatchContinueChapters(
+    sourceId: string,
+    opts: { startIndex?: number; total?: number } = {},
+  ) {
+    if (!selectedProjectId) return;
+    const sid = (sourceId || "").trim();
+    if (!sid) {
+      setRunError(lang === "zh" ? "缺少续写源（source_id）" : "Missing continue source (source_id)");
+      return;
+    }
+
+    const startIndex = Math.max(
+      1,
+      Number.isFinite(opts.startIndex) ? Number(opts.startIndex) : chapterIndex,
+    );
+    const totalRaw = Number(opts.total ?? writeChapterCount);
+    const total = Math.max(1, Math.min(10, Number.isFinite(totalRaw) ? totalRaw : 1));
+
+    const hasSavedOutline = Boolean(outlineChapters && outlineChapters.length > 0);
+
+    batchContinueStopRequestedRef.current = false;
+    setBatchContinuing({ status: "running", sourceId: sid, startIndex, total, done: 0 });
+
+    let done = 0;
+    for (let i = 0; i < total; i += 1) {
+      if (batchContinueStopRequestedRef.current) {
+        setBatchContinuing({ status: "stopped", sourceId: sid, startIndex, total, done });
+        return;
+      }
+
+      const idx = Math.max(1, startIndex + i);
+      try {
+        const r = await runPipeline("continue", {
+          chapter_index: idx,
+          source_id: sid,
+          source_slice_mode: continueExcerptMode,
+          source_slice_chars: continueExcerptChars,
+          research_query: researchQuery.trim() || undefined,
+          // If the user already has an explicitly saved outline, avoid re-running
+          // Outliner; otherwise, run it once for the first chapter then skip.
+          skip_outliner: hasSavedOutline ? true : i > 0,
+        });
+        if (!r.ok) {
+          setBatchContinuing({
+            status: "failed",
+            sourceId: sid,
+            startIndex,
+            total,
+            done,
+            lastError: r.error ?? undefined,
+          });
+          return;
+        }
+      } catch (e) {
+        setBatchContinuing({
+          status: "failed",
+          sourceId: sid,
+          startIndex,
+          total,
+          done,
+          lastError: (e as Error).message,
+        });
+        return;
+      }
+
+      done = i + 1;
+      setBatchContinuing({ status: "running", sourceId: sid, startIndex, total, done });
+      setChapterIndex(idx + 1);
+    }
+
+    setBatchContinuing({ status: "completed", sourceId: sid, startIndex, total, done });
   }
 
   async function addKbChunk() {
@@ -3085,20 +3170,38 @@ export default function Home() {
                         <div className="mt-2 text-xs text-[var(--ui-muted)]">
                           {tt("continue_desc")}
                         </div>
-                        <label className="mt-3 grid gap-1 text-sm">
-                          <span className="text-xs text-[var(--ui-muted)]">
-                            {tt("chapter_index")}
-                          </span>
-                          <input
-                            type="number"
-                            min={1}
-                            value={chapterIndex}
-                            onChange={(e) =>
-                              setChapterIndex(Number(e.target.value))
-                            }
-                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
-                          />
-                        </label>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <label className="grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("chapter_index")}
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={chapterIndex}
+                              onChange={(e) =>
+                                setChapterIndex(Number(e.target.value))
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                            />
+                          </label>
+                          <label className="grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("write_chapter_count")}
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={10}
+                              step={1}
+                              value={writeChapterCount}
+                              onChange={(e) =>
+                                setWriteChapterCount(Number(e.target.value))
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                            />
+                          </label>
+                        </div>
 
                         <div className="mt-3 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-[var(--ui-control-text)]">
                           <div className="flex items-start justify-between gap-3">
@@ -3268,7 +3371,7 @@ export default function Home() {
                             placeholder={tt("continue_source_placeholder")}
                           />
 
-                          <div className="mt-3 flex items-center gap-2">
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
                             <button
                               disabled={
                                 !selectedProjectId ||
@@ -3276,7 +3379,9 @@ export default function Home() {
                                 settingsSaving ||
                                 secretsSaving ||
                                 continueSourceLoading ||
-                                !(continueSourceId || continueInputText.trim())
+                                !(continueSourceId || continueInputText.trim()) ||
+                                batchContinuing?.status === "running" ||
+                                batchContinuing?.status === "stopping"
                               }
                               onClick={async () => {
                                 try {
@@ -3302,9 +3407,141 @@ export default function Home() {
                             >
                               {tt("extract_continue")}
                             </button>
+                            <button
+                              disabled={
+                                !selectedProjectId ||
+                                runInProgress ||
+                                settingsSaving ||
+                                secretsSaving ||
+                                continueSourceLoading ||
+                                !(continueSourceId || continueInputText.trim()) ||
+                                batchContinuing?.status === "running" ||
+                                batchContinuing?.status === "stopping"
+                              }
+                              onClick={async () => {
+                                try {
+                                  let sid = continueSourceId;
+                                  if (!sid) {
+                                    sid = await uploadContinueText(
+                                      continueInputText,
+                                    );
+                                  }
+                                  await runBatchContinueChapters(sid, {
+                                    startIndex: chapterIndex,
+                                    total: writeChapterCount,
+                                  });
+                                } catch (e) {
+                                  setRunError((e as Error).message);
+                                }
+                              }}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                            >
+                              {batchContinuing?.status === "running"
+                                ? `${lang === "zh" ? "批量续写中…" : "Batch continuing…"} (${batchContinuing.done}/${batchContinuing.total})`
+                                : lang === "zh"
+                                  ? `批量续写 ${writeChapterCount} 章`
+                                  : `Continue ${writeChapterCount} chapters`}
+                            </button>
                             <span className="text-xs text-[var(--ui-muted)]">
                               {tt("uses_settings")}
                             </span>
+                          </div>
+                          {batchContinuing ? (
+                            <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] dark:border-zinc-800">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="text-[var(--ui-muted)]">
+                                  {lang === "zh"
+                                    ? `批量状态：${batchContinuing.status}（${batchContinuing.done}/${batchContinuing.total}）`
+                                    : `Batch: ${batchContinuing.status} (${batchContinuing.done}/${batchContinuing.total})`}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {batchContinuing.status === "running" ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        batchContinueStopRequestedRef.current = true;
+                                        setBatchContinuing((prev) =>
+                                          prev && prev.status === "running"
+                                            ? { ...prev, status: "stopping" }
+                                            : prev,
+                                        );
+                                      }}
+                                      className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-surface)] dark:border-zinc-800"
+                                      title={
+                                        lang === "zh"
+                                          ? "会在当前章节完成后停止"
+                                          : "Stops after the current chapter finishes"
+                                      }
+                                    >
+                                      {lang === "zh" ? "停止批量" : "Stop"}
+                                    </button>
+                                  ) : batchContinuing.status === "stopping" ? (
+                                    <button
+                                      type="button"
+                                      disabled
+                                      className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] opacity-60 dark:border-zinc-800"
+                                      title={
+                                        lang === "zh"
+                                          ? "会在当前章节完成后停止"
+                                          : "Stops after the current chapter finishes"
+                                      }
+                                    >
+                                      {lang === "zh" ? "停止中…" : "Stopping…"}
+                                    </button>
+                                  ) : null}
+                                  {(batchContinuing.status === "stopped" ||
+                                    batchContinuing.status === "failed") &&
+                                  batchContinuing.done < batchContinuing.total ? (
+                                    <button
+                                      type="button"
+                                      disabled={runInProgress || settingsSaving || secretsSaving}
+                                      onClick={() => {
+                                        const nextIndex = Math.max(
+                                          1,
+                                          batchContinuing.startIndex + batchContinuing.done,
+                                        );
+                                        const remaining = Math.max(
+                                          1,
+                                          batchContinuing.total - batchContinuing.done,
+                                        );
+                                        setChapterIndex(nextIndex);
+                                        setWriteChapterCount(remaining);
+                                        runBatchContinueChapters(
+                                          batchContinuing.sourceId,
+                                          { startIndex: nextIndex, total: remaining },
+                                        ).catch((e) =>
+                                          setRunError((e as Error).message),
+                                        );
+                                      }}
+                                      className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                                    >
+                                      {lang === "zh" ? "继续剩余" : "Resume"}
+                                    </button>
+                                  ) : null}
+                                  {batchContinuing.status !== "running" &&
+                                  batchContinuing.status !== "stopping" ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setBatchContinuing(null);
+                                        batchContinueStopRequestedRef.current = false;
+                                      }}
+                                      className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-surface)] dark:border-zinc-800"
+                                    >
+                                      {lang === "zh" ? "清除" : "Clear"}
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+                              {batchContinuing.lastError ? (
+                                <div className="mt-2 text-red-600 dark:text-red-400">
+                                  {batchContinuing.lastError}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                            {tt("batch_continue_hint")}
                           </div>
                         </div>
                       </div>
@@ -4616,6 +4853,31 @@ export default function Home() {
                           {lang === "zh"
                             ? "这一步不调用 LLM，只是把文本保存在本地（gitignored）。"
                             : "No LLM call here — stored locally (gitignored)."}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={!bookSourceId}
+                          onClick={() => {
+                            if (!bookSourceId) return;
+                            setContinueSourceError(null);
+                            setContinueSourceId(bookSourceId);
+                            setContinueSourceMeta(bookSourceMeta);
+                            setContinueInputText(bookInputText);
+                            setContinuePane("article");
+                          }}
+                          className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                        >
+                          {lang === "zh"
+                            ? "用此书籍源进入续写工作台"
+                            : "Use this book in Continue workspace"}
+                        </button>
+                        <span className="text-xs text-[var(--ui-muted)]">
+                          {lang === "zh"
+                            ? "会把书籍源加载到「文章续写」工作台，便于编辑、批量续写与查看章节落库结果。"
+                            : "Loads the book source into the Article Continue workspace (editor + batch + saved chapters)."}
                         </span>
                       </div>
                     </div>

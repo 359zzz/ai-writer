@@ -54,6 +54,7 @@ export type I18nKey =
   | "write_chapter_llm"
   | "batch_writing"
   | "batch_write_chapters_hint"
+  | "batch_continue_hint"
   | "uses_settings"
   | "continue_mode"
   | "continue_desc"
@@ -251,6 +252,8 @@ const ZH: Record<I18nKey, string> = {
   batch_writing: "批量生成中...",
   batch_write_chapters_hint:
     "批量写章会跳过大纲生成（Outliner），直接使用已保存的大纲；每写完一章就会立刻落库并出现在章节列表。",
+  batch_continue_hint:
+    "批量续写会使用同一个续写源（source_id），并尽量复用已保存的大纲；每写完一章就会立刻落库并出现在章节列表。",
   uses_settings: "使用 设置→模型/知识库/联网检索 等配置。",
   continue_mode: "续写模式",
   continue_desc: "粘贴已有文本 → 抽取 StoryState → 在此基础上续写。",
@@ -459,6 +462,8 @@ const EN: Record<I18nKey, string> = {
   batch_writing: "Batch running...",
   batch_write_chapters_hint:
     "Batch writing skips Outliner and uses the saved outline; each chapter is persisted immediately and appears in the chapter list.",
+  batch_continue_hint:
+    "Batch continuation uses the same source (source_id) and tries to reuse your saved outline; each chapter is persisted immediately and appears in the chapter list.",
   uses_settings: "Uses Settings → model/KB/web search config.",
   continue_mode: "Continue Mode",
   continue_desc: "Paste text → extract StoryState → continue writing.",
