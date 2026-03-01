@@ -306,6 +306,10 @@ export default function Home() {
   const [outline, setOutline] = useState<unknown>(null);
   const [chapters, setChapters] = useState<ChapterItem[]>([]);
   const [chapterIndex, setChapterIndex] = useState<number>(1);
+  const [writeChapterCount, setWriteChapterCount] = useState<number>(1);
+  const [batchWritingProgress, setBatchWritingProgress] = useState<
+    { total: number; done: number } | null
+  >(null);
   const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
   const [draggingChapterId, setDraggingChapterId] = useState<string | null>(null);
   const [researchQuery, setResearchQuery] = useState<string>("");
@@ -1236,8 +1240,8 @@ export default function Home() {
   async function runPipeline(
     kind: string,
     extra: Record<string, unknown> = {},
-  ) {
-    if (!selectedProjectId) return;
+  ): Promise<{ ok: boolean }> {
+    if (!selectedProjectId) return { ok: false };
     const projectId = selectedProjectId;
     setRunError(null);
     setRunInProgress(true);
@@ -1249,6 +1253,7 @@ export default function Home() {
     setGeneratedMarkdown("");
     setOutline(null);
 
+    let sawRunError = false;
     try {
       // Ensure any in-flight Settings/Secrets save completes before starting a run,
       // otherwise the backend may start with stale provider/model/base_url.
@@ -1303,6 +1308,7 @@ export default function Home() {
             setActiveRunId((prev) => prev ?? evt.run_id);
             setRunEvents((prev) => [...prev, evt]);
             if (evt.type === "run_error") {
+              sawRunError = true;
               const err =
                 typeof evt.data.error === "string"
                   ? evt.data.error
@@ -1339,6 +1345,31 @@ export default function Home() {
       setRunInProgress(false);
       setActiveRunKind(null);
       setActiveRunId(null);
+    }
+    return { ok: !sawRunError };
+  }
+
+  async function runBatchWriteChapters() {
+    if (!selectedProjectId) return;
+    const totalRaw = Number(writeChapterCount);
+    const total = Math.max(1, Math.min(10, Number.isFinite(totalRaw) ? totalRaw : 1));
+
+    setBatchWritingProgress({ total, done: 0 });
+    try {
+      for (let i = 0; i < total; i += 1) {
+        const idx = Math.max(1, chapterIndex + i);
+        const r = await runPipeline("chapter", {
+          chapter_index: idx,
+          research_query: researchQuery.trim() || undefined,
+          // Batch writing is meant to use the explicitly saved outline and avoid
+          // repeated Outliner calls (more stable + won't overwrite the outline draft).
+          skip_outliner: true,
+        });
+        setBatchWritingProgress({ total, done: i + 1 });
+        if (!r.ok) break;
+      }
+    } finally {
+      setBatchWritingProgress(null);
     }
   }
 
@@ -2812,7 +2843,7 @@ export default function Home() {
                         <div className="text-sm font-medium">
                           {tt("write_chapter")}
                         </div>
-                        <div className="mt-3 grid gap-2">
+                        <div className="mt-3 grid grid-cols-2 gap-2">
                           <label className="grid gap-1 text-sm">
                             <span className="text-xs text-[var(--ui-muted)]">
                               {tt("chapter_index")}
@@ -2827,19 +2858,37 @@ export default function Home() {
                               className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
                             />
                           </label>
+                          <label className="grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {tt("write_chapter_count")}
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={10}
+                              step={1}
+                              value={writeChapterCount}
+                              onChange={(e) =>
+                                setWriteChapterCount(Number(e.target.value))
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                            />
+                          </label>
                         </div>
-                        <div className="mt-3 flex items-center gap-2">
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
                           <button
                             disabled={
                               !selectedProjectId ||
                               runInProgress ||
                               settingsSaving ||
-                              secretsSaving
+                              secretsSaving ||
+                              !!batchWritingProgress
                             }
                             onClick={() => {
                               runPipeline("chapter", {
                                 chapter_index: chapterIndex,
                                 research_query: researchQuery.trim() || undefined,
+                                skip_outliner: true,
                               }).catch((e) =>
                                 setRunError((e as Error).message),
                               );
@@ -2848,9 +2897,33 @@ export default function Home() {
                           >
                             {tt("write_chapter_llm")}
                           </button>
+                          <button
+                            disabled={
+                              !selectedProjectId ||
+                              runInProgress ||
+                              settingsSaving ||
+                              secretsSaving ||
+                              !!batchWritingProgress
+                            }
+                            onClick={() => {
+                              runBatchWriteChapters().catch((e) =>
+                                setRunError((e as Error).message),
+                              );
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {batchWritingProgress
+                              ? `${tt("batch_writing")} (${batchWritingProgress.done}/${batchWritingProgress.total})`
+                              : lang === "zh"
+                                ? `批量写 ${writeChapterCount} 章`
+                                : `Write ${writeChapterCount} chapters`}
+                          </button>
                           <span className="text-xs text-[var(--ui-muted)]">
                             {tt("uses_settings")}
                           </span>
+                        </div>
+                        <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                          {tt("batch_write_chapters_hint")}
                         </div>
                       </div>
                     ) : null}

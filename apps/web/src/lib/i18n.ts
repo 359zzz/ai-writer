@@ -48,9 +48,12 @@ export type I18nKey =
   | "running"
   | "write_chapter"
   | "chapter_index"
+  | "write_chapter_count"
   | "research_query_optional"
   | "research_query_desc"
   | "write_chapter_llm"
+  | "batch_writing"
+  | "batch_write_chapters_hint"
   | "uses_settings"
   | "continue_mode"
   | "continue_desc"
@@ -240,10 +243,14 @@ const ZH: Record<I18nKey, string> = {
   running: "运行中...",
   write_chapter: "写章节",
   chapter_index: "章节序号",
+  write_chapter_count: "一次生成章数",
   research_query_optional: "联网检索（可选）",
   research_query_desc:
     "在写章节/续写前先联网搜索一轮，并把简短结果作为上下文（不会自动写入知识库）。",
   write_chapter_llm: "写章节（LLM）",
+  batch_writing: "批量生成中...",
+  batch_write_chapters_hint:
+    "批量写章会跳过大纲生成（Outliner），直接使用已保存的大纲；每写完一章就会立刻落库并出现在章节列表。",
   uses_settings: "使用 设置→模型/知识库/联网检索 等配置。",
   continue_mode: "续写模式",
   continue_desc: "粘贴已有文本 → 抽取 StoryState → 在此基础上续写。",
@@ -444,10 +451,14 @@ const EN: Record<I18nKey, string> = {
   running: "Running...",
   write_chapter: "Write Chapter",
   chapter_index: "Chapter Index",
+  write_chapter_count: "Chapters to write",
   research_query_optional: "Web research (optional)",
   research_query_desc:
     "Runs a lightweight web search before writing and feeds short results as context (not saved to the KB).",
   write_chapter_llm: "Write Chapter (LLM)",
+  batch_writing: "Batch running...",
+  batch_write_chapters_hint:
+    "Batch writing skips Outliner and uses the saved outline; each chapter is persisted immediately and appears in the chapter list.",
   uses_settings: "Uses Settings → model/KB/web search config.",
   continue_mode: "Continue Mode",
   continue_desc: "Paste text → extract StoryState → continue writing.",

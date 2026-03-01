@@ -196,6 +196,63 @@ def test_run_prompts_follow_ui_lang(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Chapter X: Title" not in captured.get("writer_user", "")
 
 
+def test_chapter_run_respects_skip_outliner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Regression test:
+    - The frontend may send skip_outliner=true to avoid re-running Outliner when
+      users explicitly edited/persisted an outline.
+    - When skip_outliner=true, we should not call OutlinerAgent (and the run
+      should still complete and persist a chapter).
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    system_prompts: list[str] = []
+
+    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        system_prompts.append(system_prompt)
+        if "ConfigAutofillAgent" in system_prompt:
+            return "{}"
+        if "WriterAgent" in system_prompt:
+            return "# Chapter 1: Test Chapter\n\nHello world.\n"
+        if "EditorAgent" in system_prompt:
+            return "# Chapter 1: Test Chapter\n\nHello world (edited).\n"
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Run Test"}).json()
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={"kind": "chapter", "chapter_index": 1, "skip_outliner": True},
+        ) as res:
+            assert res.status_code == 200
+
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+    assert any("WriterAgent" in s for s in system_prompts)
+    assert not any("OutlinerAgent" in s for s in system_prompts)
+    assert not any(e.get("agent") == "Outliner" for e in events)
+    assert any(
+        e.get("type") == "artifact"
+        and e.get("agent") == "Writer"
+        and (e.get("data") or {}).get("artifact_type") == "chapter_markdown"
+        for e in events
+    )
+
+
 def test_continue_run_softfails_outliner(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     Regression test:

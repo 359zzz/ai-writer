@@ -294,3 +294,12 @@ Versioning policy (from v1.0.x onward):
   - 显式“保存大纲”与“重置”按钮；未保存状态会提示（不会静默覆盖）。
   - 右侧展示“已保存的大纲（用于写作）”，让用户区分草稿 vs 已保存版本。
   - 仍保留 `.txt/.json` 导入与 `json/txt` 导出能力。
+
+### v1.8.0 (Writing: Batch Chapter Generation)
+- Web → 创作 → 写作:
+  - 新增“一次生成章数” + “批量写 N 章”按钮：一次点击顺序生成 N 章，每章写完立刻落库并出现在章节列表。
+  - 写章节默认 `skip_outliner=true`：避免反复调用 Outliner 覆盖已编辑的大纲（更稳定/更省调用）。
+- API:
+  - 修复 runs pipeline 中 `chapter_index/chapter_plan` 的变量断裂导致的运行时错误。
+- Tests:
+  - Added regression test for `skip_outliner=true` (OutlinerAgent is skipped but chapter artifacts still emit).

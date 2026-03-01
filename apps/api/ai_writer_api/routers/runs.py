@@ -479,10 +479,23 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         writing = (project.settings or {}).get("writing") if isinstance((project.settings or {}).get("writing"), dict) else {}
         chapter_count = int(writing.get("chapter_count") or 10)
         chapter_words = int(writing.get("chapter_words") or 1200)
+        # Per-run overrides (optional; UI may pass these for ad-hoc testing).
+        try:
+            if payload.get("chapter_words") is not None:
+                chapter_words = int(payload.get("chapter_words") or chapter_words)
+        except Exception:
+            pass
+        chapter_words = max(200, min(10_000, int(chapter_words)))
+
+        # For batch generation, UI may call Outliner once and then run many chapters
+        # with skip_outliner=true to avoid repeated outline calls.
+        skip_outliner = bool(payload.get("skip_outliner") or False)
 
         # Agent: Outliner
         outline = None
-        if kind in ("outline", "chapter", "continue"):
+        if kind in ("outline", "chapter", "continue") and not (
+            skip_outliner and kind in ("chapter", "continue")
+        ):
             try:
                 yield emit("agent_started", "Outliner", {})
                 system = (
@@ -628,14 +641,29 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             return
 
         # ---- Chapter writing ----
-        chapter_index = int(payload.get("chapter_index") or 1)
-        chapter_plan = None
-        story_outline = ((project.settings or {}).get("story") or {}).get("outline") if isinstance(project.settings, dict) else None
+        try:
+            chapter_index = int(payload.get("chapter_index") or 1)
+        except Exception:
+            chapter_index = 1
+        chapter_index = max(1, chapter_index)
+
+        story_outline = (
+            ((project.settings or {}).get("story") or {}).get("outline")
+            if isinstance(project.settings, dict)
+            else None
+        )
+        outline_by_index: dict[int, dict[str, Any]] = {}
         if isinstance(story_outline, list):
             for ch in story_outline:
-                if isinstance(ch, dict) and int(ch.get("index") or 0) == chapter_index:
-                    chapter_plan = ch
-                    break
+                if not isinstance(ch, dict):
+                    continue
+                try:
+                    idx = int(ch.get("index") or 0)
+                except Exception:
+                    continue
+                if idx > 0:
+                    outline_by_index[idx] = ch
+        chapter_plan = outline_by_index.get(chapter_index)
 
         # Tool: local KB retrieval
         kb_context: list[dict[str, Any]] = []
