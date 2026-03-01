@@ -402,6 +402,16 @@ Versioning policy (from v1.0.x onward):
 - Tests:
   - 新增 runs 回归：章节模式 `book_summarize` + `book_compile` 优先章节总结。
 
+### v1.16.0 (Web: Chapter Tuning UI + Trace Graph)
+- Web → 续写 → 书籍续写:
+  - 新增“章节分块 / 手动微调（MVP）”卡片：加载/重新识别/保存微调/导出 `json/txt`。
+  - “总结入库（LLM）”在存在章节索引时默认走 `segment_mode=chapter`（未保存微调时会禁用，避免索引不一致）。
+  - 统计展示会根据 `segment_mode` 自动显示“章/片”。
+- Web → Agent 协作:
+  - Graph 视图升级为 ReactFlow 图谱：按 Agent 汇总 tool/artifact，并展示产物类型计数（对 book_summarize 这类长流程更友好）。
+- i18n:
+  - Graph 文案从“图”升级为“图谱”，并更新描述为“聚合图谱”。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

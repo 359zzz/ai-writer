@@ -10,6 +10,7 @@ import {
   type OutlineGraph,
   type OutlineNodeData,
 } from "@/components/OutlineGraphEditor";
+import { RunTraceGraph } from "@/components/RunTraceGraph";
 import { t, type I18nKey, type Lang } from "@/lib/i18n";
 import {
   DEFAULT_THEMES,
@@ -115,9 +116,32 @@ type BookIndexResult = {
   truncated: boolean;
 };
 
+type ChapterIndexChapter = {
+  index: number;
+  label: string;
+  title: string;
+  start_char: number;
+  end_char: number;
+  chars: number;
+  header: string;
+  preview_head: string;
+  preview_tail: string;
+};
+
+type ChapterIndexResult = {
+  source_id: string;
+  meta: Record<string, unknown>;
+  params: Record<string, unknown>;
+  chapters: ChapterIndexChapter[];
+  total_chapters: number;
+  truncated: boolean;
+  updated_at?: string;
+};
+
 type BookSummarizeStats = {
   source_id: string;
   filename?: string;
+  segment_mode?: string;
   processed: number;
   created: number;
   failed: number;
@@ -553,6 +577,18 @@ export default function Home() {
   const [bookChunkChars, setBookChunkChars] = useState<number>(6000);
   const [bookOverlapChars, setBookOverlapChars] = useState<number>(400);
   const [bookMaxChunks, setBookMaxChunks] = useState<number>(200);
+  const [bookChapterIndexLoading, setBookChapterIndexLoading] =
+    useState<boolean>(false);
+  const [bookChapterIndexError, setBookChapterIndexError] = useState<
+    string | null
+  >(null);
+  const [bookChapterIndex, setBookChapterIndex] =
+    useState<ChapterIndexResult | null>(null);
+  const [bookChapterDraft, setBookChapterDraft] = useState<
+    ChapterIndexChapter[]
+  >([]);
+  const [bookChapterDirty, setBookChapterDirty] = useState<boolean>(false);
+  const [bookChapterSaving, setBookChapterSaving] = useState<boolean>(false);
   const [bookIndexLoading, setBookIndexLoading] = useState<boolean>(false);
   const [bookIndexError, setBookIndexError] = useState<string | null>(null);
   const [bookIndex, setBookIndex] = useState<BookIndexResult | null>(null);
@@ -696,15 +732,6 @@ export default function Home() {
       book_continue: "书籍续写",
     };
     return map[kind] ?? kind;
-  };
-
-  const formatDurationMs = (ms: number): string => {
-    if (!Number.isFinite(ms) || ms <= 0) return "0s";
-    if (ms < 1000) return `${Math.round(ms)}ms`;
-    if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-    const m = Math.floor(ms / 60_000);
-    const s = Math.round((ms % 60_000) / 1000);
-    return `${m}m${s}s`;
   };
 
   const clipText = (input: string, maxLen: number): string => {
@@ -1070,77 +1097,6 @@ export default function Home() {
     setRunEvents([]);
     setExpandedEventKey(null);
   }, [selectedProjectId]);
-
-  const agentFlow = useMemo(() => {
-    const seq = runEvents
-      .map((e) => e.agent)
-      .filter((a): a is string => typeof a === "string" && a.trim().length > 0);
-    const compressed: string[] = [];
-    for (const a of seq) {
-      if (compressed.length === 0 || compressed[compressed.length - 1] !== a) {
-        compressed.push(a);
-      }
-    }
-    return compressed;
-  }, [runEvents]);
-
-  const agentStats = useMemo(() => {
-    type Stats = {
-      total_ms: number;
-      starts: number;
-      finishes: number;
-      tool_calls: number;
-      tool_results: number;
-      outputs: number;
-      artifacts: number;
-    };
-    const stats: Record<string, Stats> = {};
-    const open: Record<string, number[]> = {};
-
-    for (const e of runEvents) {
-      const agent = typeof e.agent === "string" ? e.agent.trim() : "";
-      if (!agent) continue;
-      const st =
-        stats[agent] ??
-        (stats[agent] = {
-          total_ms: 0,
-          starts: 0,
-          finishes: 0,
-          tool_calls: 0,
-          tool_results: 0,
-          outputs: 0,
-          artifacts: 0,
-        });
-
-      if (e.type === "agent_started") {
-        const ts = Date.parse(e.ts);
-        if (Number.isFinite(ts)) (open[agent] ??= []).push(ts);
-        st.starts += 1;
-      } else if (e.type === "agent_finished") {
-        const ts = Date.parse(e.ts);
-        const startTs = (open[agent] ?? []).pop();
-        if (
-          Number.isFinite(ts) &&
-          typeof startTs === "number" &&
-          Number.isFinite(startTs) &&
-          ts >= startTs
-        ) {
-          st.total_ms += ts - startTs;
-        }
-        st.finishes += 1;
-      } else if (e.type === "tool_call") {
-        st.tool_calls += 1;
-      } else if (e.type === "tool_result") {
-        st.tool_results += 1;
-      } else if (e.type === "agent_output") {
-        st.outputs += 1;
-      } else if (e.type === "artifact") {
-        st.artifacts += 1;
-      }
-    }
-
-    return stats;
-  }, [runEvents]);
 
   const runEventsRunId = useMemo(() => {
     return runEvents[0]?.run_id ?? null;
@@ -1640,9 +1596,14 @@ export default function Home() {
                 typeof evt.data.source_id === "string" ? evt.data.source_id : "";
               const filename =
                 typeof evt.data.filename === "string" ? evt.data.filename : undefined;
+              const segment_mode =
+                typeof evt.data.segment_mode === "string"
+                  ? evt.data.segment_mode
+                  : undefined;
               setBookSummarizeStats({
                 source_id: sid,
                 filename,
+                segment_mode,
                 processed: Number.isFinite(processed) ? processed : 0,
                 created: Number.isFinite(created) ? created : 0,
                 failed: Number.isFinite(failed) ? failed : 0,
@@ -2471,6 +2432,12 @@ export default function Home() {
     setBookInputText("");
     setBookSourceError(null);
     setBookSourceToken((x) => x + 1);
+    setBookChapterIndexLoading(false);
+    setBookChapterIndex(null);
+    setBookChapterIndexError(null);
+    setBookChapterDraft([]);
+    setBookChapterDirty(false);
+    setBookChapterSaving(false);
     setBookIndex(null);
     setBookIndexError(null);
     setBookSummarizeStats(null);
@@ -2556,6 +2523,10 @@ export default function Home() {
       setBookSourceMeta({ filename, chars });
       setBookInputText(preview);
       setBookSourceToken((x) => x + 1);
+      setBookChapterIndex(null);
+      setBookChapterIndexError(null);
+      setBookChapterDraft([]);
+      setBookChapterDirty(false);
       setBookIndex(null);
       setBookIndexError(null);
       setBookSummarizeStats(null);
@@ -2602,6 +2573,102 @@ export default function Home() {
       throw e;
     } finally {
       setBookIndexLoading(false);
+    }
+  }
+
+  async function buildChapterIndex(
+    sourceId: string,
+    opts: { overwrite?: boolean } = {},
+  ): Promise<ChapterIndexResult> {
+    setBookChapterIndexError(null);
+    setBookChapterIndexLoading(true);
+    try {
+      const sid = (sourceId || "").trim();
+      if (!sid) throw new Error("source_id_required");
+
+      const params = new URLSearchParams();
+      params.set("preview_chars", "160");
+      params.set("max_chapters", "5000");
+      if (opts.overwrite) params.set("overwrite", "true");
+
+      const res = await fetch(
+        `${apiBase}/api/tools/continue_sources/${encodeURIComponent(sid)}/chapter_index?${params.toString()}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+
+      const data = (await res.json()) as ChapterIndexResult;
+      setBookChapterIndex(data);
+      setBookChapterDraft(Array.isArray(data.chapters) ? data.chapters : []);
+      setBookChapterDirty(false);
+      return data;
+    } catch (e) {
+      setBookChapterIndexError((e as Error).message);
+      throw e;
+    } finally {
+      setBookChapterIndexLoading(false);
+    }
+  }
+
+  async function saveChapterIndex(
+    sourceId: string,
+    chapters: ChapterIndexChapter[],
+  ): Promise<ChapterIndexResult> {
+    setBookChapterIndexError(null);
+    setBookChapterSaving(true);
+    try {
+      const sid = (sourceId || "").trim();
+      if (!sid) throw new Error("source_id_required");
+
+      const payload = {
+        chapters: chapters.map((c) => ({
+          start_char: c.start_char,
+          header: c.header,
+          label: c.label,
+          title: c.title,
+        })),
+      };
+
+      const res = await fetch(
+        `${apiBase}/api/tools/continue_sources/${encodeURIComponent(sid)}/chapter_index?preview_chars=160&max_chapters=5000`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      if (!res.ok) {
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+
+      const data = (await res.json()) as ChapterIndexResult;
+      setBookChapterIndex(data);
+      setBookChapterDraft(Array.isArray(data.chapters) ? data.chapters : []);
+      setBookChapterDirty(false);
+      return data;
+    } catch (e) {
+      setBookChapterIndexError((e as Error).message);
+      throw e;
+    } finally {
+      setBookChapterSaving(false);
     }
   }
 
@@ -2686,6 +2753,10 @@ export default function Home() {
       setBookSourceId(sid);
       setBookSourceMeta({ filename, chars });
       setBookInputText(preview);
+      setBookChapterIndex(null);
+      setBookChapterIndexError(null);
+      setBookChapterDraft([]);
+      setBookChapterDirty(false);
       setBookIndex(null);
       setBookIndexError(null);
       setBookSummarizeStats(null);
@@ -5656,13 +5727,280 @@ export default function Home() {
                       <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
                         <div className="text-sm font-medium">
                           {lang === "zh"
+                            ? "章节分块 / 手动微调（MVP）"
+                            : "Chapter split / manual tune (MVP)"}
+                        </div>
+                        <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                          {lang === "zh"
+                            ? "自动识别“第X章/回/卷/节”标题并生成章节索引（不调用 LLM）。你可以在下方删除误识别的章节、修改标题，保存后用于“按章节总结入库”。"
+                            : "Detects chapter headings (e.g. '第X章/回/卷/节') and builds a chapter index (no LLM). You can delete false positives and edit titles; saving enables chapter-based summarization."}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={!bookSourceId || bookChapterIndexLoading}
+                            onClick={() => {
+                              if (!bookSourceId) return;
+                              buildChapterIndex(bookSourceId).catch(() => {
+                                // error already surfaced
+                              });
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {bookChapterIndexLoading
+                              ? lang === "zh"
+                                ? "识别中..."
+                                : "Detecting..."
+                              : lang === "zh"
+                                ? bookChapterIndex
+                                  ? "加载章节索引"
+                                  : "章节分块"
+                                : bookChapterIndex
+                                  ? "Load chapter index"
+                                  : "Detect chapters"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!bookSourceId || bookChapterIndexLoading}
+                            onClick={() => {
+                              if (!bookSourceId) return;
+                              buildChapterIndex(bookSourceId, { overwrite: true }).catch(
+                                () => {
+                                  // error already surfaced
+                                },
+                              );
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-surface)] disabled:opacity-50 dark:border-zinc-800"
+                          >
+                            {lang === "zh" ? "重新识别" : "Rebuild"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={
+                              !bookSourceId ||
+                              bookChapterDraft.length === 0 ||
+                              !bookChapterDirty ||
+                              bookChapterSaving
+                            }
+                            onClick={() => {
+                              if (!bookSourceId) return;
+                              saveChapterIndex(bookSourceId, bookChapterDraft).catch(() => {
+                                // error already surfaced
+                              });
+                            }}
+                            className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                          >
+                            {bookChapterSaving
+                              ? lang === "zh"
+                                ? "保存中..."
+                                : "Saving..."
+                              : lang === "zh"
+                                ? "保存微调"
+                                : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!bookChapterDirty || !bookChapterIndex}
+                            onClick={() => {
+                              setBookChapterDraft(bookChapterIndex?.chapters ?? []);
+                              setBookChapterDirty(false);
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {lang === "zh" ? "重置" : "Reset"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={bookChapterDraft.length === 0}
+                            onClick={() => {
+                              const filename =
+                                (bookSourceMeta?.filename || "chapter_index")
+                                  .replace(/[^a-zA-Z0-9._\\-\\u4e00-\\u9fa5]/g, "_")
+                                  .slice(0, 64) || "chapter_index";
+                              downloadTextFile(
+                                `${filename}.chapter_index.json`,
+                                JSON.stringify(
+                                  {
+                                    source_id: bookSourceId,
+                                    chapters: bookChapterDraft,
+                                  },
+                                  null,
+                                  2,
+                                ),
+                                "application/json",
+                              );
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {lang === "zh" ? "导出JSON" : "Export JSON"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={bookChapterDraft.length === 0}
+                            onClick={() => {
+                              const lines = bookChapterDraft.map((c, i) => {
+                                const label = (c.label || "").trim();
+                                const title = (c.title || "").trim();
+                                const head = label || `Chapter ${i + 1}`;
+                                return title && title !== label
+                                  ? `${head}  ${title}`
+                                  : head;
+                              });
+                              const filename =
+                                (bookSourceMeta?.filename || "chapters")
+                                  .replace(/[^a-zA-Z0-9._\\-\\u4e00-\\u9fa5]/g, "_")
+                                  .slice(0, 64) || "chapters";
+                              downloadTextFile(
+                                `${filename}.chapters.txt`,
+                                lines.join("\n"),
+                                "text/plain",
+                              );
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {lang === "zh" ? "导出TXT" : "Export TXT"}
+                          </button>
+
+                          {bookChapterDirty ? (
+                            <span className="text-xs text-amber-700 dark:text-amber-300">
+                              {lang === "zh" ? "未保存" : "Unsaved"}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {bookChapterIndexError ? (
+                          <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                            {bookChapterIndexError}
+                          </div>
+                        ) : null}
+
+                        {bookChapterIndex ? (
+                          <div className="mt-3 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] dark:border-zinc-800">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-[var(--ui-muted)]">
+                                {lang === "zh"
+                                  ? `章节：${bookChapterIndex.total_chapters} 章${
+                                      bookChapterIndex.truncated ? "（可能被截断）" : ""
+                                    }`
+                                  : `Chapters: ${bookChapterIndex.total_chapters}${
+                                      bookChapterIndex.truncated ? " (maybe truncated)" : ""
+                                    }`}
+                              </div>
+                              <div className="text-[11px] text-[var(--ui-muted)]">
+                                {lang === "zh"
+                                  ? "提示：删除一章=合并边界（前一章会包含它的内容）"
+                                  : "Tip: deleting a chapter merges boundaries (previous chapter absorbs its text)."}
+                              </div>
+                            </div>
+
+                            {bookChapterDraft.length > 0 ? (
+                              <div className="mt-3 max-h-72 overflow-auto rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-2 dark:border-zinc-800">
+                                <ol className="space-y-2">
+                                  {bookChapterDraft
+                                    .slice(0, 120)
+                                    .map((c, idx) => (
+                                      <li
+                                        key={`${c.start_char}:${idx}`}
+                                        className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-2 dark:border-zinc-800"
+                                      >
+                                        <div className="flex flex-wrap items-start justify-between gap-2">
+                                          <div className="min-w-0 flex-1">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                              <span className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-0.5 text-[11px] text-[var(--ui-control-text)] dark:border-zinc-800">
+                                                #{idx + 1}
+                                              </span>
+                                              <input
+                                                value={c.label ?? ""}
+                                                onChange={(e) => {
+                                                  const v = e.target.value;
+                                                  setBookChapterDraft((prev) =>
+                                                    prev.map((cc, j) =>
+                                                      j === idx ? { ...cc, label: v } : cc,
+                                                    ),
+                                                  );
+                                                  setBookChapterDirty(true);
+                                                }}
+                                                className="w-28 rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)]"
+                                                placeholder={lang === "zh" ? "标签" : "Label"}
+                                              />
+                                              <input
+                                                value={c.title ?? ""}
+                                                onChange={(e) => {
+                                                  const v = e.target.value;
+                                                  setBookChapterDraft((prev) =>
+                                                    prev.map((cc, j) =>
+                                                      j === idx ? { ...cc, title: v } : cc,
+                                                    ),
+                                                  );
+                                                  setBookChapterDirty(true);
+                                                }}
+                                                className="min-w-[220px] flex-1 rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)]"
+                                                placeholder={lang === "zh" ? "标题" : "Title"}
+                                              />
+                                              <span className="text-[11px] text-[var(--ui-muted)]">
+                                                {Number.isFinite(c.chars)
+                                                  ? `${c.chars} chars`
+                                                  : ""}
+                                              </span>
+                                            </div>
+
+                                            {c.header ? (
+                                              <div className="mt-1 text-[11px] text-[var(--ui-muted)]">
+                                                {clipText(c.header, 180)}
+                                              </div>
+                                            ) : null}
+                                            {c.preview_head ? (
+                                              <div className="mt-1 text-[11px] text-[var(--ui-muted)]">
+                                                head: {clipText(c.preview_head, 220)}
+                                              </div>
+                                            ) : null}
+                                            {c.preview_tail ? (
+                                              <div className="mt-1 text-[11px] text-[var(--ui-muted)]">
+                                                tail: {clipText(c.preview_tail, 220)}
+                                              </div>
+                                            ) : null}
+                                          </div>
+
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setBookChapterDraft((prev) =>
+                                                prev.filter((_, j) => j !== idx),
+                                              );
+                                              setBookChapterDirty(true);
+                                            }}
+                                            className="shrink-0 rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                          >
+                                            {lang === "zh" ? "删除" : "Delete"}
+                                          </button>
+                                        </div>
+                                      </li>
+                                    ))}
+                                </ol>
+                                {bookChapterDraft.length > 120 ? (
+                                  <div className="mt-2 text-[11px] text-[var(--ui-muted)]">
+                                    {lang === "zh"
+                                      ? `仅展示前 120 章（共 ${bookChapterDraft.length}）。可先微调并保存，再用于总结入库。`
+                                      : `Showing first 120 only (total ${bookChapterDraft.length}). Save and then summarize into KB.`}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                        <div className="text-sm font-medium">
+                          {lang === "zh"
                             ? "书籍分片索引 / 总结入库（MVP）"
                             : "Book chunk index / summarize into KB (MVP)"}
                         </div>
                         <div className="mt-2 text-xs text-[var(--ui-muted)]">
                           {lang === "zh"
-                            ? "先生成分片索引（不调用 LLM），再用 LLM 对每片做简要总结并写入本地知识库（为 v2.0 的百万字续写链路打底）。"
-                            : "Build a chunk index (no LLM), then summarize each chunk via LLM and store into the local KB (foundation for v2.0 long-book continuation)."}
+                            ? "推荐先做「章节分块」并手动微调，再按章节总结入库；也可生成分片索引按片总结（适用于无章回标题的文本）。"
+                            : "Recommended: detect chapters (and tune), then summarize by chapters. You can also build a chunk index to summarize chunks (for texts without clear headings)."}
                         </div>
 
                         <div className="mt-3 grid gap-2 md:grid-cols-3">
@@ -5741,12 +6079,21 @@ export default function Home() {
                               !bookSourceId ||
                               runInProgress ||
                               settingsSaving ||
-                              secretsSaving
+                              secretsSaving ||
+                              (Boolean(bookChapterIndex) && bookChapterDirty)
                             }
                             onClick={() => {
                               if (!bookSourceId) return;
                               runPipeline("book_summarize", {
                                 source_id: bookSourceId,
+                                segment_mode: bookChapterIndex ? "chapter" : "chunk",
+                                // Chapter mode uses chapter_index (if present); this controls how much of each
+                                // chapter is included in prompt budget when chapters are long.
+                                segment_max_chars: Math.max(
+                                  2000,
+                                  Math.min(50_000, bookChunkChars * 2),
+                                ),
+                                max_chapters: 5000,
                                 chunk_chars: bookChunkChars,
                                 overlap_chars: bookOverlapChars,
                                 max_chunks: bookMaxChunks,
@@ -5829,7 +6176,11 @@ export default function Home() {
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="text-[var(--ui-muted)]">
                                 {lang === "zh"
-                                  ? `已处理 ${bookSummarizeStats.processed} 片，入库 ${bookSummarizeStats.created}，失败 ${bookSummarizeStats.failed}`
+                                  ? `已处理 ${bookSummarizeStats.processed} ${
+                                      bookSummarizeStats.segment_mode === "chapter"
+                                        ? "章"
+                                        : "片"
+                                    }，入库 ${bookSummarizeStats.created}，失败 ${bookSummarizeStats.failed}`
                                   : `Processed ${bookSummarizeStats.processed}, stored ${bookSummarizeStats.created}, failed ${bookSummarizeStats.failed}`}
                               </div>
                               <button
@@ -6127,36 +6478,13 @@ export default function Home() {
               ) : (
                 <div className="p-4">
                   <div className="text-sm font-medium">{tt("execution_flow")}</div>
-                  <div className="mt-3 overflow-auto">
-                    {agentFlow.length === 0 ? (
-                      <div className="text-sm text-[var(--ui-muted)]">
-                        {tt("no_agents_in_events")}
-                      </div>
-                    ) : (
-                      <div className="flex min-w-max items-center gap-2 pb-2">
-                        {agentFlow.map((a, idx) => {
-                          const st = agentStats[a];
-                          return (
-                            <div key={`${a}:${idx}`} className="flex items-center gap-2">
-                              <div
-                                className="rounded-lg border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)]"
-                                style={{ borderColor: agentColor(a) }}
-                              >
-                                <div className="font-medium">{formatAgentName(a)}</div>
-                                {st ? (
-                                  <div className="mt-1 text-[11px] text-[var(--ui-muted)]">
-                                    t={formatDurationMs(st.total_ms)} · tools={st.tool_calls} · artifacts={st.artifacts}
-                                  </div>
-                                ) : null}
-                              </div>
-                              {idx < agentFlow.length - 1 ? (
-                                <span className="text-xs text-zinc-400">→</span>
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                  <div className="mt-3">
+                    <RunTraceGraph
+                      lang={lang === "zh" ? "zh" : "en"}
+                      events={runEvents}
+                      formatAgentName={formatAgentName}
+                      agentColor={agentColor}
+                    />
                   </div>
 
                   <div className="mt-4 text-xs text-[var(--ui-muted)]">
