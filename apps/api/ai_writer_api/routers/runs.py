@@ -127,6 +127,109 @@ def _default_chapter_title(lang: str, chapter_index: int) -> str:
     return f"Chapter {chapter_index}"
 
 
+def _clip_text(value: object, max_len: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    s = value.strip()
+    if len(s) <= max(0, int(max_len)):
+        return s
+    return s[: max(0, int(max_len))].rstrip() + "…"
+
+
+def _clip_str_list(value: object, *, max_items: int, max_item_len: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for x in value:
+        if not isinstance(x, str):
+            continue
+        t = x.strip()
+        if not t:
+            continue
+        out.append(_clip_text(t, max_item_len))
+        if len(out) >= max(0, int(max_items)):
+            break
+    return out
+
+
+def _compact_compiled_book_state(state: dict[str, Any]) -> dict[str, Any]:
+    """
+    PackyAPI/proxy gateways can be sensitive to large prompts. Keep the compiled
+    book state compact and stable so downstream Writer/Planner prompts stay
+    within reasonable request sizes.
+
+    This is a best-effort structural clamp (no extra LLM calls).
+    """
+
+    style_profile: dict[str, Any] = {}
+    raw_style = state.get("style_profile")
+    if isinstance(raw_style, dict):
+        for k in ("pov", "tense", "tone", "genre", "voice", "pace"):
+            if k in raw_style:
+                v = raw_style.get(k)
+                if isinstance(v, str) and v.strip():
+                    style_profile[k] = _clip_text(v, 120)
+
+    character_cards: list[dict[str, Any]] = []
+    raw_cards = state.get("character_cards")
+    if isinstance(raw_cards, list):
+        for c in raw_cards:
+            if not isinstance(c, dict):
+                continue
+            name = _clip_text(c.get("name"), 40)
+            if not name:
+                continue
+            character_cards.append(
+                {
+                    "name": name,
+                    "role": _clip_text(c.get("role"), 100),
+                    "traits": _clip_text(c.get("traits"), 220),
+                    "relationships": _clip_text(c.get("relationships"), 220),
+                    "current_status": _clip_text(c.get("current_status"), 220),
+                    "arc": _clip_text(c.get("arc"), 220),
+                }
+            )
+            if len(character_cards) >= 16:
+                break
+
+    timeline: list[dict[str, Any]] = []
+    raw_tl = state.get("timeline")
+    if isinstance(raw_tl, list):
+        for it in raw_tl:
+            if not isinstance(it, dict):
+                continue
+            when = _clip_text(it.get("when"), 80)
+            event = _clip_text(it.get("event"), 180)
+            if not (when or event):
+                continue
+            timeline.append({"when": when, "event": event})
+            if len(timeline) >= 24:
+                break
+
+    continuation_seed: dict[str, Any] = {}
+    raw_seed = state.get("continuation_seed")
+    if isinstance(raw_seed, dict):
+        where = _clip_text(raw_seed.get("where_to_resume"), 220)
+        scene = _clip_text(raw_seed.get("next_scene"), 280)
+        constraints = _clip_str_list(raw_seed.get("constraints"), max_items=12, max_item_len=200)
+        if where:
+            continuation_seed["where_to_resume"] = where
+        if scene:
+            continuation_seed["next_scene"] = scene
+        if constraints:
+            continuation_seed["constraints"] = constraints
+
+    return {
+        "book_summary": _clip_text(state.get("book_summary"), 1800),
+        "style_profile": style_profile,
+        "world": _clip_text(state.get("world"), 900),
+        "character_cards": character_cards,
+        "timeline": timeline,
+        "open_loops": _clip_str_list(state.get("open_loops"), max_items=20, max_item_len=200),
+        "continuation_seed": continuation_seed,
+    }
+
+
 @router.get("/api/projects/{project_id}/runs")
 def list_runs(project_id: str) -> list[Run]:
     with get_session() as session:
@@ -730,6 +833,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 "You are BookCompilerAgent. Compile a long book's chunk summaries into a compact state for continuation. "
                 f"{lang_hint_json} "
                 "Return JSON only. Do NOT include chain-of-thought. "
+                "Constraints (keep it compact): "
+                "book_summary<=1800 chars, world<=900 chars, character_cards<=16, timeline<=24, open_loops<=20. "
                 "Schema:\n"
                 "{\n"
                 '  "book_summary": "...",\n'
@@ -770,6 +875,21 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             state: dict[str, Any]
             if isinstance(parsed, dict):
                 state = parsed
+                # Clamp sizes for downstream prompts (Writer/Planner). Some gateways
+                # (PackyAPI/proxies) are sensitive to large JSON blobs.
+                if any(
+                    k in state
+                    for k in (
+                        "book_summary",
+                        "style_profile",
+                        "world",
+                        "character_cards",
+                        "timeline",
+                        "open_loops",
+                        "continuation_seed",
+                    )
+                ):
+                    state = _compact_compiled_book_state(state)
             else:
                 state = {"text": cleaned}
 
@@ -1361,6 +1481,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 compiled_state = None
 
             if isinstance(compiled_state, dict):
+                compiled_state = _compact_compiled_book_state(compiled_state)
                 # Convert to the same StoryState schema that WriterAgent expects.
                 cards = compiled_state.get("character_cards")
                 characters: list[dict[str, Any]] = []
@@ -1374,14 +1495,14 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         characters.append(
                             {
                                 "name": name.strip(),
-                                "current_status": str(c.get("current_status") or "").strip(),
-                                "relationships": str(c.get("relationships") or "").strip(),
+                                "current_status": _clip_text(c.get("current_status"), 220),
+                                "relationships": _clip_text(c.get("relationships"), 220),
                             }
                         )
                 story_state = {
-                    "summary_so_far": str(compiled_state.get("book_summary") or "").strip(),
+                    "summary_so_far": _clip_text(compiled_state.get("book_summary"), 1800),
                     "characters": characters,
-                    "world": str(compiled_state.get("world") or "").strip(),
+                    "world": _clip_text(compiled_state.get("world"), 900),
                     "timeline": compiled_state.get("timeline") if isinstance(compiled_state.get("timeline"), list) else [],
                     "open_loops": compiled_state.get("open_loops") if isinstance(compiled_state.get("open_loops"), list) else [],
                     "style_profile": compiled_state.get("style_profile")
@@ -1585,35 +1706,60 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             else:
                 system += "If some details are missing, you may creatively fill gaps in a consistent way."
             min_len = max(200, int(chapter_words * 0.25))
-            user_parts = [
-                f"Story settings:\n{json_dumps(story)}",
-                f"Writing targets: chapter_words≈{chapter_words}, chapter_index={chapter_index}",
-                f"KB mode: {kb_mode}",
-            ]
-            if chapter_plan:
-                user_parts.append(f"Chapter plan:\n{json_dumps(chapter_plan)}")
-            if story_state:
-                user_parts.append(f"StoryState:\n{json_dumps(story_state)}")
-            if kind == "book_continue" and book_recent_chapters_for_writer.strip():
-                user_parts.append(
-                    "Recent chapters already written in this project (keep continuity with these):\n"
-                    f"{book_recent_chapters_for_writer[:3500]}"
+
+            cfg0 = llm_cfg()
+            base_low = (cfg0.base_url or "").lower()
+            # When using PackyAPI Gemini, prefer a slightly more conservative max_tokens
+            # budget for the Writer stage to reduce long-running connections.
+            max_tokens_cap = 2048 if (cfg0.provider == "gemini" and "packyapi.com" in base_low) else 4096
+
+            if cfg0.provider == "gemini" and "packyapi.com" in base_low:
+                system += (
+                    " Safety writing mode: avoid explicit pornographic or extreme violent depictions; "
+                    "avoid real-world political agitation; if a scene would be disallowed, rephrase with euphemism."
                 )
-            if kind == "book_continue" and book_excerpt_for_writer.strip():
-                user_parts.append(
-                    "Latest manuscript excerpt (continue from this context, keep continuity):\n"
-                    f"{book_excerpt_for_writer[:3500]}"
-                )
-            if kb_context:
-                kb_text = "\n\n".join(
-                    f"[KB#{k['id']}] {k.get('title','')}\n{k.get('content','')}" for k in kb_context
-                )
-                user_parts.append(f"Local KB excerpts:\n{kb_text[:3000]}")
-            if web_results:
-                web_text = "\n\n".join(
-                    f"- {w.get('title','')}\n  {w.get('snippet','')}\n  {w.get('url','')}" for w in web_results
-                )
-                user_parts.append(f"Web research results (do not treat as canon unless stated):\n{web_text[:2000]}")
+
+            def _json_for_prompt(obj: object, max_chars: int) -> str:
+                s = json_dumps(obj)
+                if len(s) <= max_chars:
+                    return s
+                return s[: max(0, int(max_chars))].rstrip() + "\n…(truncated)"
+
+            def _build_user_parts(*, recent_max: int, excerpt_max: int, kb_max: int) -> list[str]:
+                parts = [
+                    f"Story settings:\n{_json_for_prompt(story, 2600)}",
+                    f"Writing targets: chapter_words≈{chapter_words}, chapter_index={chapter_index}",
+                    f"KB mode: {kb_mode}",
+                ]
+                if chapter_plan:
+                    parts.append(f"Chapter plan:\n{_json_for_prompt(chapter_plan, 1400)}")
+                if story_state:
+                    parts.append(f"StoryState:\n{_json_for_prompt(story_state, 2800)}")
+                if kind == "book_continue" and book_recent_chapters_for_writer.strip():
+                    parts.append(
+                        "Recent chapters already written in this project (keep continuity with these):\n"
+                        f"{book_recent_chapters_for_writer[: max(0, int(recent_max))]}"
+                    )
+                if kind == "book_continue" and book_excerpt_for_writer.strip():
+                    parts.append(
+                        "Latest manuscript excerpt (continue from this context, keep continuity):\n"
+                        f"{book_excerpt_for_writer[: max(0, int(excerpt_max))]}"
+                    )
+                if kb_context:
+                    kb_text = "\n\n".join(
+                        f"[KB#{k['id']}] {k.get('title','')}\n{k.get('content','')}" for k in kb_context
+                    )
+                    parts.append(f"Local KB excerpts:\n{kb_text[: max(0, int(kb_max))]}")
+                if web_results:
+                    web_text = "\n\n".join(
+                        f"- {w.get('title','')}\n  {w.get('snippet','')}\n  {w.get('url','')}" for w in web_results
+                    )
+                    parts.append(
+                        f"Web research results (do not treat as canon unless stated):\n{web_text[:2000]}"
+                    )
+                return parts
+
+            user_parts = _build_user_parts(recent_max=3500, excerpt_max=3500, kb_max=3000)
             if output_lang == "zh":
                 user_parts.append(f"最低长度：至少 {min_len} 个汉字（不含 Markdown 符号）。不要中途截断。")
             else:
@@ -1630,8 +1776,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "Output ONLY the chapter Markdown. Start with a level-1 title like: "
                     f"{_writer_title_example(output_lang, chapter_index)}"
                 )
-            cfg0 = llm_cfg()
-            desired_max_tokens = max(int(cfg0.max_tokens), min(4096, max(80, int(chapter_words * 1.4))))
+
+            desired_max_tokens = max(int(cfg0.max_tokens), min(max_tokens_cap, max(80, int(chapter_words * 1.4))))
             cfg = replace(cfg0, max_tokens=desired_max_tokens) if desired_max_tokens != cfg0.max_tokens else cfg0
             writer_max_tokens = cfg.max_tokens
             yield emit(
@@ -1644,7 +1790,55 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "max_tokens": cfg.max_tokens,
                 },
             )
-            writer_text = await generate_text(system_prompt=system, user_prompt="\n\n---\n\n".join(user_parts), cfg=cfg)
+            user_prompt = "\n\n---\n\n".join(user_parts)
+            try:
+                writer_text = await generate_text(system_prompt=system, user_prompt=user_prompt, cfg=cfg)
+            except LLMError as e:
+                # Rescue path for flaky gateways: retry once with a smaller prompt
+                # and (for PackyAPI Gemini) a more available flash model.
+                msg = str(e)
+                retryable = bool(
+                    kind == "book_continue"
+                    and (
+                        msg.startswith("openai_network_error")
+                        or msg.startswith("openai_timeout")
+                        or msg.startswith("gemini_network_error")
+                        or msg.startswith("gemini_timeout")
+                        or re.match(r"^(openai|gemini)_http_(429|500|502|503|504)", msg)
+                    )
+                )
+                if not retryable:
+                    raise
+
+                retry_cfg = cfg
+                if retry_cfg.provider == "gemini" and "packyapi.com" in (retry_cfg.base_url or "").lower():
+                    retry_cfg = replace(retry_cfg, model="gemini-3-flash-preview")
+                retry_cfg = replace(retry_cfg, max_tokens=min(int(retry_cfg.max_tokens), 1536))
+
+                retry_parts = _build_user_parts(recent_max=2000, excerpt_max=2000, kb_max=1800)
+                if output_lang == "zh":
+                    retry_parts.append(
+                        "IMPORTANT: 上一轮请求可能因网关不稳定/内容敏感/上下文过长而断连。"
+                        "请保持行文含蓄，避免露骨描写，优先推进剧情与人物互动。"
+                    )
+                else:
+                    retry_parts.append(
+                        "IMPORTANT: The previous request likely failed due to gateway instability / sensitive content / long context. "
+                        "Keep the writing PG-13 and focus on plot + character interaction."
+                    )
+                retry_prompt = "\n\n---\n\n".join(retry_parts)
+                yield emit(
+                    "tool_call",
+                    "Writer",
+                    {
+                        "tool": "llm.generate_text",
+                        "provider": retry_cfg.provider,
+                        "model": retry_cfg.model,
+                        "max_tokens": retry_cfg.max_tokens,
+                        "note": f"retry_gateway_error:{msg[:60]}",
+                    },
+                )
+                writer_text = await generate_text(system_prompt=system, user_prompt=retry_prompt, cfg=retry_cfg)
             writer_text = strip_think_blocks(writer_text)
             if not re.search(r"(?m)^#\\s+\\S", writer_text):
                 title = _default_chapter_title(output_lang, chapter_index)

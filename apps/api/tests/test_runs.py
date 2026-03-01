@@ -695,3 +695,84 @@ def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.Mo
         assert chapters.status_code == 200
         listed = chapters.json()
         assert any(int(c.get("chapter_index") or 0) == 1 for c in listed)
+
+
+def test_book_continue_budgets_compiled_state_for_writer_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Regression test (v1.12.2):
+    - Some proxies/gateways are sensitive to large prompts.
+    - When compiled book_state contains very long strings, book_continue should
+      clamp it before feeding it into Writer prompts (to reduce ConnectError risk).
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    captured: dict[str, str] = {}
+
+    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        if "BookPlannerAgent" in system_prompt:
+            return json.dumps(
+                {"index": 1, "title": "第1章：续写测试", "summary": "示例", "goal": "继续推进"},
+                ensure_ascii=False,
+            )
+        if "WriterAgent" in system_prompt:
+            captured["writer_user"] = user_prompt
+            return "# 第1章：续写测试\n\n正文。\n"
+        if "EditorAgent" in system_prompt:
+            return "# 第1章：续写测试\n\n正文（润色）。\n"
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Book Continue Budget Test"}).json()
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=tail&preview_chars=200",
+            json={"text": "第一章内容……\n第二章内容……\n（结尾）\n", "filename": "book.txt"},
+        ).json()
+        sid = src["source_id"]
+
+        very_long = ("A" * 9000) + "TAIL_MARKER_SHOULD_NOT_APPEAR"
+        compiled_state = {
+            "book_summary": very_long,
+            "style_profile": {"pov": "third", "tense": "past", "tone": "neutral"},
+            "world": "demo",
+            "character_cards": [{"name": "Alice", "current_status": "ok", "relationships": "none"}],
+            "timeline": [],
+            "open_loops": [],
+            "continuation_seed": {"where_to_resume": "end", "next_scene": "demo", "constraints": []},
+        }
+        created_state = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={
+                "title": "book state",
+                "content": json.dumps({"book_source_id": sid, "state": compiled_state}, ensure_ascii=False),
+                "source_type": "book_state",
+                "tags": [f"book_source:{sid}", "book_state"],
+            },
+        )
+        assert created_state.status_code == 200
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={
+                "kind": "book_continue",
+                "source_id": sid,
+                "chapter_index": 1,
+                "source_slice_mode": "tail",
+                "source_slice_chars": 200,
+                "ui_lang": "zh",
+            },
+        ) as res:
+            assert res.status_code == 200
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if raw.startswith("data:"):
+                    evt = json.loads(raw.replace("data:", "", 1).strip())
+                    if evt.get("type") == "run_completed":
+                        break
+
+    # The raw tail marker must not be present; it should have been clipped out.
+    assert "TAIL_MARKER_SHOULD_NOT_APPEAR" not in captured.get("writer_user", "")

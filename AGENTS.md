@@ -354,3 +354,76 @@ Versioning policy (from v1.0.x onward):
   - `book_continue` 在 BookPlanner/Writer 提示词中自动加入“最近已写章节”（来自本项目章节库，截取尾部），提高批量多章生成的连续性。
   - KB 检索（`kb_search`）的 query 构造增强：当 Story 设置较少时，会额外利用 `StoryState`（world/角色名）做检索，提高命中“既有章节/设定”的概率。
   - 修复：确保 `book_state + book_summary` 上下文在 `kb_search` 成功/失败两种情况下都会合并进 Writer 提示词（避免偶发丢上下文）。
+
+### v1.12.2 (Reliability: PackyAPI Gemini Writer Prompt Budget + Rescue Retry)
+- API:
+  - `book_compile`: 对编译出的 `book_state.state` 做结构化压缩（限制字符串/列表长度），避免后续提示词过长导致网关断连。
+  - `book_continue`: 读取 `book_state` 后先做 compact，再转换为 Writer 的 `StoryState`（`summary_so_far/world/current_status/relationships` 等字段都有上限）。
+  - Writer: 新增提示词预算（对大 JSON 做截断标记），并对 PackyAPI Gemini 写作阶段更保守地限制 `max_tokens`；遇到可重试网关错误（ConnectError/timeout/429/5xx）时会用更小上下文 + Flash 模型重试一次。
+- Tests:
+  - Added regression test to ensure超长 `book_summary` 不会原样进入 Writer 提示词（降低 `openai_network_error:ConnectError` 概率）。
+- Web:
+  - `apps/web/package-lock.json` 的 version 字段与 `package.json` 对齐（避免长时间迭代后版本漂移）。
+
+---
+
+### Roadmap (Planned, Living Doc)
+本段是“可变计划”：我们会在迭代过程中不断调整；当某个版本真正发布后，会把对应条目落实到上方的 `### vX.Y.Z (...)` 发布说明中。
+
+#### Confirmed Decisions (2026-03-01)
+- 依赖策略：接受新增成熟依赖以换取更稳定的交互体验（尤其是图/流程编辑与可视化）。
+- 大纲编辑：引入思维导图式编辑，节点有类型（人物/情节/时间/地点/章节/伏笔...），并支持关系箭头（边）表达因果/包含/先后/对立等关系。
+- 书籍来源：以中文网文/古典小说为主，通常存在明确标题（如“第X章/回/卷”）→ 章节识别以**规则优先**，LLM 仅做兜底（避免不稳定与额外成本）。
+- 模型与网关：使用 PackyAPI + Gemini → 需要更保守的并发与更严格的输入预算，避免被网关视为异常/攻击流量。
+- “手动微调”定义：这里指“章节分块后由用户手动调整边界/标题/编号/合并拆分”，不是训练意义上的 fine-tune。
+
+#### How We Adopt MiroFish Ideas (Engineering Reference)
+- 长任务机制：把“长文本→分块→多阶段产出”变成一等公民能力：
+  - 后端落地 `Job/Progress`（SQLite 持久化）用于章节分块、逐章总结、编译书籍状态、批量生成等流程。
+  - 前端优先用 SSE 实时展示；同时提供可轮询/可恢复的 job 查询（刷新页面也能恢复进度与产物）。
+- 图谱展示：将“图谱/流程”作为 `Writing` 内的一个工作区模式（与 `创作/续写` 并列），不改变 North Star 的顶层 Tabs 结构。
+  - 同一套图渲染能力会复用在：大纲图（可编辑）、流程图（run DAG）、书籍结构图（章节链路/产物关联）。
+- 关键差异：MiroFish 的任务管理是内存为主；本项目以本地单机为目标，优先做 SQLite 持久化与断点续跑（更贴合“百万字级”使用场景）。
+
+#### Planned Versions (Post v1.12.1 → v2.0.0)
+- v1.13.0 (OutlineGraph: Mindmap Outline Editor MVP)
+  - 引入大纲图谱数据结构 `OutlineGraph`（nodes/edges），并持久化到 DB（作为项目资源/产物的一部分）。
+  - 前端采用 `@xyflow/react`（XYFlow/React Flow 生态）实现：自由拖拽节点 + 关系箭头连线 + 选中编辑面板。
+  - 节点类型：至少支持 `chapter/plot/character/time/place/item`（后续可扩展）。
+  - 互转能力（必须）：`大纲块草稿 (outlineDraft)` ⇄ `OutlineGraph` ⇄ `已保存大纲 (story.outline 文本)`，保证信息尽量不丢失。
+  - 导入/导出：支持 `json/txt`（json 为完整图谱，txt 为可读大纲文本）。
+
+- v1.13.1 (OutlineGraph: UX + Conversion Polish)
+  - 编辑体验：多选/框选、快捷键、对齐/吸附、自动排版（可选引入 `dagre`）。
+  - 边能力：边类型/标签/权重（用于导出与后续生成控制）。
+  - 转换稳健性：更好的层级解析与导出规则（避免“图→文→图”往返损失过大）。
+
+- v1.14.0 (Book: Chapter Split — Auto Draft)
+  - 新增“章节分块”按钮：对书籍源做章节识别，产出 `chapter_index`（每章 start/end + 标题/编号 + 预览）。
+  - 规则优先：识别“第X章/回/卷”等标题；LLM 仅用于规则低置信度场景的兜底。
+  - 章节索引落库：作为书籍源的结构化资源，供后续 BookSummarizer 按章处理。
+
+- v1.14.1 (Book: Chapter Split — Manual Tuning)
+  - 章节微调 UI：合并/拆分相邻章节、编辑标题/编号、局部预览边界上下文、手动新增/删除章节。
+  - 增量重算：微调确认后，仅对受影响章节重跑“逐章总结入库/编译”，未变更章节复用既有结果，避免重复调用与网关压力。
+  - `json/txt`：支持导入/导出微调后的章节索引（便于回滚与共享模板）。
+
+- v1.15.0 (Book: Per-Chapter Summaries + Compile)
+  - BookSummarizer 按 `chapter_index` 逐章总结并写入 KB（`book_summary` 以 `book_chapter:n` 标签区分）。
+  - 编译书籍状态（BookCompile）以“逐章总结”为输入构建：角色卡/世界观/时间线/悬念/续写起点。
+  - 可恢复：断点续跑（跳过已存在章节总结/已存在状态版本）。
+
+- v1.16.0 (Graph Workspace: Process / Outline / Book Structure)
+  - `Writing` 内新增工作区模式：`创作 / 续写 / 图谱`（不新增顶层 Tab）。
+  - 图谱页先做“可视化优先”：流程 DAG（run→agents→artifacts）、大纲图、章节结构图（按章索引+产物挂载）。
+  - Job/Progress 贯穿：长任务在图谱页也可查看进度与阶段。
+
+- v1.17.0 (Writing: Multi-Chapter Generation)
+  - 支持“一次生成 N 章”，每章写完立刻落库并在 UI 可见（章节列表即时更新）。
+  - 生成完成后由 Editor 做统一连续性检查（必要时给出 minimal 修订建议或自动轻量修订）。
+
+- v1.18.x (Hardening + Guardrails)
+  - 更强的输入预算、并发限制与失败恢复；更清晰的 trace 可视化；对敏感内容触发断连场景提供“更含蓄写法/安全写作模式”。
+
+- v2.0.0 (Milestone: Million-Word Book Continuation, Usable & Robust)
+  - 验收口径：章节识别准确 + 章节微调好用 + 逐章总结稳定可恢复 + 书籍状态编译可靠 + 续写稳定产出 + 图谱/流程可用于理解与排障。
