@@ -303,3 +303,8 @@ Versioning policy (from v1.0.x onward):
   - 修复 runs pipeline 中 `chapter_index/chapter_plan` 的变量断裂导致的运行时错误。
 - Tests:
   - Added regression test for `skip_outliner=true` (OutlinerAgent is skipped but chapter artifacts still emit).
+
+### v1.8.1 (Writing: Batch Controls + Better Failure Surface)
+- Web → 创作 → 写作:
+  - 批量写章新增“停止（当前章完成后停止）/继续剩余/清除”控制，减少误操作与重复调用。
+  - 批量写章在失败时记录并显示最近一次错误（便于定位是哪个 Agent/网关失败）。

@@ -307,9 +307,17 @@ export default function Home() {
   const [chapters, setChapters] = useState<ChapterItem[]>([]);
   const [chapterIndex, setChapterIndex] = useState<number>(1);
   const [writeChapterCount, setWriteChapterCount] = useState<number>(1);
-  const [batchWritingProgress, setBatchWritingProgress] = useState<
-    { total: number; done: number } | null
+  const [batchWriting, setBatchWriting] = useState<
+    | {
+        status: "running" | "stopping" | "stopped" | "failed" | "completed";
+        startIndex: number;
+        total: number;
+        done: number;
+        lastError?: string;
+      }
+    | null
   >(null);
+  const batchStopRequestedRef = useRef<boolean>(false);
   const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
   const [draggingChapterId, setDraggingChapterId] = useState<string | null>(null);
   const [researchQuery, setResearchQuery] = useState<string>("");
@@ -1240,7 +1248,7 @@ export default function Home() {
   async function runPipeline(
     kind: string,
     extra: Record<string, unknown> = {},
-  ): Promise<{ ok: boolean }> {
+  ): Promise<{ ok: boolean; error?: string }> {
     if (!selectedProjectId) return { ok: false };
     const projectId = selectedProjectId;
     setRunError(null);
@@ -1254,6 +1262,7 @@ export default function Home() {
     setOutline(null);
 
     let sawRunError = false;
+    let lastError: string | null = null;
     try {
       // Ensure any in-flight Settings/Secrets save completes before starting a run,
       // otherwise the backend may start with stale provider/model/base_url.
@@ -1314,6 +1323,7 @@ export default function Home() {
                   ? evt.data.error
                   : "unknown_error";
               const agent = evt.agent ? formatAgentName(evt.agent) : "Director";
+              lastError = `${agent}: ${err}`;
               setRunError(`${agent}: ${err}`);
             }
             if (
@@ -1346,18 +1356,41 @@ export default function Home() {
       setActiveRunKind(null);
       setActiveRunId(null);
     }
-    return { ok: !sawRunError };
+    return { ok: !sawRunError, error: lastError ?? undefined };
   }
 
-  async function runBatchWriteChapters() {
+  async function runBatchWriteChapters(
+    opts: { startIndex?: number; total?: number } = {},
+  ) {
     if (!selectedProjectId) return;
-    const totalRaw = Number(writeChapterCount);
+    if (!outlineChapters) {
+      setRunError(
+        lang === "zh"
+          ? "批量写章需要【已保存的大纲】。请先在「大纲编辑」保存/导入大纲，或先点击「生成大纲」。"
+          : "Batch writing requires a saved outline. Please save/import an outline first (or generate one).",
+      );
+      return;
+    }
+
+    const startIndex = Math.max(
+      1,
+      Number.isFinite(opts.startIndex) ? Number(opts.startIndex) : chapterIndex,
+    );
+    const totalRaw = Number(opts.total ?? writeChapterCount);
     const total = Math.max(1, Math.min(10, Number.isFinite(totalRaw) ? totalRaw : 1));
 
-    setBatchWritingProgress({ total, done: 0 });
-    try {
-      for (let i = 0; i < total; i += 1) {
-        const idx = Math.max(1, chapterIndex + i);
+    batchStopRequestedRef.current = false;
+    setBatchWriting({ status: "running", startIndex, total, done: 0 });
+
+    let done = 0;
+    for (let i = 0; i < total; i += 1) {
+      if (batchStopRequestedRef.current) {
+        setBatchWriting({ status: "stopped", startIndex, total, done });
+        return;
+      }
+
+      const idx = Math.max(1, startIndex + i);
+      try {
         const r = await runPipeline("chapter", {
           chapter_index: idx,
           research_query: researchQuery.trim() || undefined,
@@ -1365,12 +1398,33 @@ export default function Home() {
           // repeated Outliner calls (more stable + won't overwrite the outline draft).
           skip_outliner: true,
         });
-        setBatchWritingProgress({ total, done: i + 1 });
-        if (!r.ok) break;
+        if (!r.ok) {
+          setBatchWriting({
+            status: "failed",
+            startIndex,
+            total,
+            done,
+            lastError: r.error ?? undefined,
+          });
+          return;
+        }
+      } catch (e) {
+        setBatchWriting({
+          status: "failed",
+          startIndex,
+          total,
+          done,
+          lastError: (e as Error).message,
+        });
+        return;
       }
-    } finally {
-      setBatchWritingProgress(null);
+
+      done = i + 1;
+      setBatchWriting({ status: "running", startIndex, total, done });
+      setChapterIndex(idx + 1);
     }
+
+    setBatchWriting({ status: "completed", startIndex, total, done });
   }
 
   async function addKbChunk() {
@@ -2882,7 +2936,8 @@ export default function Home() {
                               runInProgress ||
                               settingsSaving ||
                               secretsSaving ||
-                              !!batchWritingProgress
+                              batchWriting?.status === "running"
+                              || batchWriting?.status === "stopping"
                             }
                             onClick={() => {
                               runPipeline("chapter", {
@@ -2903,7 +2958,8 @@ export default function Home() {
                               runInProgress ||
                               settingsSaving ||
                               secretsSaving ||
-                              !!batchWritingProgress
+                              batchWriting?.status === "running"
+                              || batchWriting?.status === "stopping"
                             }
                             onClick={() => {
                               runBatchWriteChapters().catch((e) =>
@@ -2912,8 +2968,8 @@ export default function Home() {
                             }}
                             className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                           >
-                            {batchWritingProgress
-                              ? `${tt("batch_writing")} (${batchWritingProgress.done}/${batchWritingProgress.total})`
+                            {batchWriting?.status === "running"
+                              ? `${tt("batch_writing")} (${batchWriting.done}/${batchWriting.total})`
                               : lang === "zh"
                                 ? `批量写 ${writeChapterCount} 章`
                                 : `Write ${writeChapterCount} chapters`}
@@ -2922,6 +2978,99 @@ export default function Home() {
                             {tt("uses_settings")}
                           </span>
                         </div>
+                        {batchWriting ? (
+                          <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] dark:border-zinc-800">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-[var(--ui-muted)]">
+                                {lang === "zh"
+                                  ? `批量状态：${batchWriting.status}（${batchWriting.done}/${batchWriting.total}）`
+                                  : `Batch: ${batchWriting.status} (${batchWriting.done}/${batchWriting.total})`}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                {batchWriting.status === "running" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      batchStopRequestedRef.current = true;
+                                      setBatchWriting((prev) =>
+                                        prev && prev.status === "running"
+                                          ? { ...prev, status: "stopping" }
+                                          : prev,
+                                      );
+                                    }}
+                                    className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-surface)] dark:border-zinc-800"
+                                    title={
+                                      lang === "zh"
+                                        ? "会在当前章节完成后停止"
+                                        : "Stops after the current chapter finishes"
+                                    }
+                                  >
+                                    {lang === "zh" ? "停止批量" : "Stop"}
+                                  </button>
+                                ) : batchWriting.status === "stopping" ? (
+                                  <button
+                                    type="button"
+                                    disabled
+                                    className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] opacity-60 dark:border-zinc-800"
+                                    title={
+                                      lang === "zh"
+                                        ? "会在当前章节完成后停止"
+                                        : "Stops after the current chapter finishes"
+                                    }
+                                  >
+                                    {lang === "zh" ? "停止中…" : "Stopping…"}
+                                  </button>
+                                ) : null}
+                                {(batchWriting.status === "stopped" ||
+                                  batchWriting.status === "failed") &&
+                                batchWriting.done < batchWriting.total ? (
+                                  <button
+                                    type="button"
+                                    disabled={runInProgress || settingsSaving || secretsSaving}
+                                    onClick={() => {
+                                      // Resume remaining chapters from the next index.
+                                      const nextIndex = Math.max(
+                                        1,
+                                        batchWriting.startIndex + batchWriting.done,
+                                      );
+                                      const remaining = Math.max(
+                                        1,
+                                        batchWriting.total - batchWriting.done,
+                                      );
+                                      setChapterIndex(nextIndex);
+                                      setWriteChapterCount(remaining);
+                                      runBatchWriteChapters({
+                                        startIndex: nextIndex,
+                                        total: remaining,
+                                      }).catch((e) => setRunError((e as Error).message));
+                                    }}
+                                    className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                                  >
+                                    {lang === "zh" ? "继续剩余" : "Resume"}
+                                  </button>
+                                ) : null}
+                                {batchWriting.status !== "running" &&
+                                batchWriting.status !== "stopping" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setBatchWriting(null);
+                                      batchStopRequestedRef.current = false;
+                                    }}
+                                    className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-surface)] dark:border-zinc-800"
+                                  >
+                                    {lang === "zh" ? "清除" : "Clear"}
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                            {batchWriting.lastError ? (
+                              <div className="mt-2 text-red-600 dark:text-red-400">
+                                {batchWriting.lastError}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div className="mt-2 text-xs text-[var(--ui-muted)]">
                           {tt("batch_write_chapters_hint")}
                         </div>
