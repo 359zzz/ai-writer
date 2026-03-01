@@ -482,3 +482,97 @@ def test_book_summarize_persists_kb_chunks(monkeypatch: pytest.MonkeyPatch) -> N
         assert chunks.status_code == 200
         listed = chunks.json()
         assert any(it.get("source_type") == "book_summary" for it in listed)
+
+
+def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    v1.11 regression test:
+    - book_compile should compile existing book_summary KB chunks into a book_state chunk.
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        if "BookCompilerAgent" in system_prompt:
+            return json.dumps(
+                {
+                    "book_summary": "demo",
+                    "style_profile": {"pov": "third", "tense": "past", "tone": "neutral", "genre": "fiction"},
+                    "world": "demo",
+                    "character_cards": [
+                        {
+                            "name": "Alice",
+                            "role": "protagonist",
+                            "traits": "brave",
+                            "relationships": "none",
+                            "current_status": "ok",
+                            "arc": "demo",
+                        }
+                    ],
+                    "timeline": [{"when": "Day 1", "event": "demo"}],
+                    "open_loops": ["mystery"],
+                    "continuation_seed": {"where_to_resume": "end", "next_scene": "demo", "constraints": []},
+                },
+                ensure_ascii=True,
+            )
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Book Compile Test"}).json()
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
+            json={"text": ("hello world. " * 200) + "\n" + ("more text. " * 200), "filename": "book.txt"},
+        ).json()
+        sid = src["source_id"]
+
+        # Seed some book_summary KB chunks (as if book_summarize already ran).
+        for i in (1, 2, 3):
+            created = client.post(
+                f"/api/projects/{p['id']}/kb/chunks",
+                json={
+                    "title": f"sum {i}",
+                    "content": json.dumps(
+                        {
+                            "book_source_id": sid,
+                            "chunk_index": i,
+                            "start_char": (i - 1) * 1000,
+                            "data": {"summary": f"demo {i}", "key_events": [], "characters": []},
+                        },
+                        ensure_ascii=True,
+                    ),
+                    "source_type": "book_summary",
+                    "tags": [f"book_source:{sid}", f"book_chunk:{i}"],
+                },
+            )
+            assert created.status_code == 200
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={"kind": "book_compile", "source_id": sid},
+        ) as res:
+            assert res.status_code == 200
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+        assert any(
+            e.get("type") == "artifact"
+            and e.get("agent") == "BookCompiler"
+            and (e.get("data") or {}).get("artifact_type") == "book_state"
+            for e in events
+        )
+
+        chunks = client.get(f"/api/projects/{p['id']}/kb/chunks")
+        assert chunks.status_code == 200
+        listed = chunks.json()
+        assert any(it.get("source_type") == "book_state" for it in listed)

@@ -382,6 +382,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             created = 0
             failed = 0
             processed = 0
+            skipped = 0
 
             summarizer_cfg = replace(
                 llm_cfg(),
@@ -389,12 +390,43 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 max_tokens=summary_max_tokens,
             )
 
+            existing_chunk_indices: set[int] = set()
+            if not replace_existing:
+                try:
+                    with get_session() as s_exist:
+                        existing_rows = list(
+                            s_exist.exec(
+                                select(KBChunk).where(
+                                    KBChunk.project_id == project_id,
+                                    KBChunk.source_type == "book_summary",
+                                    KBChunk.tags.like(f"%book_source:{source_id}%"),
+                                )
+                            )
+                        )
+                    for row in existing_rows:
+                        m = re.search(r"(?:^|,|\\s)book_chunk:(\\d+)(?:$|,|\\s)", row.tags or "")
+                        if m:
+                            try:
+                                existing_chunk_indices.add(int(m.group(1)))
+                            except Exception:
+                                continue
+                except Exception:
+                    existing_chunk_indices = set()
+
             for idx, start_char, chunk_text in iter_text_chunks(
                 path=src.text_path,
                 chunk_chars=chunk_chars,
                 overlap_chars=overlap_chars,
                 max_chunks=max_chunks,
             ):
+                if idx in existing_chunk_indices:
+                    skipped += 1
+                    yield emit(
+                        "agent_output",
+                        "BookSummarizer",
+                        {"chunk_index": idx, "skipped": True, "reason": "already_summarized"},
+                    )
+                    continue
                 processed += 1
                 snippet = (chunk_text or "").strip()
                 if not snippet:
@@ -510,6 +542,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "processed": processed,
                     "created": created,
                     "failed": failed,
+                    "skipped": skipped,
                     "params": {
                         "chunk_chars": chunk_chars,
                         "overlap_chars": overlap_chars,
@@ -526,6 +559,268 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 mark_run_failed(msg)
                 yield emit("run_completed", "Director", {})
                 return
+
+            mark_run_completed()
+            yield emit("run_completed", "Director", {})
+            return
+
+        if kind == "book_compile":
+            source_id = str(payload.get("source_id") or payload.get("book_source_id") or "").strip()
+            if not source_id:
+                msg = "source_id_required"
+                yield emit("run_error", "BookCompiler", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            try:
+                src = load_continue_source(source_id)
+            except ContinueSourceError as e:
+                msg = f"continue_source_load_failed:{str(e)}"
+                yield emit("run_error", "BookCompiler", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            filename = str((src.meta or {}).get("filename") or "").strip() or "book"
+            filename_tag = filename.replace(",", " ").strip()[:64]
+
+            with get_session() as s_sum:
+                rows = list(
+                    s_sum.exec(
+                        select(KBChunk).where(
+                            KBChunk.project_id == project_id,
+                            KBChunk.source_type == "book_summary",
+                            KBChunk.tags.like(f"%book_source:{source_id}%"),
+                        )
+                    )
+                )
+
+            if not rows:
+                msg = "book_compile_requires_book_summaries"
+                yield emit("run_error", "BookCompiler", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            def _safe_list(v: object, max_items: int = 8) -> list[str]:
+                if not isinstance(v, list):
+                    return []
+                out: list[str] = []
+                for x in v[: max(0, int(max_items))]:
+                    if isinstance(x, str) and x.strip():
+                        out.append(x.strip())
+                return out
+
+            def _safe_str(v: object, max_len: int = 600) -> str:
+                if not isinstance(v, str):
+                    return ""
+                s = v.strip()
+                if len(s) > max_len:
+                    s = s[: max_len].rstrip() + "…"
+                return s
+
+            summaries: list[dict[str, Any]] = []
+            for r in rows:
+                idx: int | None = None
+                m = re.search(r"(?:^|,|\\s)book_chunk:(\\d+)(?:$|,|\\s)", r.tags or "")
+                if m:
+                    try:
+                        idx = int(m.group(1))
+                    except Exception:
+                        idx = None
+                start_char: int | None = None
+                data_summary: dict[str, Any] | None = None
+                try:
+                    obj = json.loads(r.content)
+                    if isinstance(obj, dict):
+                        if idx is None and obj.get("chunk_index") is not None:
+                            try:
+                                idx = int(obj.get("chunk_index") or 0) or None
+                            except Exception:
+                                idx = None
+                        if obj.get("start_char") is not None:
+                            try:
+                                start_char = int(obj.get("start_char") or 0)
+                            except Exception:
+                                start_char = None
+                        if isinstance(obj.get("data"), dict):
+                            data_summary = obj.get("data")  # type: ignore[assignment]
+                except Exception:
+                    data_summary = None
+
+                if idx is None:
+                    continue
+
+                if isinstance(data_summary, dict):
+                    summaries.append(
+                        {
+                            "chunk_index": idx,
+                            "start_char": start_char,
+                            "summary": _safe_str(data_summary.get("summary"), 900),
+                            "key_events": _safe_list(data_summary.get("key_events"), 10),
+                            "characters": _safe_list(data_summary.get("characters"), 12),
+                            "locations": _safe_list(data_summary.get("locations"), 10),
+                            "timeline": _safe_list(data_summary.get("timeline"), 10),
+                            "open_loops": _safe_list(data_summary.get("open_loops"), 10),
+                        }
+                    )
+                else:
+                    summaries.append(
+                        {
+                            "chunk_index": idx,
+                            "start_char": start_char,
+                            "summary": _safe_str(r.content, 900),
+                            "key_events": [],
+                            "characters": [],
+                            "locations": [],
+                            "timeline": [],
+                            "open_loops": [],
+                        }
+                    )
+
+            summaries.sort(key=lambda x: int(x.get("chunk_index") or 0))
+            total = len(summaries)
+            if total <= 0:
+                msg = "book_compile_no_valid_summaries"
+                yield emit("run_error", "BookCompiler", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            # Prompt size guard: include the beginning + ending to cover introductions and the latest state.
+            selected: list[dict[str, Any]] = summaries
+            selection_note = "all"
+            if total > 80:
+                selected = summaries[:20] + summaries[-60:]
+                selection_note = "first_20_plus_last_60"
+
+            yield emit(
+                "agent_started",
+                "BookCompiler",
+                {
+                    "source_id": source_id,
+                    "filename": filename,
+                    "total_summaries": total,
+                    "used_summaries": len(selected),
+                    "selection": selection_note,
+                },
+            )
+
+            compiler_cfg0 = llm_cfg()
+            compiler_cfg = replace(
+                compiler_cfg0,
+                temperature=0.2,
+                max_tokens=max(400, min(int(compiler_cfg0.max_tokens or 900), 1400)),
+            )
+            yield emit(
+                "tool_call",
+                "BookCompiler",
+                {
+                    "tool": "llm.generate_text",
+                    "provider": compiler_cfg.provider,
+                    "model": compiler_cfg.model,
+                    "max_tokens": compiler_cfg.max_tokens,
+                },
+            )
+
+            system = (
+                "You are BookCompilerAgent. Compile a long book's chunk summaries into a compact state for continuation. "
+                f"{lang_hint_json} "
+                "Return JSON only. Do NOT include chain-of-thought. "
+                "Schema:\n"
+                "{\n"
+                '  "book_summary": "...",\n'
+                '  "style_profile": {"pov":"...","tense":"...","tone":"...","genre":"..."},\n'
+                '  "world": "...",\n'
+                '  "character_cards": [ {"name":"...","role":"...","traits":"...","relationships":"...","current_status":"...","arc":"..."} ],\n'
+                '  "timeline": [ {"when":"...","event":"..."} ],\n'
+                '  "open_loops": ["..."],\n'
+                '  "continuation_seed": {"where_to_resume":"...","next_scene":"...","constraints":["..."]}\n'
+                "}\n"
+            )
+            user = (
+                f"Book filename: {filename}\n"
+                f"Book source_id: {source_id}\n"
+                f"Chunk summaries available: {total}\n"
+                f"Included in this compile: {len(selected)} (selection={selection_note})\n\n"
+                "ChunkSummariesJSON:\n"
+                f"{json_dumps(selected)}\n"
+            )
+
+            try:
+                out = await generate_text(system_prompt=system, user_prompt=user, cfg=compiler_cfg)
+            except LLMError as e:
+                msg = str(e)
+                yield emit("run_error", "BookCompiler", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+            except Exception as e:
+                msg = f"book_compile_failed:{type(e).__name__}"
+                yield emit("run_error", "BookCompiler", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            cleaned = strip_think_blocks(out).strip()
+            parsed = parse_json_loose(cleaned)
+            state: dict[str, Any]
+            if isinstance(parsed, dict):
+                state = parsed
+            else:
+                state = {"text": cleaned}
+
+            record = {
+                "book_source_id": source_id,
+                "filename": filename,
+                "compiled_at": _now_utc().isoformat(),
+                "selection": {"total": total, "used": len(selected), "strategy": selection_note},
+                "state": state,
+            }
+
+            tags = [f"book_source:{source_id}", "book_state"]
+            if filename_tag:
+                tags.append(f"book_file:{filename_tag}")
+            kb_tags = ",".join(tags)
+
+            title = (
+                f"书籍状态（{filename[:40]}）" if output_lang == "zh" else f"Book state ({filename[:40]})"
+            )
+            with get_session() as s_state:
+                kb = KBChunk(
+                    project_id=project_id,
+                    source_type="book_state",
+                    title=title,
+                    content=json_dumps(record),
+                    tags=kb_tags,
+                )
+                s_state.add(kb)
+                s_state.commit()
+                s_state.refresh(kb)
+
+            preview = ""
+            if isinstance(state, dict):
+                bs = state.get("book_summary")
+                if isinstance(bs, str):
+                    preview = bs.strip()
+            if not preview:
+                preview = cleaned.replace("\n", " ").strip()
+            if len(preview) > 240:
+                preview = preview[:240].rstrip() + "…"
+
+            yield emit(
+                "artifact",
+                "BookCompiler",
+                {
+                    "artifact_type": "book_state",
+                    "source_id": source_id,
+                    "kb_chunk_id": kb.id,
+                    "state": state,
+                    "preview": preview,
+                },
+            )
+            yield emit("agent_finished", "BookCompiler", {"kb_chunk_id": kb.id})
 
             mark_run_completed()
             yield emit("run_completed", "Director", {})

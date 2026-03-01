@@ -325,3 +325,12 @@ Versioning policy (from v1.0.x onward):
   - 总结完成后展示入库统计，并提供快捷按钮跳转到「创作 → 背景设定」查看知识库条目。
 - Tests:
   - Added regressions for `book_index` tool endpoint and `book_summarize` run kind.
+
+### v1.11.0 (Book Continue: Compile Book State + Resumable Summaries)
+- API:
+  - Runs: 新增 `kind=book_compile`：把已入库的 `book_summary` 分片总结编译为“书籍状态”（世界观/角色卡/时间线/悬念/续写起点），写入 KB（`source_type=book_state`）。
+  - `book_summarize` 支持断点续跑：`replace_existing=false` 时会跳过已存在的分片总结（避免重复入库与重复调用）。
+- Web → 续写 → 书籍续写:
+  - “总结入库（LLM）”旁新增“编译书籍状态（LLM）”，并在页面内展示编译结果预览与 KB 编号。
+- Tests:
+  - Added regression test for `book_compile` run kind.

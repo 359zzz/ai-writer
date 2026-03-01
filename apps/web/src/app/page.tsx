@@ -118,6 +118,13 @@ type BookSummarizeStats = {
   params?: Record<string, unknown>;
 };
 
+type BookStateArtifact = {
+  source_id: string;
+  kb_chunk_id: number;
+  state: unknown;
+  preview?: string;
+};
+
 const PROJECT_ORDER_KEY = "ai-writer:project_order:v1";
 
 function loadProjectOrder(): string[] {
@@ -401,6 +408,7 @@ export default function Home() {
     useState<boolean>(true);
   const [bookSummarizeStats, setBookSummarizeStats] =
     useState<BookSummarizeStats | null>(null);
+  const [bookState, setBookState] = useState<BookStateArtifact | null>(null);
   const [outlinePaneError, setOutlinePaneError] = useState<string | null>(null);
   const [outlineDraft, setOutlineDraft] = useState<OutlineBlock[]>([]);
   const [outlineDraftProjectId, setOutlineDraftProjectId] = useState<string | null>(
@@ -474,6 +482,8 @@ export default function Home() {
       Researcher: "检索",
       WebSearch: "联网搜索",
       Retriever: "检索器",
+      BookSummarizer: "书籍总结",
+      BookCompiler: "书籍编译",
     };
     const zh = map[agent];
     return zh ? `${zh}（${agent}）` : agent;
@@ -492,6 +502,8 @@ export default function Home() {
       Researcher: "#06B6D4",
       WebSearch: "#64748B",
       Retriever: "#64748B",
+      BookSummarizer: "#A855F7",
+      BookCompiler: "#06B6D4",
     };
     return palette[a] ?? "rgba(120,120,120,0.35)";
   };
@@ -513,6 +525,8 @@ export default function Home() {
       outline: "大纲",
       chapter: "章节",
       continue: "续写",
+      book_summarize: "书籍总结入库",
+      book_compile: "书籍编译",
     };
     return map[kind] ?? kind;
   };
@@ -1317,6 +1331,9 @@ export default function Home() {
     if (kind === "book_summarize") {
       setBookSummarizeStats(null);
     }
+    if (kind === "book_compile") {
+      setBookState(null);
+    }
 
     let sawRunError = false;
     let lastError: string | null = null;
@@ -1437,6 +1454,25 @@ export default function Home() {
                   evt.data.params && typeof evt.data.params === "object"
                     ? (evt.data.params as Record<string, unknown>)
                     : undefined,
+              });
+            }
+            if (
+              evt.type === "artifact" &&
+              evt.agent === "BookCompiler" &&
+              evt.data.artifact_type === "book_state"
+            ) {
+              const sid =
+                typeof evt.data.source_id === "string" ? evt.data.source_id : "";
+              const kbIdRaw = evt.data.kb_chunk_id;
+              const kb_chunk_id =
+                typeof kbIdRaw === "number" ? kbIdRaw : Number(kbIdRaw ?? 0);
+              const preview =
+                typeof evt.data.preview === "string" ? evt.data.preview : undefined;
+              setBookState({
+                source_id: sid,
+                kb_chunk_id: Number.isFinite(kb_chunk_id) ? kb_chunk_id : 0,
+                state: evt.data.state,
+                preview,
               });
             }
           } catch {
@@ -2064,6 +2100,10 @@ export default function Home() {
     setBookInputText("");
     setBookSourceError(null);
     setBookSourceToken((x) => x + 1);
+    setBookIndex(null);
+    setBookIndexError(null);
+    setBookSummarizeStats(null);
+    setBookState(null);
   }
 
   async function uploadContinueFile(file: File): Promise<string> {
@@ -2148,6 +2188,7 @@ export default function Home() {
       setBookIndex(null);
       setBookIndexError(null);
       setBookSummarizeStats(null);
+      setBookState(null);
       return sid;
     } finally {
       setBookSourceLoading(false);
@@ -2277,6 +2318,7 @@ export default function Home() {
       setBookIndex(null);
       setBookIndexError(null);
       setBookSummarizeStats(null);
+      setBookState(null);
       return sid;
     } finally {
       setBookSourceLoading(false);
@@ -2358,6 +2400,7 @@ export default function Home() {
         "Editor",
       ],
       book_summarize: ["BookSummarizer"],
+      book_compile: ["BookCompiler"],
     };
 
     const plan = expectedAgents[activeRunKind] ?? [];
@@ -4784,8 +4827,8 @@ export default function Home() {
                       </div>
                       <div className="mt-2 text-xs text-[var(--ui-muted)]">
                         {lang === "zh"
-                          ? "当前仅用于保存书籍源与预览（txt/json）。后续会在此基础上做分片/总结/角色卡/时间线等长文本流程。"
-                          : "For now this stores the book source and lets you preview it (txt/json). Next versions will add chunking/summaries/character cards/timeline."}
+                          ? "现支持：上传书籍源（txt/json）→ 预览截取 → 分片索引 → 总结入库 → 编译书籍状态（角色卡/时间线）。下一步会在此基础上做“书籍续写”。"
+                          : "Now supports: upload (txt/json) → sliced preview → chunk index → chunk summaries into KB → compile book state (character cards/timeline). Next: full book continuation."}
                       </div>
 
                       <div
@@ -5122,6 +5165,30 @@ export default function Home() {
                           >
                             {lang === "zh" ? "总结入库（LLM）" : "Summarize into KB (LLM)"}
                           </button>
+                          <button
+                            type="button"
+                            disabled={
+                              !bookSourceId ||
+                              runInProgress ||
+                              settingsSaving ||
+                              secretsSaving
+                            }
+                            onClick={() => {
+                              if (!bookSourceId) return;
+                              runPipeline("book_compile", { source_id: bookSourceId })
+                                .then((r) => {
+                                  if (r.ok) {
+                                    refreshKbChunks().catch(() => {
+                                      // ignore
+                                    });
+                                  }
+                                })
+                                .catch((e) => setRunError((e as Error).message));
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {lang === "zh" ? "编译书籍状态（LLM）" : "Compile book state (LLM)"}
+                          </button>
                           <label className="flex items-center gap-2 text-xs text-[var(--ui-muted)]">
                             <input
                               type="checkbox"
@@ -5136,11 +5203,12 @@ export default function Home() {
                           </label>
                           <button
                             type="button"
-                            disabled={!bookIndex && !bookSummarizeStats}
+                            disabled={!bookIndex && !bookSummarizeStats && !bookState}
                             onClick={() => {
                               setBookIndex(null);
                               setBookIndexError(null);
                               setBookSummarizeStats(null);
+                              setBookState(null);
                             }}
                             className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
                           >
@@ -5169,6 +5237,37 @@ export default function Home() {
                                   setCreatePane("background");
                                 }}
                                 className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
+                              >
+                                {lang === "zh"
+                                  ? "去背景设定查看知识库"
+                                  : "Open KB (Background)"}
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {bookState ? (
+                          <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] dark:border-zinc-800">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-[var(--ui-muted)]">
+                                  {lang === "zh"
+                                    ? `书籍状态已编译（KB#${bookState.kb_chunk_id}）`
+                                    : `Book state compiled (KB#${bookState.kb_chunk_id})`}
+                                </div>
+                                {bookState.preview ? (
+                                  <div className="mt-2 whitespace-pre-wrap text-[11px] text-[var(--ui-muted)]">
+                                    {bookState.preview}
+                                  </div>
+                                ) : null}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTab("create");
+                                  setCreatePane("background");
+                                }}
+                                className="shrink-0 rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
                               >
                                 {lang === "zh"
                                   ? "去背景设定查看知识库"
