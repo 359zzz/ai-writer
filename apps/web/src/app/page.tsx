@@ -284,10 +284,7 @@ function loadOutlineBlocksFromProject(p: Project | null): OutlineBlock[] {
   return toOutlineBlocks(normalizeOutline(chapters));
 }
 
-function loadOutlineGraphFromProject(p: Project | null): OutlineGraph | null {
-  const settings = p?.settings as Record<string, unknown> | undefined;
-  const story = settings?.story as Record<string, unknown> | undefined;
-  const raw = story?.outline_graph as unknown;
+function coerceOutlineGraph(raw: unknown): OutlineGraph | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
   const nodesRaw = Array.isArray(rec.nodes) ? rec.nodes : [];
@@ -359,6 +356,13 @@ function loadOutlineGraphFromProject(p: Project | null): OutlineGraph | null {
     nodes: nodes as unknown as OutlineGraph["nodes"],
     edges: edges as unknown as OutlineGraph["edges"],
   };
+}
+
+function loadOutlineGraphFromProject(p: Project | null): OutlineGraph | null {
+  const settings = p?.settings as Record<string, unknown> | undefined;
+  const story = settings?.story as Record<string, unknown> | undefined;
+  const raw = story?.outline_graph as unknown;
+  return coerceOutlineGraph(raw);
 }
 
 function outlineGraphFromBlocks(blocks: OutlineBlock[]): OutlineGraph {
@@ -464,6 +468,7 @@ export default function Home() {
   const pendingSecretsSaveRef = useRef<Promise<void> | null>(null);
   const pendingProjectSettingsSaveRef = useRef<Promise<void> | null>(null);
   const outlineFileInputRef = useRef<HTMLInputElement | null>(null);
+  const outlineMindmapFileInputRef = useRef<HTMLInputElement | null>(null);
   const bookFileInputRef = useRef<HTMLInputElement | null>(null);
   const [runEvents, setRunEvents] = useState<
     Array<{
@@ -2342,6 +2347,62 @@ export default function Home() {
     setOutlineDraftProjectId(selectedProjectId);
     setOutlineGraphDirty(false);
     setOutlineGraphProjectId(selectedProjectId);
+  }
+
+  function exportOutlineMindmap() {
+    if (!outlineGraphDraft) return;
+    downloadTextFile(
+      "outline_mindmap.json",
+      JSON.stringify(outlineGraphDraft, null, 2),
+      "application/json",
+    );
+  }
+
+  async function importOutlineMindmapFile(file: File) {
+    if (!selectedProjectId) return;
+    setOutlinePaneError(null);
+    const raw = await file.text();
+    const parsed = JSON.parse(raw) as unknown;
+    const g = coerceOutlineGraph(parsed);
+    if (!g) {
+      throw new Error("mindmap_import_failed:invalid_graph");
+    }
+    setOutlineGraphDraft(g);
+    setOutlineGraphDirty(true);
+    setOutlineGraphProjectId(selectedProjectId);
+    setOutlineEditorMode("mindmap");
+  }
+
+  function autoOrderMindmapChapters() {
+    if (!outlineGraphDraft) return;
+    const chapters = outlineGraphDraft.nodes
+      .filter((n) => n?.data?.kind === "chapter")
+      .sort((a, b) => (a.position?.y ?? 0) - (b.position?.y ?? 0));
+    if (chapters.length === 0) return;
+
+    const chapterIds = new Set(chapters.map((n) => n.id));
+    const posById = new Map<string, { x: number; y: number }>();
+    const orderById = new Map<string, number>();
+    chapters.forEach((n, i) => {
+      posById.set(n.id, { x: 40, y: 40 + i * 140 });
+      orderById.set(n.id, i + 1);
+    });
+
+    const next = {
+      ...outlineGraphDraft,
+      nodes: outlineGraphDraft.nodes.map((n) => {
+        if (!chapterIds.has(n.id)) return n;
+        const pos = posById.get(n.id);
+        const order = orderById.get(n.id);
+        return {
+          ...n,
+          position: pos ?? n.position,
+          data: { ...n.data, order: order ?? n.data.order },
+        };
+      }),
+    };
+    setOutlineGraphDraft(next);
+    setOutlineGraphDirty(true);
   }
 
   async function searchKb() {
@@ -5086,6 +5147,44 @@ export default function Home() {
                                   {lang === "zh"
                                     ? "从草稿生成导图"
                                     : "From blocks → mindmap"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={settingsSaving}
+                                  onClick={() => outlineMindmapFileInputRef.current?.click()}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                                >
+                                  {lang === "zh" ? "导入 JSON" : "Import JSON"}
+                                </button>
+                                <input
+                                  ref={outlineMindmapFileInputRef}
+                                  type="file"
+                                  accept=".json,application/json"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    e.currentTarget.value = "";
+                                    if (!f) return;
+                                    importOutlineMindmapFile(f).catch((err) =>
+                                      setOutlinePaneError((err as Error).message),
+                                    );
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  disabled={!outlineGraphDraft}
+                                  onClick={() => exportOutlineMindmap()}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                                >
+                                  {lang === "zh" ? "导出 JSON" : "Export JSON"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!outlineGraphDraft}
+                                  onClick={() => autoOrderMindmapChapters()}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                                >
+                                  {lang === "zh" ? "章节排序" : "Auto order"}
                                 </button>
                                 <button
                                   type="button"

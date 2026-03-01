@@ -376,6 +376,12 @@ Versioning policy (from v1.0.x onward):
 - Web:
   - 全局样式引入 `@xyflow/react/dist/style.css`（保证控件/连线样式稳定）。
 
+### v1.13.1 (OutlineGraph: Import/Export + Chapter Auto-Order)
+- Web → 创作 → 大纲编辑（导图模式）:
+  - 支持导图 `JSON` 导入/导出（`outline_mindmap.json`）。
+  - 新增“章节排序”：按当前节点 Y 坐标对章节节点自动编号，并顺带整理章节节点布局（更利于 `导图 → 草稿` 转换）。
+  - 导图 JSON 有更稳健的解析/校验（避免非法数据导致页面崩溃）。
+
 ---
 
 ### Roadmap (Planned, Living Doc)
@@ -397,11 +403,6 @@ Versioning policy (from v1.0.x onward):
 - 关键差异：MiroFish 的任务管理是内存为主；本项目以本地单机为目标，优先做 SQLite 持久化与断点续跑（更贴合“百万字级”使用场景）。
 
 #### Planned Versions (Post v1.12.1 → v2.0.0)
-- v1.13.1 (OutlineGraph: UX + Conversion Polish)
-  - 编辑体验：多选/框选、快捷键、对齐/吸附、自动排版（可选引入 `dagre`）。
-  - 边能力：边类型/标签/权重（用于导出与后续生成控制）。
-  - 转换稳健性：更好的层级解析与导出规则（避免“图→文→图”往返损失过大）。
-
 - v1.14.0 (Book: Chapter Split — Auto Draft)
   - 新增“章节分块”按钮：对书籍源做章节识别，产出 `chapter_index`（每章 start/end + 标题/编号 + 预览）。
   - 规则优先：识别“第X章/回/卷”等标题；LLM 仅用于规则低置信度场景的兜底。
