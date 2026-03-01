@@ -409,3 +409,76 @@ def test_editor_suspicious_output_fallbacks_to_writer(monkeypatch: pytest.Monkey
     assert isinstance(md, str)
     # Should fall back to Writer output (long), not keep the short Editor output.
     assert len(md) >= len(writer_md) * 0.8
+
+
+def test_book_summarize_persists_kb_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    v1.10 regression test:
+    - book_summarize should chunk a stored book source and persist summaries into KB.
+    - It should emit a final stats artifact and complete the run when at least
+      one chunk is summarized successfully.
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        if "BookSummarizerAgent" in system_prompt:
+            return json.dumps(
+                {
+                    "summary": "demo",
+                    "key_events": ["event"],
+                    "characters": ["Alice"],
+                    "locations": ["Town"],
+                    "timeline": ["Day 1"],
+                    "open_loops": ["mystery"],
+                },
+                ensure_ascii=True,
+            )
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Book Sum Test"}).json()
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
+            json={"text": ("hello world. " * 600) + "\n" + ("more text. " * 600), "filename": "book.txt"},
+        ).json()
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={
+                "kind": "book_summarize",
+                "source_id": src["source_id"],
+                "chunk_chars": 800,
+                "overlap_chars": 0,
+                "max_chunks": 5,
+                "replace_existing": True,
+            },
+        ) as res:
+            assert res.status_code == 200
+
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+        assert any(
+            e.get("type") == "artifact"
+            and e.get("agent") == "BookSummarizer"
+            and (e.get("data") or {}).get("artifact_type") == "book_summarize_stats"
+            and int(((e.get("data") or {}).get("created") or 0)) >= 1
+            for e in events
+        )
+
+        chunks = client.get(f"/api/projects/{p['id']}/kb/chunks")
+        assert chunks.status_code == 200
+        listed = chunks.json()
+        assert any(it.get("source_type") == "book_summary" for it in listed)

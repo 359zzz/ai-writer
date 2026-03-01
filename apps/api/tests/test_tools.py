@@ -87,3 +87,27 @@ def test_continue_source_text() -> None:
     body = res.json()
     assert isinstance(body.get("source_id"), str)
     assert "world" in (body.get("preview") or "")
+
+
+def test_continue_source_book_index() -> None:
+    with TestClient(app) as client:
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=tail&preview_chars=200",
+            json={"text": ("A" * 2200) + "\n" + ("B" * 2200), "filename": "book.txt"},
+        ).json()
+        sid = src["source_id"]
+
+        res = client.get(
+            f"/api/tools/continue_sources/{sid}/book_index?chunk_chars=500&overlap_chars=50&max_chunks=20&preview_chars=20"
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body.get("source_id") == sid
+        assert body.get("params", {}).get("chunk_chars") == 500
+        assert isinstance(body.get("chunks"), list)
+        assert body.get("total_chunks", 0) >= 3
+
+        first = body["chunks"][0]
+        assert first["index"] == 1
+        assert isinstance(first.get("preview_head"), str)
+        assert isinstance(first.get("preview_tail"), str)

@@ -15,7 +15,12 @@ from sqlmodel import select
 from ..db import ENGINE, get_session
 from ..llm import LLMError, parse_json_loose, resolve_llm_config, generate_text
 from ..models import Chapter, KBChunk, Project, Run, TraceEvent
-from ..tools.continue_sources import ContinueSourceError, load_continue_source_excerpt
+from ..tools.book_index import iter_text_chunks
+from ..tools.continue_sources import (
+    ContinueSourceError,
+    load_continue_source,
+    load_continue_source_excerpt,
+)
 from ..util import deep_merge, json_dumps, strip_think_blocks
 
 
@@ -148,6 +153,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
     - outline: generate outline (LLM)
     - chapter: write a chapter (LLM)
     - continue: extract story state + continue (LLM; minimal)
+    - book_summarize: chunk a stored book source and summarize chunks into local KB (LLM)
     """
     with get_session() as session:
         project = session.get(Project, project_id)
@@ -286,6 +292,245 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             return
 
         # ---- LLM-backed runs ----
+        if kind == "book_summarize":
+            source_id = str(payload.get("source_id") or payload.get("book_source_id") or "").strip()
+            if not source_id:
+                msg = "source_id_required"
+                yield emit("run_error", "BookSummarizer", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            try:
+                src = load_continue_source(source_id)
+            except ContinueSourceError as e:
+                msg = f"continue_source_load_failed:{str(e)}"
+                yield emit("run_error", "BookSummarizer", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            def clamp_int(v: object, default: int, lo: int, hi: int) -> int:
+                try:
+                    n = int(v)  # type: ignore[arg-type]
+                except Exception:
+                    n = int(default)
+                return max(int(lo), min(int(hi), int(n)))
+
+            chunk_chars = clamp_int(payload.get("chunk_chars"), 6000, 500, 30_000)
+            overlap_chars = clamp_int(payload.get("overlap_chars"), 400, 0, 10_000)
+            max_chunks = clamp_int(payload.get("max_chunks"), 200, 1, 2000)
+            summary_max_chars = clamp_int(payload.get("summary_chars"), 500, 120, 2000)
+            replace_existing = bool(payload.get("replace_existing", True))
+
+            # Keep max_tokens small; this is a batch process and should be cost-safe.
+            summary_max_tokens = clamp_int(
+                payload.get("summary_max_tokens"),
+                min(600, int(llm_cfg().max_tokens or 800)),
+                128,
+                1200,
+            )
+
+            filename = str((src.meta or {}).get("filename") or "").strip() or "book"
+            filename_tag = filename.replace(",", " ").strip()[:64]
+
+            def book_title(lang: str, idx: int) -> str:
+                if lang == "zh":
+                    return f"书籍分片总结 #{idx:03d}（{filename[:40]}）"
+                return f"Book chunk summary #{idx:03d} ({filename[:40]})"
+
+            def book_tags(idx: int) -> str:
+                parts = [f"book_source:{source_id}", f"book_chunk:{idx}"]
+                if filename_tag:
+                    parts.append(f"book_file:{filename_tag}")
+                return ",".join(parts)
+
+            if replace_existing:
+                # Best-effort cleanup: remove previous summaries for this book source.
+                # tags is a comma-separated string; use LIKE match on the stable prefix.
+                with ENGINE.connect() as conn:
+                    conn.execute(
+                        text(
+                            """
+                            DELETE FROM kb_chunk
+                            WHERE project_id = :project_id
+                              AND source_type = 'book_summary'
+                              AND tags LIKE :tag_pat;
+                            """
+                        ),
+                        {
+                            "project_id": project_id,
+                            "tag_pat": f"%book_source:{source_id}%",
+                        },
+                    )
+                    conn.commit()
+
+            yield emit(
+                "agent_started",
+                "BookSummarizer",
+                {
+                    "source_id": source_id,
+                    "chunk_chars": chunk_chars,
+                    "overlap_chars": overlap_chars,
+                    "max_chunks": max_chunks,
+                    "summary_chars": summary_max_chars,
+                    "replace_existing": replace_existing,
+                    "filename": filename,
+                },
+            )
+
+            created = 0
+            failed = 0
+            processed = 0
+
+            summarizer_cfg = replace(
+                llm_cfg(),
+                temperature=0.2,
+                max_tokens=summary_max_tokens,
+            )
+
+            for idx, start_char, chunk_text in iter_text_chunks(
+                path=src.text_path,
+                chunk_chars=chunk_chars,
+                overlap_chars=overlap_chars,
+                max_chunks=max_chunks,
+            ):
+                processed += 1
+                snippet = (chunk_text or "").strip()
+                if not snippet:
+                    continue
+
+                # Tool call record for trace.
+                yield emit(
+                    "tool_call",
+                    "BookSummarizer",
+                    {
+                        "tool": "llm.generate_text",
+                        "provider": summarizer_cfg.provider,
+                        "model": summarizer_cfg.model,
+                        "chunk_index": idx,
+                    },
+                )
+
+                system = (
+                    "You are BookSummarizerAgent. Summarize a chunk of a long manuscript for later continuation. "
+                    f"{lang_hint_json} "
+                    "Return JSON only. Keep strings concise; do NOT include any chain-of-thought. "
+                    "Schema:\n"
+                    "{\n"
+                    '  "summary": "...",\n'
+                    '  "key_events": ["..."],\n'
+                    '  "characters": ["..."],\n'
+                    '  "locations": ["..."],\n'
+                    '  "timeline": ["..."],\n'
+                    '  "open_loops": ["..."]\n'
+                    "}\n"
+                )
+                user = (
+                    f"Book filename: {filename}\n"
+                    f"Book source_id: {source_id}\n"
+                    f"Chunk index: {idx}\n"
+                    f"Chunk start_char: {start_char}\n"
+                    f"Chunk size chars: {len(snippet)}\n"
+                    "Note: chunks may include overlap with previous chunks. Focus on NEW information and avoid repetition.\n"
+                    f"Limit your JSON string fields to ~{summary_max_chars} chars each.\n\n"
+                    "ChunkText:\n"
+                    f"{snippet}\n"
+                )
+
+                try:
+                    out = await generate_text(system_prompt=system, user_prompt=user, cfg=summarizer_cfg)
+                except LLMError as e:
+                    failed += 1
+                    yield emit(
+                        "agent_output",
+                        "BookSummarizer",
+                        {"chunk_index": idx, "error": str(e), "soft_fail": True},
+                    )
+                    continue
+                except Exception as e:
+                    failed += 1
+                    yield emit(
+                        "agent_output",
+                        "BookSummarizer",
+                        {"chunk_index": idx, "error": f"llm_failed:{type(e).__name__}", "soft_fail": True},
+                    )
+                    continue
+
+                cleaned = strip_think_blocks(out).strip()
+                parsed = parse_json_loose(cleaned)
+                record: dict[str, Any]
+                if isinstance(parsed, dict):
+                    record = {"book_source_id": source_id, "chunk_index": idx, "start_char": start_char, "data": parsed}
+                else:
+                    record = {
+                        "book_source_id": source_id,
+                        "chunk_index": idx,
+                        "start_char": start_char,
+                        "text": cleaned[: max(200, min(len(cleaned), summary_max_chars * 4))],
+                    }
+
+                content = json_dumps(record)
+                with get_session() as s_kb:
+                    kb = KBChunk(
+                        project_id=project_id,
+                        source_type="book_summary",
+                        title=book_title(output_lang, idx),
+                        content=content,
+                        tags=book_tags(idx),
+                    )
+                    s_kb.add(kb)
+                    s_kb.commit()
+                    s_kb.refresh(kb)
+
+                created += 1
+                preview = cleaned.replace("\n", " ").strip()
+                if len(preview) > 240:
+                    preview = preview[:240].rstrip() + "…"
+                yield emit(
+                    "artifact",
+                    "BookSummarizer",
+                    {
+                        "artifact_type": "book_chunk_summary",
+                        "source_id": source_id,
+                        "chunk_index": idx,
+                        "start_char": start_char,
+                        "kb_chunk_id": kb.id,
+                        "preview": preview,
+                    },
+                )
+
+            yield emit(
+                "artifact",
+                "BookSummarizer",
+                {
+                    "artifact_type": "book_summarize_stats",
+                    "source_id": source_id,
+                    "filename": filename,
+                    "processed": processed,
+                    "created": created,
+                    "failed": failed,
+                    "params": {
+                        "chunk_chars": chunk_chars,
+                        "overlap_chars": overlap_chars,
+                        "max_chunks": max_chunks,
+                        "replace_existing": replace_existing,
+                    },
+                },
+            )
+            yield emit("agent_finished", "BookSummarizer", {"created": created, "failed": failed})
+
+            if created <= 0:
+                msg = "book_summarize_no_results"
+                yield emit("run_error", "BookSummarizer", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            mark_run_completed()
+            yield emit("run_completed", "Director", {})
+            return
+
         kb_mode = "weak"
         try:
             kb_mode = str(((project.settings or {}).get("kb") or {}).get("mode") or "weak")

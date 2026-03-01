@@ -315,3 +315,13 @@ Versioning policy (from v1.0.x onward):
   - 批量续写支持“停止（当前章完成后停止）/继续剩余/清除”，并在失败时展示最近一次错误。
 - Web → 续写 → 书籍续写:
   - 增加“用此书籍源进入续写工作台”按钮：把已上传的书籍源加载到文章续写工作台，方便编辑与批量续写。
+
+### v1.10.0 (Book Continue: Chunk Index + Summarize Into KB)
+- API:
+  - `GET /api/tools/continue_sources/{source_id}/book_index`：对已上传的书籍源做字符级分片索引（不调用 LLM），返回分片列表与预览。
+  - Runs: 新增 `kind=book_summarize`：按分片顺序调用 LLM 做简要总结，并逐片写入本地知识库（`source_type=book_summary`，带 `book_source:...` 标签）。
+- Web → 续写 → 书籍续写:
+  - 新增“书籍分片索引 / 总结入库（MVP）”卡片：可配置分片长度/重叠/最大分片数，一键生成索引与总结入库。
+  - 总结完成后展示入库统计，并提供快捷按钮跳转到「创作 → 背景设定」查看知识库条目。
+- Tests:
+  - Added regressions for `book_index` tool endpoint and `book_summarize` run kind.

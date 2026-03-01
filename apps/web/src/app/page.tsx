@@ -86,6 +86,38 @@ type KBChunkItem = {
   created_at: string;
 };
 
+type BookIndexChunk = {
+  index: number;
+  start_char: number;
+  end_char: number;
+  chars: number;
+  preview_head: string;
+  preview_tail: string;
+};
+
+type BookIndexResult = {
+  source_id: string;
+  meta: Record<string, unknown>;
+  params: {
+    chunk_chars: number;
+    overlap_chars: number;
+    max_chunks: number;
+    preview_chars: number;
+  };
+  chunks: BookIndexChunk[];
+  total_chunks: number;
+  truncated: boolean;
+};
+
+type BookSummarizeStats = {
+  source_id: string;
+  filename?: string;
+  processed: number;
+  created: number;
+  failed: number;
+  params?: Record<string, unknown>;
+};
+
 const PROJECT_ORDER_KEY = "ai-writer:project_order:v1";
 
 function loadProjectOrder(): string[] {
@@ -359,6 +391,16 @@ export default function Home() {
   const [bookSourceError, setBookSourceError] = useState<string | null>(null);
   const [bookSourceToken, setBookSourceToken] = useState<number>(0);
   const [bookDropActive, setBookDropActive] = useState<boolean>(false);
+  const [bookChunkChars, setBookChunkChars] = useState<number>(6000);
+  const [bookOverlapChars, setBookOverlapChars] = useState<number>(400);
+  const [bookMaxChunks, setBookMaxChunks] = useState<number>(200);
+  const [bookIndexLoading, setBookIndexLoading] = useState<boolean>(false);
+  const [bookIndexError, setBookIndexError] = useState<string | null>(null);
+  const [bookIndex, setBookIndex] = useState<BookIndexResult | null>(null);
+  const [bookSummarizeReplaceExisting, setBookSummarizeReplaceExisting] =
+    useState<boolean>(true);
+  const [bookSummarizeStats, setBookSummarizeStats] =
+    useState<BookSummarizeStats | null>(null);
   const [outlinePaneError, setOutlinePaneError] = useState<string | null>(null);
   const [outlineDraft, setOutlineDraft] = useState<OutlineBlock[]>([]);
   const [outlineDraftProjectId, setOutlineDraftProjectId] = useState<string | null>(
@@ -1272,6 +1314,9 @@ export default function Home() {
     // lingering when a new run fails mid-pipeline.
     setGeneratedMarkdown("");
     setOutline(null);
+    if (kind === "book_summarize") {
+      setBookSummarizeStats(null);
+    }
 
     let sawRunError = false;
     let lastError: string | null = null;
@@ -1357,6 +1402,42 @@ export default function Home() {
               evt.data.artifact_type === "outline"
             ) {
               setOutline(evt.data.outline ?? null);
+            }
+            if (
+              evt.type === "artifact" &&
+              evt.agent === "BookSummarizer" &&
+              evt.data.artifact_type === "book_summarize_stats"
+            ) {
+              const createdRaw = evt.data.created;
+              const failedRaw = evt.data.failed;
+              const processedRaw = evt.data.processed;
+              const created =
+                typeof createdRaw === "number"
+                  ? createdRaw
+                  : Number(createdRaw ?? 0);
+              const failed =
+                typeof failedRaw === "number"
+                  ? failedRaw
+                  : Number(failedRaw ?? 0);
+              const processed =
+                typeof processedRaw === "number"
+                  ? processedRaw
+                  : Number(processedRaw ?? 0);
+              const sid =
+                typeof evt.data.source_id === "string" ? evt.data.source_id : "";
+              const filename =
+                typeof evt.data.filename === "string" ? evt.data.filename : undefined;
+              setBookSummarizeStats({
+                source_id: sid,
+                filename,
+                processed: Number.isFinite(processed) ? processed : 0,
+                created: Number.isFinite(created) ? created : 0,
+                failed: Number.isFinite(failed) ? failed : 0,
+                params:
+                  evt.data.params && typeof evt.data.params === "object"
+                    ? (evt.data.params as Record<string, unknown>)
+                    : undefined,
+              });
             }
           } catch {
             // ignore partial/bad events
@@ -2064,9 +2145,51 @@ export default function Home() {
       setBookSourceMeta({ filename, chars });
       setBookInputText(preview);
       setBookSourceToken((x) => x + 1);
+      setBookIndex(null);
+      setBookIndexError(null);
+      setBookSummarizeStats(null);
       return sid;
     } finally {
       setBookSourceLoading(false);
+    }
+  }
+
+  async function buildBookIndex(sourceId: string): Promise<BookIndexResult> {
+    setBookIndexError(null);
+    setBookIndexLoading(true);
+    try {
+      const sid = (sourceId || "").trim();
+      if (!sid) throw new Error("source_id_required");
+
+      const params = new URLSearchParams();
+      params.set("chunk_chars", String(Math.max(500, Math.min(30000, bookChunkChars))));
+      params.set("overlap_chars", String(Math.max(0, Math.min(10000, bookOverlapChars))));
+      params.set("max_chunks", String(Math.max(1, Math.min(2000, bookMaxChunks))));
+      params.set("preview_chars", "160");
+
+      const res = await fetch(
+        `${apiBase}/api/tools/continue_sources/${encodeURIComponent(sid)}/book_index?${params.toString()}`,
+      );
+      if (!res.ok) {
+        const raw = await res.text();
+        let detail = raw;
+        try {
+          const parsed = JSON.parse(raw) as { detail?: unknown };
+          if (typeof parsed?.detail === "string") detail = parsed.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+
+      const data = (await res.json()) as BookIndexResult;
+      setBookIndex(data);
+      return data;
+    } catch (e) {
+      setBookIndexError((e as Error).message);
+      throw e;
+    } finally {
+      setBookIndexLoading(false);
     }
   }
 
@@ -2151,6 +2274,9 @@ export default function Home() {
       setBookSourceId(sid);
       setBookSourceMeta({ filename, chars });
       setBookInputText(preview);
+      setBookIndex(null);
+      setBookIndexError(null);
+      setBookSummarizeStats(null);
       return sid;
     } finally {
       setBookSourceLoading(false);
@@ -2231,6 +2357,7 @@ export default function Home() {
         "LoreKeeper",
         "Editor",
       ],
+      book_summarize: ["BookSummarizer"],
     };
 
     const plan = expectedAgents[activeRunKind] ?? [];
@@ -4879,6 +5006,234 @@ export default function Home() {
                             ? "会把书籍源加载到「文章续写」工作台，便于编辑、批量续写与查看章节落库结果。"
                             : "Loads the book source into the Article Continue workspace (editor + batch + saved chapters)."}
                         </span>
+                      </div>
+
+                      <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                        <div className="text-sm font-medium">
+                          {lang === "zh"
+                            ? "书籍分片索引 / 总结入库（MVP）"
+                            : "Book chunk index / summarize into KB (MVP)"}
+                        </div>
+                        <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                          {lang === "zh"
+                            ? "先生成分片索引（不调用 LLM），再用 LLM 对每片做简要总结并写入本地知识库（为 v2.0 的百万字续写链路打底）。"
+                            : "Build a chunk index (no LLM), then summarize each chunk via LLM and store into the local KB (foundation for v2.0 long-book continuation)."}
+                        </div>
+
+                        <div className="mt-3 grid gap-2 md:grid-cols-3">
+                          <label className="grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {lang === "zh" ? "分片长度（字符）" : "Chunk size (chars)"}
+                            </span>
+                            <input
+                              type="number"
+                              min={500}
+                              max={30000}
+                              value={bookChunkChars}
+                              onChange={(e) =>
+                                setBookChunkChars(Number(e.target.value))
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                            />
+                          </label>
+                          <label className="grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {lang === "zh"
+                                ? "重叠（字符）"
+                                : "Overlap (chars)"}
+                            </span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={10000}
+                              value={bookOverlapChars}
+                              onChange={(e) =>
+                                setBookOverlapChars(Number(e.target.value))
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                            />
+                          </label>
+                          <label className="grid gap-1 text-sm">
+                            <span className="text-xs text-[var(--ui-muted)]">
+                              {lang === "zh" ? "最多分片数" : "Max chunks"}
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={2000}
+                              value={bookMaxChunks}
+                              onChange={(e) =>
+                                setBookMaxChunks(Number(e.target.value))
+                              }
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)]"
+                            />
+                          </label>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={!bookSourceId || bookIndexLoading}
+                            onClick={() => {
+                              if (!bookSourceId) return;
+                              buildBookIndex(bookSourceId).catch(() => {
+                                // error already surfaced
+                              });
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {bookIndexLoading
+                              ? lang === "zh"
+                                ? "生成中..."
+                                : "Building..."
+                              : lang === "zh"
+                                ? "生成分片索引"
+                                : "Build index"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={
+                              !bookSourceId ||
+                              runInProgress ||
+                              settingsSaving ||
+                              secretsSaving
+                            }
+                            onClick={() => {
+                              if (!bookSourceId) return;
+                              runPipeline("book_summarize", {
+                                source_id: bookSourceId,
+                                chunk_chars: bookChunkChars,
+                                overlap_chars: bookOverlapChars,
+                                max_chunks: bookMaxChunks,
+                                replace_existing: bookSummarizeReplaceExisting,
+                                summary_chars: 500,
+                              })
+                                .then((r) => {
+                                  if (r.ok) {
+                                    // KB list is used in other panes; refresh best-effort.
+                                    refreshKbChunks().catch(() => {
+                                      // ignore
+                                    });
+                                  }
+                                })
+                                .catch((e) => setRunError((e as Error).message));
+                            }}
+                            className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                          >
+                            {lang === "zh" ? "总结入库（LLM）" : "Summarize into KB (LLM)"}
+                          </button>
+                          <label className="flex items-center gap-2 text-xs text-[var(--ui-muted)]">
+                            <input
+                              type="checkbox"
+                              checked={bookSummarizeReplaceExisting}
+                              onChange={(e) =>
+                                setBookSummarizeReplaceExisting(e.target.checked)
+                              }
+                            />
+                            {lang === "zh"
+                              ? "覆盖旧的书籍总结"
+                              : "Replace existing summaries"}
+                          </label>
+                          <button
+                            type="button"
+                            disabled={!bookIndex && !bookSummarizeStats}
+                            onClick={() => {
+                              setBookIndex(null);
+                              setBookIndexError(null);
+                              setBookSummarizeStats(null);
+                            }}
+                            className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                          >
+                            {lang === "zh" ? "清除结果" : "Clear results"}
+                          </button>
+                        </div>
+
+                        {bookIndexError ? (
+                          <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                            {bookIndexError}
+                          </div>
+                        ) : null}
+
+                        {bookSummarizeStats ? (
+                          <div className="mt-2 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] dark:border-zinc-800">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-[var(--ui-muted)]">
+                                {lang === "zh"
+                                  ? `已处理 ${bookSummarizeStats.processed} 片，入库 ${bookSummarizeStats.created}，失败 ${bookSummarizeStats.failed}`
+                                  : `Processed ${bookSummarizeStats.processed}, stored ${bookSummarizeStats.created}, failed ${bookSummarizeStats.failed}`}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTab("create");
+                                  setCreatePane("background");
+                                }}
+                                className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
+                              >
+                                {lang === "zh"
+                                  ? "去背景设定查看知识库"
+                                  : "Open KB (Background)"}
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {bookIndex ? (
+                          <div className="mt-3 rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] dark:border-zinc-800">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-[var(--ui-muted)]">
+                                {lang === "zh"
+                                  ? `索引：${bookIndex.total_chunks} 片${
+                                      bookIndex.truncated ? "（可能被截断）" : ""
+                                    }`
+                                  : `Index: ${bookIndex.total_chunks} chunks${
+                                      bookIndex.truncated ? " (maybe truncated)" : ""
+                                    }`}
+                              </div>
+                              <button
+                                type="button"
+                                disabled={!bookSourceId}
+                                onClick={() => {
+                                  if (!bookSourceId) return;
+                                  buildBookIndex(bookSourceId).catch(() => {
+                                    // ignore
+                                  });
+                                }}
+                                className="rounded-md border border-zinc-200 bg-[var(--ui-bg)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-surface)] dark:border-zinc-800"
+                              >
+                                {lang === "zh" ? "刷新索引" : "Refresh"}
+                              </button>
+                            </div>
+                            {bookIndex.chunks.length > 0 ? (
+                              <div className="mt-3 max-h-64 overflow-auto rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-2 dark:border-zinc-800">
+                                <ol className="space-y-2">
+                                  {bookIndex.chunks.map((c) => (
+                                    <li
+                                      key={`${bookIndex.source_id}:${c.index}`}
+                                      className="rounded-md border border-zinc-200 bg-[var(--ui-surface)] p-2 dark:border-zinc-800"
+                                    >
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <div className="font-medium">
+                                          #{c.index}
+                                        </div>
+                                        <div className="text-[11px] text-[var(--ui-muted)]">
+                                          {lang === "zh"
+                                            ? `字符≈${c.chars} · 起始≈${c.start_char}`
+                                            : `chars≈${c.chars} · start≈${c.start_char}`}
+                                        </div>
+                                      </div>
+                                      {c.preview_head ? (
+                                        <div className="mt-2 whitespace-pre-wrap text-[11px] text-[var(--ui-muted)]">
+                                          {c.preview_head}
+                                        </div>
+                                      ) : null}
+                                    </li>
+                                  ))}
+                                </ol>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>

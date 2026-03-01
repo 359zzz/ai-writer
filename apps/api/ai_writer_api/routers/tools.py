@@ -10,6 +10,7 @@ from ..tools.continue_sources import (
     save_continue_source_from_bytes,
     save_continue_source_from_text,
 )
+from ..tools.book_index import BookIndexError, build_book_index
 from ..tools.text_extract import TextExtractError, extract_text_from_bytes
 from ..tools.web_search import WebSearchError, web_search as perform_web_search
 
@@ -191,3 +192,31 @@ def preview_continue_source(
         )
     except ContinueSourceError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/continue_sources/{source_id}/book_index")
+def build_continue_source_book_index(
+    source_id: str,
+    chunk_chars: int = Query(default=6000, ge=500, le=30_000),
+    overlap_chars: int = Query(default=400, ge=0, le=10_000),
+    max_chunks: int = Query(default=200, ge=1, le=2000),
+    preview_chars: int = Query(default=160, ge=0, le=1000),
+) -> dict[str, Any]:
+    """
+    Build a lightweight "book chunk index" for a stored Continue/Book source.
+
+    This endpoint does NOT call any LLM.
+    """
+
+    try:
+        return build_book_index(
+            source_id=source_id,
+            chunk_chars=chunk_chars,
+            overlap_chars=overlap_chars,
+            max_chunks=max_chunks,
+            preview_chars=preview_chars,
+        )
+    except ContinueSourceError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except BookIndexError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
