@@ -287,3 +287,10 @@ Versioning policy (from v1.0.x onward):
   - Continue/Extract text: 支持 `.json` 作为纯文本输入（`extract_text` + `continue_sources/upload`）。
 - Tests:
   - Added regressions for json extract + continue source upload.
+
+### v1.7.0 (Outline: Explicit Block Editor)
+- Web → 创作 → 大纲编辑:
+  - 新增“大纲块编辑（草稿）”：支持块的增删改、拖拽排序、标题/简介/目标编辑。
+  - 显式“保存大纲”与“重置”按钮；未保存状态会提示（不会静默覆盖）。
+  - 右侧展示“已保存的大纲（用于写作）”，让用户区分草稿 vs 已保存版本。
+  - 仍保留 `.txt/.json` 导入与 `json/txt` 导出能力。

@@ -61,6 +61,15 @@ type RunItem = {
 };
 
 type OutlineChapter = {
+  id?: string;
+  index: number;
+  title: string;
+  summary?: string;
+  goal?: string;
+};
+
+type OutlineBlock = {
+  id: string;
   index: number;
   title: string;
   summary?: string;
@@ -146,6 +155,88 @@ function moveByNumId<T extends { id: number }>(
   const insertAt = from < to ? to - 1 : to;
   next.splice(insertAt, 0, item);
   return next;
+}
+
+function normalizeOutline(raw: OutlineChapter[]): OutlineChapter[] {
+  const cleaned = raw
+    .map((c) => ({
+      id:
+        typeof c.id === "string" && c.id.trim().length > 0 ? c.id.trim() : undefined,
+      index: Number.isFinite(c.index) && c.index >= 1 ? Math.floor(c.index) : 0,
+      title: String(c.title ?? "").trim(),
+      summary: typeof c.summary === "string" ? c.summary.trim() : undefined,
+      goal: typeof c.goal === "string" ? c.goal.trim() : undefined,
+    }))
+    .filter((c) => c.title.length > 0);
+
+  if (cleaned.length === 0) return [];
+
+  const hasValidUniqueIndexes = (() => {
+    const idxs = cleaned.map((c) => c.index).filter((x) => x >= 1);
+    if (idxs.length !== cleaned.length) return false;
+    const uniq = new Set(idxs);
+    return uniq.size === idxs.length;
+  })();
+
+  if (hasValidUniqueIndexes) return cleaned;
+
+  return cleaned.map((c, i) => ({ ...c, index: i + 1 }));
+}
+
+function makeOutlineId(): string {
+  try {
+    // Available in modern browsers.
+    return crypto.randomUUID();
+  } catch {
+    return `ol_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  }
+}
+
+function reindexOutlineBlocks(list: OutlineBlock[]): OutlineBlock[] {
+  return list.map((c, i) => ({ ...c, index: i + 1 }));
+}
+
+function toOutlineBlocks(list: OutlineChapter[]): OutlineBlock[] {
+  const blocks: OutlineBlock[] = [];
+  for (const c of list) {
+    const title = typeof c.title === "string" ? c.title.trim() : "";
+    if (!title) continue;
+    blocks.push({
+      id:
+        typeof c.id === "string" && c.id.trim().length > 0
+          ? c.id.trim()
+          : makeOutlineId(),
+      index: Number.isFinite(c.index) && c.index >= 1 ? Math.floor(c.index) : 0,
+      title,
+      summary: typeof c.summary === "string" ? c.summary : undefined,
+      goal: typeof c.goal === "string" ? c.goal : undefined,
+    });
+  }
+  // Persisted indexes can be non-sequential after edits/import; normalize for UI.
+  return reindexOutlineBlocks(blocks);
+}
+
+function loadOutlineBlocksFromProject(p: Project | null): OutlineBlock[] {
+  const settings = p?.settings as Record<string, unknown> | undefined;
+  const story = settings?.story as Record<string, unknown> | undefined;
+  const raw = story?.outline;
+  const items = Array.isArray(raw) ? raw : [];
+  const chapters: OutlineChapter[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const idx = Number(rec.index);
+    const title = typeof rec.title === "string" ? rec.title : "";
+    if (!title.trim()) continue;
+    chapters.push({
+      id: typeof rec.id === "string" ? rec.id : undefined,
+      index: Number.isFinite(idx) ? idx : 0,
+      title: title.trim(),
+      summary: typeof rec.summary === "string" ? rec.summary : undefined,
+      goal: typeof rec.goal === "string" ? rec.goal : undefined,
+    });
+  }
+  return toOutlineBlocks(normalizeOutline(chapters));
 }
 
 export default function Home() {
@@ -245,6 +336,12 @@ export default function Home() {
   const [bookSourceToken, setBookSourceToken] = useState<number>(0);
   const [bookDropActive, setBookDropActive] = useState<boolean>(false);
   const [outlinePaneError, setOutlinePaneError] = useState<string | null>(null);
+  const [outlineDraft, setOutlineDraft] = useState<OutlineBlock[]>([]);
+  const [outlineDraftProjectId, setOutlineDraftProjectId] = useState<string | null>(
+    null,
+  );
+  const [outlineDirty, setOutlineDirty] = useState<boolean>(false);
+  const [draggingOutlineId, setDraggingOutlineId] = useState<string | null>(null);
   // Local KB chunk fields. Keep defaults empty to avoid confusing users
   // with pre-filled values like "设定" in multiple inputs.
   const [kbTitle, setKbTitle] = useState<string>("");
@@ -625,9 +722,11 @@ export default function Home() {
         if (typeof item !== "object" || item === null) continue;
         const rec = item as Record<string, unknown>;
         const idx = Number(rec.index);
+        const id = typeof rec.id === "string" ? rec.id : undefined;
         const title = typeof rec.title === "string" ? rec.title : "";
         if (!Number.isFinite(idx) || !title.trim()) continue;
         out.push({
+          id,
           index: idx,
           title: title.trim(),
           summary: typeof rec.summary === "string" ? rec.summary : undefined,
@@ -652,6 +751,42 @@ export default function Home() {
 
     return null;
   }, [outline, selectedProject]);
+
+  useEffect(() => {
+    // Keep the outline editor draft bound to the selected project settings.
+    if (!selectedProjectId) {
+      setOutlineDraft([]);
+      setOutlineDraftProjectId(null);
+      setOutlineDirty(false);
+      setDraggingOutlineId(null);
+      setOutlinePaneError(null);
+      return;
+    }
+
+    // When switching projects, always load the new project's outline draft.
+    if (outlineDraftProjectId !== selectedProjectId) {
+      setOutlineDraft(loadOutlineBlocksFromProject(selectedProject));
+      setOutlineDraftProjectId(selectedProjectId);
+      setOutlineDirty(false);
+      setDraggingOutlineId(null);
+      setOutlinePaneError(null);
+      return;
+    }
+
+    // When in the Outline pane and not editing, refresh draft from saved settings
+    // (e.g. after importing outline JSON/TXT).
+    if (tab === "create" && createPane === "outline" && !outlineDirty) {
+      setOutlineDraft(loadOutlineBlocksFromProject(selectedProject));
+      setOutlinePaneError(null);
+    }
+  }, [
+    tab,
+    createPane,
+    selectedProjectId,
+    selectedProject,
+    outlineDraftProjectId,
+    outlineDirty,
+  ]);
 
   useEffect(() => {
     setRuns([]);
@@ -1427,30 +1562,6 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  const normalizeOutline = (raw: OutlineChapter[]): OutlineChapter[] => {
-    const cleaned = raw
-      .map((c) => ({
-        index: Number.isFinite(c.index) && c.index >= 1 ? Math.floor(c.index) : 0,
-        title: String(c.title ?? "").trim(),
-        summary: typeof c.summary === "string" ? c.summary.trim() : undefined,
-        goal: typeof c.goal === "string" ? c.goal.trim() : undefined,
-      }))
-      .filter((c) => c.title.length > 0);
-
-    if (cleaned.length === 0) return [];
-
-    const hasValidUniqueIndexes = (() => {
-      const idxs = cleaned.map((c) => c.index).filter((x) => x >= 1);
-      if (idxs.length !== cleaned.length) return false;
-      const uniq = new Set(idxs);
-      return uniq.size === idxs.length;
-    })();
-
-    if (hasValidUniqueIndexes) return cleaned;
-
-    return cleaned.map((c, i) => ({ ...c, index: i + 1 }));
-  };
-
   const parseOutlineText = (text: string): OutlineChapter[] => {
     const lines = String(text ?? "")
       .split(/\r?\n/g)
@@ -1545,6 +1656,95 @@ export default function Home() {
     if (!selectedProjectId) return;
     setOutlinePaneError(null);
     await saveProjectSettings({ story: { outline: [] } });
+    setOutline({ chapters: [] });
+    setOutlineDraft([]);
+    setOutlineDirty(false);
+  }
+
+  function updateOutlineBlock(blockId: string, patch: Partial<OutlineBlock>) {
+    setOutlinePaneError(null);
+    setOutlineDraft((prev) => {
+      const next = prev.map((c) => (c.id === blockId ? { ...c, ...patch } : c));
+      return reindexOutlineBlocks(next);
+    });
+    setOutlineDirty(true);
+  }
+
+  function addOutlineBlock() {
+    const nextIndex = outlineDraft.length + 1;
+    const title =
+      lang === "zh" ? `第${nextIndex}章：` : `Chapter ${nextIndex}: `;
+    setOutlinePaneError(null);
+    setOutlineDraft((prev) =>
+      reindexOutlineBlocks([
+        ...prev,
+        { id: makeOutlineId(), index: nextIndex, title, summary: "", goal: "" },
+      ]),
+    );
+    setOutlineDirty(true);
+  }
+
+  function deleteOutlineBlock(blockId: string) {
+    setOutlinePaneError(null);
+    setOutlineDraft((prev) => reindexOutlineBlocks(prev.filter((c) => c.id !== blockId)));
+    setOutlineDirty(true);
+  }
+
+  function moveOutlineBlock(movingId: string, beforeId: string) {
+    setOutlinePaneError(null);
+    setOutlineDraft((prev) => reindexOutlineBlocks(moveById(prev, movingId, beforeId)));
+    setOutlineDirty(true);
+    setDraggingOutlineId(null);
+  }
+
+  function resetOutlineDraft() {
+    if (outlineDirty) {
+      const ok = window.confirm(
+        lang === "zh"
+          ? "丢弃未保存的大纲修改并恢复为已保存版本？"
+          : "Discard unsaved outline changes and reload the saved version?",
+      );
+      if (!ok) return;
+    }
+    setOutlinePaneError(null);
+    setOutlineDraft(loadOutlineBlocksFromProject(selectedProject));
+    setOutlineDirty(false);
+    setDraggingOutlineId(null);
+  }
+
+  async function saveOutlineDraft() {
+    if (!selectedProjectId) return;
+    setOutlinePaneError(null);
+    const trimmed = outlineDraft.map((c) => ({
+      ...c,
+      title: String(c.title ?? "").trim(),
+      summary: typeof c.summary === "string" ? c.summary.trim() : undefined,
+      goal: typeof c.goal === "string" ? c.goal.trim() : undefined,
+    }));
+    for (let i = 0; i < trimmed.length; i += 1) {
+      if (!trimmed[i].title) {
+        setOutlinePaneError(
+          lang === "zh"
+            ? `第 ${i + 1} 个块的标题不能为空。`
+            : `Title is required for block #${i + 1}.`,
+        );
+        return;
+      }
+    }
+    const normalized = reindexOutlineBlocks(
+      trimmed.map((c) => ({
+        ...c,
+        summary: c.summary ? c.summary : undefined,
+        goal: c.goal ? c.goal : undefined,
+      })),
+    );
+
+    await saveProjectSettings({ story: { outline: normalized } });
+    // Keep the UI outline view consistent even if the last run outline artifact exists.
+    setOutline({ chapters: normalized });
+    setOutlineDraft(normalized);
+    setOutlineDirty(false);
+    setOutlineDraftProjectId(selectedProjectId);
   }
 
   async function searchKb() {
@@ -3762,38 +3962,218 @@ export default function Home() {
                     </div>
                   ) : null}
 
-                  <div className="mt-4 rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
-                    <div className="text-sm font-medium">{tt("outline_latest")}</div>
-                    {selectedProjectId ? (
-                      outlineChapters ? (
-                        <ol className="mt-3 space-y-2 text-sm">
-                          {outlineChapters.map((ch) => (
-                            <li
-                              key={ch.index}
-                              className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800"
-                            >
-                              <div className="font-medium">
-                                {ch.index}. {ch.title}
+                  {!selectedProjectId ? (
+                    <div className="mt-4 text-sm text-[var(--ui-muted)]">
+                      {tt("select_project_first")}
+                    </div>
+                  ) : (
+                    <div className="mt-4 grid gap-6 lg:grid-cols-2">
+                      <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="text-sm font-medium">
+                                {lang === "zh"
+                                  ? "大纲块编辑（草稿）"
+                                  : "Outline blocks (draft)"}
                               </div>
-                              {ch.summary ? (
-                                <div className="mt-1 text-xs text-[var(--ui-muted)]">
-                                  {ch.summary}
-                                </div>
+                              {outlineDirty ? (
+                                <span className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
+                                  {lang === "zh" ? "未保存" : "Unsaved"}
+                                </span>
                               ) : null}
-                            </li>
-                          ))}
-                        </ol>
-                      ) : (
-                        <div className="mt-2 text-sm text-[var(--ui-muted)]">
-                          {tt("no_outline")}
+                            </div>
+                            <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                              {lang === "zh"
+                                ? "拖拽排序 / 增删改块；修改后点击“保存大纲”。"
+                                : "Drag to reorder / add/edit/delete blocks; click “Save outline” to persist."}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={settingsSaving}
+                              onClick={() => addOutlineBlock()}
+                              className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90 disabled:opacity-50"
+                            >
+                              {lang === "zh" ? "添加块" : "Add block"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={settingsSaving || !outlineDirty}
+                              onClick={() => {
+                                saveOutlineDraft().catch((err) =>
+                                  setOutlinePaneError((err as Error).message),
+                                );
+                              }}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                            >
+                              {lang === "zh" ? "保存大纲" : "Save outline"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={settingsSaving}
+                              onClick={() => resetOutlineDraft()}
+                              className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                            >
+                              {lang === "zh" ? "重置" : "Reset"}
+                            </button>
+                          </div>
                         </div>
-                      )
-                    ) : (
-                      <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-                        {tt("select_project_first")}
+
+                        {outlineDraft.length === 0 ? (
+                          <div className="mt-3 text-sm text-[var(--ui-muted)]">
+                            {lang === "zh"
+                              ? "还没有大纲块。你可以先上传导入，或点击“添加块”。"
+                              : "No outline blocks yet. Import a file or click “Add block”."}
+                          </div>
+                        ) : (
+                          <ul className="mt-3 space-y-3">
+                            {outlineDraft.map((b) => (
+                              <li
+                                key={b.id}
+                                onDragOver={(e) => {
+                                  if (!draggingOutlineId) return;
+                                  e.preventDefault();
+                                }}
+                                onDrop={(e) => {
+                                  const moving =
+                                    draggingOutlineId ||
+                                    e.dataTransfer.getData("text/plain");
+                                  if (!moving || moving === b.id) return;
+                                  e.preventDefault();
+                                  moveOutlineBlock(moving, b.id);
+                                }}
+                                className={[
+                                  "rounded-lg border p-3",
+                                  draggingOutlineId && draggingOutlineId !== b.id
+                                    ? "border-zinc-200"
+                                    : "border-zinc-200",
+                                ].join(" ")}
+                              >
+                                <div className="flex items-start gap-2">
+                                  <button
+                                    type="button"
+                                    draggable
+                                    onClick={(e) => e.stopPropagation()}
+                                    onDragStart={(e) => {
+                                      setDraggingOutlineId(b.id);
+                                      e.dataTransfer.setData("text/plain", b.id);
+                                      e.dataTransfer.effectAllowed = "move";
+                                    }}
+                                    onDragEnd={() => setDraggingOutlineId(null)}
+                                    className="mt-1 cursor-grab select-none rounded px-1 text-xs text-[var(--ui-muted)] hover:text-[var(--ui-text)]"
+                                    title={lang === "zh" ? "拖拽排序" : "Drag to reorder"}
+                                  >
+                                    ⋮⋮
+                                  </button>
+
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-xs text-[var(--ui-muted)]">
+                                        {lang === "zh"
+                                          ? `第${b.index}章`
+                                          : `#${b.index}`}
+                                      </span>
+                                      <input
+                                        value={b.title}
+                                        onChange={(e) =>
+                                          updateOutlineBlock(b.id, {
+                                            title: e.target.value,
+                                          })
+                                        }
+                                        className="w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-sm text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                                        placeholder={
+                                          lang === "zh"
+                                            ? "标题（必填）"
+                                            : "Title (required)"
+                                        }
+                                      />
+                                    </div>
+                                    <textarea
+                                      value={b.summary ?? ""}
+                                      onChange={(e) =>
+                                        updateOutlineBlock(b.id, {
+                                          summary: e.target.value,
+                                        })
+                                      }
+                                      className="mt-2 h-20 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] p-3 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                                      placeholder={
+                                        lang === "zh"
+                                          ? "简介/剧情概要（可选）"
+                                          : "Summary (optional)"
+                                      }
+                                    />
+                                    <input
+                                      value={b.goal ?? ""}
+                                      onChange={(e) =>
+                                        updateOutlineBlock(b.id, {
+                                          goal: e.target.value,
+                                        })
+                                      }
+                                      className="mt-2 w-full rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] placeholder:text-[var(--ui-muted)]"
+                                      placeholder={
+                                        lang === "zh"
+                                          ? "本章目标（可选）"
+                                          : "Chapter goal (optional)"
+                                      }
+                                    />
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const ok = window.confirm(
+                                        lang === "zh"
+                                          ? "删除这个大纲块？（不会影响已生成章节）"
+                                          : "Delete this outline block? (Won't delete generated chapters)",
+                                      );
+                                      if (!ok) return;
+                                      deleteOutlineBlock(b.id);
+                                    }}
+                                    className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)]"
+                                  >
+                                    {lang === "zh" ? "删除" : "Delete"}
+                                  </button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
-                    )}
-                  </div>
+
+                      <div className="rounded-lg border border-zinc-200 bg-[var(--ui-bg)] p-4 dark:border-zinc-800">
+                        <div className="text-sm font-medium">
+                          {lang === "zh"
+                            ? "已保存的大纲（用于写作）"
+                            : "Saved outline (used for writing)"}
+                        </div>
+                        {outlineChapters ? (
+                          <ol className="mt-3 space-y-2 text-sm">
+                            {outlineChapters.map((ch) => (
+                              <li
+                                key={`${ch.index}:${ch.title}`}
+                                className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800"
+                              >
+                                <div className="font-medium">
+                                  {ch.index}. {ch.title}
+                                </div>
+                                {ch.summary ? (
+                                  <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                                    {ch.summary}
+                                  </div>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ol>
+                        ) : (
+                          <div className="mt-2 text-sm text-[var(--ui-muted)]">
+                            {tt("no_outline")}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )
             ) : (
