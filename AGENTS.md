@@ -392,6 +392,16 @@ Versioning policy (from v1.0.x onward):
 - Tests:
   - 新增 tools 侧回归：章节索引构建 + 更新 + 无标题报错。
 
+### v1.15.0 (Book: Per-Chapter Summaries + Compile)
+- API runs:
+  - `book_summarize` 支持 `segment_mode=chapter/auto`：优先读取/构建 `chapter_index.json`，按章总结入库（tags：`book_chapter:n`）。
+  - `book_summarize` 的 stats artifact 增加 `segment_mode` 与相关 params（便于前端展示“章/片”）。
+  - `book_compile` 在同时存在分片总结与章节总结时，优先编译“章节总结”（更贴近用户心智）。
+- LLM（PackyAPI/Gemini）:
+  - network_error/timeout 在 Packy base 上也会触发模型 fallback（更易从 ConnectError 中自救；同时保持探测次数保守，避免像异常流量）。
+- Tests:
+  - 新增 runs 回归：章节模式 `book_summarize` + `book_compile` 优先章节总结。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

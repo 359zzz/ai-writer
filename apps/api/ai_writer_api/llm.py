@@ -748,6 +748,10 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
             if (
                 _looks_like_model_unavailable(best)
                 or best.startswith("empty_completion")
+                or (
+                    _is_packy_base(base)
+                    and (best.startswith("openai_network_error") or best.startswith("openai_timeout"))
+                )
                 or re.match(r"^openai_http_(429|500|502|503|504)", best)
             ):
                 for fb in fallbacks:
@@ -768,6 +772,10 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
             if (
                 _looks_like_model_unavailable(best)
                 or best.startswith("empty_completion")
+                or (
+                    _is_packy_base(base)
+                    and (best.startswith("gemini_network_error") or best.startswith("gemini_timeout"))
+                )
                 or re.match(r"^gemini_http_(429|500|502|503|504)", best)
             ):
                 for fb in fallbacks:

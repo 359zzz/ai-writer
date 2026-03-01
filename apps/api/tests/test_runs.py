@@ -484,6 +484,84 @@ def test_book_summarize_persists_kb_chunks(monkeypatch: pytest.MonkeyPatch) -> N
         assert any(it.get("source_type") == "book_summary" for it in listed)
 
 
+def test_book_summarize_chapter_mode_uses_chapter_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    v2.x regression test:
+    - book_summarize with segment_mode=chapter should summarize by detected chapters.
+    - It should emit stats with segment_mode=chapter and persist KB chunks tagged as book_chapter:*.
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        if "BookSummarizerAgent" in system_prompt:
+            return json.dumps(
+                {
+                    "summary": "demo",
+                    "key_events": ["event"],
+                    "characters": ["Alice"],
+                    "locations": ["Town"],
+                    "timeline": ["Day 1"],
+                    "open_loops": ["mystery"],
+                },
+                ensure_ascii=True,
+            )
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Book Sum Chapter Test"}).json()
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
+            json={
+                "text": "第1章：开端\n" + ("A" * 1200) + "\n\n第2章：继续\n" + ("B" * 1200),
+                "filename": "book.txt",
+            },
+        ).json()
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={
+                "kind": "book_summarize",
+                "source_id": src["source_id"],
+                "segment_mode": "chapter",
+                "replace_existing": True,
+            },
+        ) as res:
+            assert res.status_code == 200
+
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+        assert any(
+            e.get("type") == "artifact"
+            and e.get("agent") == "BookSummarizer"
+            and (e.get("data") or {}).get("artifact_type") == "book_summarize_stats"
+            and (e.get("data") or {}).get("segment_mode") == "chapter"
+            and int(((e.get("data") or {}).get("created") or 0)) >= 1
+            for e in events
+        )
+
+        chunks = client.get(f"/api/projects/{p['id']}/kb/chunks")
+        assert chunks.status_code == 200
+        listed = chunks.json()
+        assert any(
+            (it.get("source_type") == "book_summary")
+            and ("book_chapter:" in (it.get("tags") or ""))
+            for it in listed
+        )
+
+
 def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     v1.11 regression test:
@@ -576,6 +654,100 @@ def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> No
         assert chunks.status_code == 200
         listed = chunks.json()
         assert any(it.get("source_type") == "book_state" for it in listed)
+
+
+def test_book_compile_prefers_chapter_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    v2.x regression test:
+    - book_compile should prefer chapter-based summaries when both chunk and chapter summaries exist.
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        if "BookCompilerAgent" in system_prompt:
+            return json.dumps(
+                {
+                    "book_summary": "demo",
+                    "style_profile": {"pov": "third", "tense": "past", "tone": "neutral", "genre": "fiction"},
+                    "world": "demo",
+                    "character_cards": [],
+                    "timeline": [],
+                    "open_loops": [],
+                    "continuation_seed": {"where_to_resume": "end", "next_scene": "demo", "constraints": []},
+                },
+                ensure_ascii=True,
+            )
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Book Compile Prefer Chapter"}).json()
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
+            json={"text": "第1章\nhello\n", "filename": "book.txt"},
+        ).json()
+        sid = src["source_id"]
+
+        # Seed both kinds.
+        created_chunk = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={
+                "title": "chunk sum 1",
+                "content": json.dumps(
+                    {"book_source_id": sid, "chunk_index": 1, "segment_mode": "chunk", "data": {"summary": "c"}},
+                    ensure_ascii=True,
+                ),
+                "source_type": "book_summary",
+                "tags": [f"book_source:{sid}", "book_chunk:1"],
+            },
+        )
+        assert created_chunk.status_code == 200
+
+        created_chapter = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={
+                "title": "chapter sum 1",
+                "content": json.dumps(
+                    {
+                        "book_source_id": sid,
+                        "chunk_index": 1,
+                        "segment_mode": "chapter",
+                        "chapter_label": "第1章",
+                        "data": {"summary": "ch"},
+                    },
+                    ensure_ascii=True,
+                ),
+                "source_type": "book_summary",
+                "tags": [f"book_source:{sid}", "book_part:chapter", "book_chapter:1"],
+            },
+        )
+        assert created_chapter.status_code == 200
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={"kind": "book_compile", "source_id": sid},
+        ) as res:
+            assert res.status_code == 200
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+        assert any(
+            e.get("type") == "agent_started"
+            and e.get("agent") == "BookCompiler"
+            and (e.get("data") or {}).get("segment_mode") == "chapter"
+            for e in events
+        )
 
 
 def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.MonkeyPatch) -> None:

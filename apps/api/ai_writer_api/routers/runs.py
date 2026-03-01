@@ -16,6 +16,7 @@ from ..db import ENGINE, get_session
 from ..llm import LLMError, parse_json_loose, resolve_llm_config, generate_text
 from ..models import Chapter, KBChunk, Project, Run, TraceEvent
 from ..tools.book_index import iter_text_chunks
+from ..tools.chapter_index import ChapterIndexError, build_chapter_index
 from ..tools.continue_sources import (
     ContinueSourceError,
     load_continue_source,
@@ -422,6 +423,47 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     n = int(default)
                 return max(int(lo), min(int(hi), int(n)))
 
+            segment_mode_raw = (
+                payload.get("segment_mode")
+                or payload.get("segment")
+                or ("chapter" if payload.get("use_chapter_index") else None)
+                or "chunk"
+            )
+            segment_mode_in = str(segment_mode_raw or "chunk").strip().lower()
+            segment_mode = "chunk"
+            if segment_mode_in in {"chapter", "chapters"}:
+                segment_mode = "chapter"
+            elif segment_mode_in in {"auto"}:
+                segment_mode = "auto"
+
+            # Chapter index params (used when segment_mode=chapter/auto).
+            max_chapters = clamp_int(payload.get("max_chapters"), 2000, 1, 20_000)
+            segment_max_chars = clamp_int(
+                payload.get("segment_max_chars") or payload.get("chapter_max_chars"),
+                8000,
+                1200,
+                50_000,
+            )
+            chapter_index_obj: dict[str, Any] | None = None
+            if segment_mode in {"chapter", "auto"}:
+                try:
+                    chapter_index_obj = build_chapter_index(
+                        source_id=source_id,
+                        preview_chars=160,
+                        max_chapters=max_chapters,
+                        overwrite=False,
+                    )
+                    segment_mode = "chapter"
+                except ChapterIndexError as e:
+                    chapter_index_obj = None
+                    if segment_mode == "chapter":
+                        yield emit(
+                            "agent_output",
+                            "BookSummarizer",
+                            {"error": f"chapter_index_failed:{str(e)}", "soft_fail": True},
+                        )
+                    segment_mode = "chunk"
+
             chunk_chars = clamp_int(payload.get("chunk_chars"), 6000, 500, 30_000)
             overlap_chars = clamp_int(payload.get("overlap_chars"), 400, 0, 10_000)
             max_chunks = clamp_int(payload.get("max_chunks"), 200, 1, 2000)
@@ -439,13 +481,24 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             filename = str((src.meta or {}).get("filename") or "").strip() or "book"
             filename_tag = filename.replace(",", " ").strip()[:64]
 
-            def book_title(lang: str, idx: int) -> str:
+            def book_title(lang: str, idx: int, *, chapter_label: str | None = None) -> str:
+                if segment_mode == "chapter":
+                    hint = (chapter_label or "").replace(",", " ").strip()
+                    if len(hint) > 24:
+                        hint = hint[:24].rstrip() + "…"
+                    if lang == "zh":
+                        return f"书籍章节总结 #{idx:03d}（{hint or filename[:24]}）"
+                    return f"Book chapter summary #{idx:03d} ({hint or filename[:24]})"
                 if lang == "zh":
                     return f"书籍分片总结 #{idx:03d}（{filename[:40]}）"
                 return f"Book chunk summary #{idx:03d} ({filename[:40]})"
 
             def book_tags(idx: int) -> str:
-                parts = [f"book_source:{source_id}", f"book_chunk:{idx}"]
+                parts = [f"book_source:{source_id}"]
+                if segment_mode == "chapter":
+                    parts.extend(["book_part:chapter", f"book_chapter:{idx}"])
+                else:
+                    parts.extend(["book_part:chunk", f"book_chunk:{idx}"])
                 if filename_tag:
                     parts.append(f"book_file:{filename_tag}")
                 return ",".join(parts)
@@ -475,9 +528,12 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 "BookSummarizer",
                 {
                     "source_id": source_id,
+                    "segment_mode": segment_mode,
                     "chunk_chars": chunk_chars,
                     "overlap_chars": overlap_chars,
                     "max_chunks": max_chunks,
+                    "max_chapters": max_chapters if segment_mode == "chapter" else None,
+                    "segment_max_chars": segment_max_chars if segment_mode == "chapter" else None,
                     "summary_chars": summary_max_chars,
                     "replace_existing": replace_existing,
                     "filename": filename,
@@ -495,8 +551,9 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 max_tokens=summary_max_tokens,
             )
 
-            existing_chunk_indices: set[int] = set()
-            if not replace_existing:
+            def load_existing_part_indices(mode: str) -> set[int]:
+                if replace_existing:
+                    return set()
                 try:
                     with get_session() as s_exist:
                         existing_rows = list(
@@ -508,34 +565,55 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                                 )
                             )
                         )
+                    out: set[int] = set()
+                    tag_key = "book_chapter" if mode == "chapter" else "book_chunk"
                     for row in existing_rows:
-                        m = re.search(r"(?:^|,|\\s)book_chunk:(\\d+)(?:$|,|\\s)", row.tags or "")
+                        m = re.search(
+                            rf"(?:^|,|\\s){tag_key}:(\\d+)(?:$|,|\\s)",
+                            row.tags or "",
+                        )
                         if m:
                             try:
-                                existing_chunk_indices.add(int(m.group(1)))
+                                out.add(int(m.group(1)))
                             except Exception:
                                 continue
+                    return out
                 except Exception:
-                    existing_chunk_indices = set()
+                    return set()
 
-            for idx, start_char, chunk_text in iter_text_chunks(
-                path=src.text_path,
-                chunk_chars=chunk_chars,
-                overlap_chars=overlap_chars,
-                max_chunks=max_chunks,
-            ):
-                if idx in existing_chunk_indices:
+            existing_part_indices: set[int] = load_existing_part_indices(segment_mode)
+
+            async def summarize_segment(
+                *,
+                idx: int,
+                start_char: int,
+                end_char: int | None,
+                snippet: str,
+                chapter_label: str | None = None,
+                chapter_title: str | None = None,
+                truncated: bool = False,
+                original_chars: int | None = None,
+            ) -> AsyncGenerator[bytes, None]:
+                nonlocal created, failed, processed, skipped
+
+                if idx in existing_part_indices:
                     skipped += 1
                     yield emit(
                         "agent_output",
                         "BookSummarizer",
-                        {"chunk_index": idx, "skipped": True, "reason": "already_summarized"},
+                        {
+                            "chunk_index": idx,
+                            "segment_mode": segment_mode,
+                            "skipped": True,
+                            "reason": "already_summarized",
+                        },
                     )
-                    continue
+                    return
+
                 processed += 1
-                snippet = (chunk_text or "").strip()
-                if not snippet:
-                    continue
+                snippet_s = (snippet or "").strip()
+                if not snippet_s:
+                    return
 
                 # Tool call record for trace.
                 yield emit(
@@ -545,12 +623,13 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         "tool": "llm.generate_text",
                         "provider": summarizer_cfg.provider,
                         "model": summarizer_cfg.model,
+                        "segment_mode": segment_mode,
                         "chunk_index": idx,
                     },
                 )
 
                 system = (
-                    "You are BookSummarizerAgent. Summarize a chunk of a long manuscript for later continuation. "
+                    "You are BookSummarizerAgent. Summarize a segment of a long manuscript for later continuation. "
                     f"{lang_hint_json} "
                     "Return JSON only. Keep strings concise; do NOT include any chain-of-thought. "
                     "Schema:\n"
@@ -563,17 +642,36 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     '  "open_loops": ["..."]\n'
                     "}\n"
                 )
-                user = (
-                    f"Book filename: {filename}\n"
-                    f"Book source_id: {source_id}\n"
-                    f"Chunk index: {idx}\n"
-                    f"Chunk start_char: {start_char}\n"
-                    f"Chunk size chars: {len(snippet)}\n"
-                    "Note: chunks may include overlap with previous chunks. Focus on NEW information and avoid repetition.\n"
-                    f"Limit your JSON string fields to ~{summary_max_chars} chars each.\n\n"
-                    "ChunkText:\n"
-                    f"{snippet}\n"
+
+                kind_label = "chapter" if segment_mode == "chapter" else "chunk"
+                user_lines = [
+                    f"Book filename: {filename}",
+                    f"Book source_id: {source_id}",
+                    f"Segment mode: {segment_mode}",
+                    f"Segment kind: {kind_label}",
+                    f"Segment index: {idx}",
+                    f"Start_char: {start_char}",
+                ]
+                if end_char is not None:
+                    user_lines.append(f"End_char: {end_char}")
+                if segment_mode == "chapter":
+                    if chapter_label:
+                        user_lines.append(f"Chapter label: {chapter_label}")
+                    if chapter_title:
+                        user_lines.append(f"Chapter title: {chapter_title}")
+                if original_chars is not None:
+                    user_lines.append(f"Original segment chars: {original_chars}")
+                user_lines.append(f"Prompt segment chars: {len(snippet_s)}")
+                if truncated:
+                    user_lines.append("Note: this segment was truncated for prompt budget.")
+                if segment_mode == "chunk":
+                    user_lines.append(
+                        "Note: chunks may include overlap with previous chunks. Focus on NEW information and avoid repetition."
+                    )
+                user_lines.append(
+                    f"Limit your JSON string fields to ~{summary_max_chars} chars each.\n\nSegmentText:\n{snippet_s}\n"
                 )
+                user = "\n".join(user_lines)
 
                 try:
                     out = await generate_text(system_prompt=system, user_prompt=user, cfg=summarizer_cfg)
@@ -582,28 +680,54 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     yield emit(
                         "agent_output",
                         "BookSummarizer",
-                        {"chunk_index": idx, "error": str(e), "soft_fail": True},
+                        {
+                            "chunk_index": idx,
+                            "segment_mode": segment_mode,
+                            "error": str(e),
+                            "soft_fail": True,
+                        },
                     )
-                    continue
+                    return
                 except Exception as e:
                     failed += 1
                     yield emit(
                         "agent_output",
                         "BookSummarizer",
-                        {"chunk_index": idx, "error": f"llm_failed:{type(e).__name__}", "soft_fail": True},
+                        {
+                            "chunk_index": idx,
+                            "segment_mode": segment_mode,
+                            "error": f"llm_failed:{type(e).__name__}",
+                            "soft_fail": True,
+                        },
                     )
-                    continue
+                    return
 
                 cleaned = strip_think_blocks(out).strip()
                 parsed = parse_json_loose(cleaned)
                 record: dict[str, Any]
+                base_record: dict[str, Any] = {
+                    "book_source_id": source_id,
+                    "segment_mode": segment_mode,
+                    "chunk_index": idx,
+                    "start_char": start_char,
+                }
+                if end_char is not None:
+                    base_record["end_char"] = int(end_char)
+                if segment_mode == "chapter":
+                    if chapter_label:
+                        base_record["chapter_label"] = chapter_label
+                    if chapter_title:
+                        base_record["chapter_title"] = chapter_title
+                if truncated:
+                    base_record["truncated"] = True
+                if original_chars is not None:
+                    base_record["original_chars"] = int(original_chars)
+
                 if isinstance(parsed, dict):
-                    record = {"book_source_id": source_id, "chunk_index": idx, "start_char": start_char, "data": parsed}
+                    record = {**base_record, "data": parsed}
                 else:
                     record = {
-                        "book_source_id": source_id,
-                        "chunk_index": idx,
-                        "start_char": start_char,
+                        **base_record,
                         "text": cleaned[: max(200, min(len(cleaned), summary_max_chars * 4))],
                     }
 
@@ -612,7 +736,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     kb = KBChunk(
                         project_id=project_id,
                         source_type="book_summary",
-                        title=book_title(output_lang, idx),
+                        title=book_title(output_lang, idx, chapter_label=chapter_label),
                         content=content,
                         tags=book_tags(idx),
                     )
@@ -630,12 +754,106 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     {
                         "artifact_type": "book_chunk_summary",
                         "source_id": source_id,
+                        "segment_mode": segment_mode,
                         "chunk_index": idx,
                         "start_char": start_char,
+                        "end_char": end_char,
                         "kb_chunk_id": kb.id,
                         "preview": preview,
                     },
                 )
+
+            if segment_mode == "chapter" and isinstance(chapter_index_obj, dict):
+                try:
+                    full_text = src.text_path.read_text(encoding="utf-8", errors="ignore")
+                except Exception as e:  # pragma: no cover
+                    yield emit(
+                        "agent_output",
+                        "BookSummarizer",
+                        {"error": f"book_text_read_failed:{type(e).__name__}", "soft_fail": True},
+                    )
+                    segment_mode = "chunk"
+                    existing_part_indices = load_existing_part_indices("chunk")
+                else:
+                    chapters_raw = chapter_index_obj.get("chapters")
+                    if not isinstance(chapters_raw, list) or not chapters_raw:
+                        yield emit(
+                            "agent_output",
+                            "BookSummarizer",
+                            {
+                                "error": "chapter_index_invalid_or_empty",
+                                "soft_fail": True,
+                            },
+                        )
+                        segment_mode = "chunk"
+                        existing_part_indices = load_existing_part_indices("chunk")
+                    else:
+                        for i, ch in enumerate(chapters_raw, start=1):
+                            if not isinstance(ch, dict):
+                                continue
+                            try:
+                                idx = int(ch.get("index") or i) or i
+                            except Exception:
+                                idx = i
+                            try:
+                                start_char = int(ch.get("start_char") or 0)
+                            except Exception:
+                                start_char = 0
+                            try:
+                                end_char = int(ch.get("end_char") or 0)
+                            except Exception:
+                                end_char = 0
+                            start_char = max(0, min(start_char, len(full_text)))
+                            end_char = max(start_char, min(end_char, len(full_text)))
+                            raw = full_text[start_char:end_char]
+                            if not raw.strip():
+                                continue
+                            original_chars = len(raw)
+                            snippet = raw
+                            truncated = False
+                            if segment_max_chars > 0 and original_chars > segment_max_chars:
+                                # Keep both head and tail for better continuity.
+                                head_n = max(300, int(segment_max_chars * 0.55))
+                                tail_n = max(300, int(segment_max_chars * 0.45))
+                                if head_n + tail_n > segment_max_chars:
+                                    tail_n = max(0, segment_max_chars - head_n)
+                                snippet = (
+                                    raw[:head_n]
+                                    + "\n\n...[TRUNCATED]...\n\n"
+                                    + (raw[-tail_n:] if tail_n > 0 else "")
+                                )
+                                truncated = True
+
+                            chapter_label = str(ch.get("label") or "").strip() or None
+                            chapter_title = str(ch.get("title") or "").strip() or None
+
+                            async for b in summarize_segment(
+                                idx=idx,
+                                start_char=start_char,
+                                end_char=end_char,
+                                snippet=snippet,
+                                chapter_label=chapter_label,
+                                chapter_title=chapter_title,
+                                truncated=truncated,
+                                original_chars=original_chars,
+                            ):
+                                yield b
+
+            if segment_mode == "chunk":
+                for idx, start_char, chunk_text in iter_text_chunks(
+                    path=src.text_path,
+                    chunk_chars=chunk_chars,
+                    overlap_chars=overlap_chars,
+                    max_chunks=max_chunks,
+                ):
+                    end_char = int(start_char) + len(chunk_text or "")
+                    async for b in summarize_segment(
+                        idx=idx,
+                        start_char=start_char,
+                        end_char=end_char,
+                        snippet=(chunk_text or ""),
+                    ):
+                        yield b
 
             yield emit(
                 "artifact",
@@ -644,14 +862,18 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "artifact_type": "book_summarize_stats",
                     "source_id": source_id,
                     "filename": filename,
+                    "segment_mode": segment_mode,
                     "processed": processed,
                     "created": created,
                     "failed": failed,
                     "skipped": skipped,
                     "params": {
+                        "segment_mode": segment_mode,
                         "chunk_chars": chunk_chars,
                         "overlap_chars": overlap_chars,
                         "max_chunks": max_chunks,
+                        "max_chapters": max_chapters,
+                        "segment_max_chars": segment_max_chars,
                         "replace_existing": replace_existing,
                     },
                 },
@@ -728,20 +950,39 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             summaries: list[dict[str, Any]] = []
             for r in rows:
                 idx: int | None = None
-                m = re.search(r"(?:^|,|\\s)book_chunk:(\\d+)(?:$|,|\\s)", r.tags or "")
+                part_kind = "chunk"
+                m = re.search(r"(?:^|,|\\s)book_chapter:(\\d+)(?:$|,|\\s)", r.tags or "")
                 if m:
+                    part_kind = "chapter"
                     try:
                         idx = int(m.group(1))
                     except Exception:
                         idx = None
+                else:
+                    m = re.search(r"(?:^|,|\\s)book_chunk:(\\d+)(?:$|,|\\s)", r.tags or "")
+                    if m:
+                        try:
+                            idx = int(m.group(1))
+                        except Exception:
+                            idx = None
                 start_char: int | None = None
                 data_summary: dict[str, Any] | None = None
+                chapter_label: str | None = None
+                chapter_title: str | None = None
                 try:
                     obj = json.loads(r.content)
                     if isinstance(obj, dict):
+                        seg_mode = str(obj.get("segment_mode") or "").strip().lower()
+                        if seg_mode == "chapter":
+                            part_kind = "chapter"
                         if idx is None and obj.get("chunk_index") is not None:
                             try:
                                 idx = int(obj.get("chunk_index") or 0) or None
+                            except Exception:
+                                idx = None
+                        if idx is None and obj.get("chapter_index") is not None:
+                            try:
+                                idx = int(obj.get("chapter_index") or 0) or None
                             except Exception:
                                 idx = None
                         if obj.get("start_char") is not None:
@@ -749,6 +990,10 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                                 start_char = int(obj.get("start_char") or 0)
                             except Exception:
                                 start_char = None
+                        if obj.get("chapter_label") is not None:
+                            chapter_label = _safe_str(obj.get("chapter_label"), 120) or None
+                        if obj.get("chapter_title") is not None:
+                            chapter_title = _safe_str(obj.get("chapter_title"), 160) or None
                         if isinstance(obj.get("data"), dict):
                             data_summary = obj.get("data")  # type: ignore[assignment]
                 except Exception:
@@ -760,8 +1005,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 if isinstance(data_summary, dict):
                     summaries.append(
                         {
+                            "segment_mode": part_kind,
                             "chunk_index": idx,
                             "start_char": start_char,
+                            "chapter_label": chapter_label,
+                            "chapter_title": chapter_title,
                             "summary": _safe_str(data_summary.get("summary"), 900),
                             "key_events": _safe_list(data_summary.get("key_events"), 10),
                             "characters": _safe_list(data_summary.get("characters"), 12),
@@ -773,8 +1021,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 else:
                     summaries.append(
                         {
+                            "segment_mode": part_kind,
                             "chunk_index": idx,
                             "start_char": start_char,
+                            "chapter_label": chapter_label,
+                            "chapter_title": chapter_title,
                             "summary": _safe_str(r.content, 900),
                             "key_events": [],
                             "characters": [],
@@ -784,6 +1035,10 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         }
                     )
 
+            # Prefer chapter-based summaries when available (more aligned with user mental model).
+            if any(str(s.get("segment_mode") or "") == "chapter" for s in summaries):
+                summaries = [s for s in summaries if str(s.get("segment_mode") or "") == "chapter"]
+
             summaries.sort(key=lambda x: int(x.get("chunk_index") or 0))
             total = len(summaries)
             if total <= 0:
@@ -792,6 +1047,10 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 mark_run_failed(msg)
                 yield emit("run_completed", "Director", {})
                 return
+
+            compiled_segment_mode = (
+                "chapter" if any(str(s.get("segment_mode") or "") == "chapter" for s in summaries) else "chunk"
+            )
 
             # Prompt size guard: include the beginning + ending to cover introductions and the latest state.
             selected: list[dict[str, Any]] = summaries
@@ -806,6 +1065,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 {
                     "source_id": source_id,
                     "filename": filename,
+                    "segment_mode": compiled_segment_mode,
                     "total_summaries": total,
                     "used_summaries": len(selected),
                     "selection": selection_note,
@@ -829,8 +1089,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 },
             )
 
+            seg_word = "chapter" if compiled_segment_mode == "chapter" else "chunk"
+            seg_word_cap = "Chapter" if compiled_segment_mode == "chapter" else "Chunk"
+
             system = (
-                "You are BookCompilerAgent. Compile a long book's chunk summaries into a compact state for continuation. "
+                f"You are BookCompilerAgent. Compile a long book's {seg_word} summaries into a compact state for continuation. "
                 f"{lang_hint_json} "
                 "Return JSON only. Do NOT include chain-of-thought. "
                 "Constraints (keep it compact): "
@@ -849,9 +1112,9 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             user = (
                 f"Book filename: {filename}\n"
                 f"Book source_id: {source_id}\n"
-                f"Chunk summaries available: {total}\n"
+                f"{seg_word_cap} summaries available: {total}\n"
                 f"Included in this compile: {len(selected)} (selection={selection_note})\n\n"
-                "ChunkSummariesJSON:\n"
+                f"{seg_word_cap}SummariesJSON:\n"
                 f"{json_dumps(selected)}\n"
             )
 
