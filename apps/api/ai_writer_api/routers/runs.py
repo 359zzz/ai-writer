@@ -574,6 +574,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             failed = 0
             processed = 0
             skipped = 0
+            json_parse_failed = 0
 
             summarizer_cfg = replace(
                 llm_cfg(),
@@ -624,7 +625,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 truncated: bool = False,
                 original_chars: int | None = None,
             ) -> AsyncGenerator[bytes, None]:
-                nonlocal created, failed, processed, skipped
+                nonlocal created, failed, processed, skipped, json_parse_failed
 
                 if idx in existing_part_indices:
                     skipped += 1
@@ -733,7 +734,13 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     return
 
                 cleaned = strip_think_blocks(out).strip()
-                parsed = parse_json_loose(cleaned)
+                parsed: Any | None = None
+                parse_err: str | None = None
+                try:
+                    parsed = parse_json_loose(cleaned)
+                except Exception as e:
+                    json_parse_failed += 1
+                    parse_err = type(e).__name__
                 record: dict[str, Any]
                 base_record: dict[str, Any] = {
                     "book_source_id": source_id,
@@ -760,6 +767,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         **base_record,
                         "text": cleaned[: max(200, min(len(cleaned), summary_max_chars * 4))],
                     }
+                    if parse_err:
+                        record["parse_error"] = parse_err
 
                 content = json_dumps(record)
                 with get_session() as s_kb:
@@ -897,6 +906,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "created": created,
                     "failed": failed,
                     "skipped": skipped,
+                    "json_parse_failed": json_parse_failed,
                     "params": {
                         "segment_mode": segment_mode,
                         "chunk_chars": chunk_chars,

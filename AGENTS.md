@@ -468,6 +468,13 @@ Versioning policy (from v1.0.x onward):
 - 修复 `scripts/dev.ps1` 中的 PowerShell 字符串插值解析错误（`PID=$p: ...` 在某些情况下会被当作 `$p:` 解析导致脚本无法运行）。
 - 现在 `.\scripts\dev.ps1` 可正常执行端口检测与自动清理逻辑。
 
+### v2.1.6 (Book: Summarize — Non-JSON Output Tolerance)
+- 书籍总结入库（`book_summarize`）增强:
+  - Gemini/网关偶尔不按要求输出 JSON 时，不再因为 JSON 解析失败而直接中断 SSE（避免前端出现 `Error in input stream`）。
+  - 解析失败会以 `text` 兜底保存到 KB，并在 stats 里记录 `json_parse_failed` 计数，便于排障与选择更稳的模型（建议 Flash）。
+- Tests:
+  - 新增回归：BookSummarizer 返回非 JSON 文本时也应完成并落库。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

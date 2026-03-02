@@ -562,6 +562,77 @@ def test_book_summarize_chapter_mode_uses_chapter_index(monkeypatch: pytest.Monk
         )
 
 
+def test_book_summarize_tolerates_non_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Real gateways occasionally return non-JSON text even when instructed.
+
+    book_summarize should NOT crash the SSE stream in that case; it should
+    store a best-effort text summary record and complete when at least one
+    segment is stored successfully.
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        if "BookSummarizerAgent" in system_prompt:
+            return "这不是JSON，但应该被容错保存。"
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Book Sum Non-JSON Test"}).json()
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
+            json={
+                "text": "第1章：开端\n" + ("A" * 1200) + "\n\n第2章：继续\n" + ("B" * 1200),
+                "filename": "book.txt",
+            },
+        ).json()
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={
+                "kind": "book_summarize",
+                "source_id": src["source_id"],
+                "segment_mode": "chapter",
+                "replace_existing": True,
+            },
+        ) as res:
+            assert res.status_code == 200
+
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+        assert any(
+            e.get("type") == "artifact"
+            and e.get("agent") == "BookSummarizer"
+            and (e.get("data") or {}).get("artifact_type") == "book_summarize_stats"
+            and int(((e.get("data") or {}).get("created") or 0)) >= 1
+            and int(((e.get("data") or {}).get("json_parse_failed") or 0)) >= 1
+            for e in events
+        )
+
+        chunks = client.get(f"/api/projects/{p['id']}/kb/chunks")
+        assert chunks.status_code == 200
+        listed = chunks.json()
+        assert any(it.get("source_type") == "book_summary" for it in listed)
+        # Should persist a JSON record with a text fallback + parse_error.
+        assert any(
+            ("parse_error" in (it.get("content") or "")) and ("text" in (it.get("content") or ""))
+            for it in listed
+        )
+
+
 def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     v1.11 regression test:
