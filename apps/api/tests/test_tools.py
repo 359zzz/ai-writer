@@ -173,3 +173,42 @@ def test_continue_source_chapter_index_no_headings() -> None:
             f"/api/tools/continue_sources/{sid}/chapter_index?overwrite=true&preview_chars=40&max_chapters=100"
         )
         assert res.status_code == 400
+
+
+def test_continue_source_chapter_index_inline_headings_and_dedupe() -> None:
+    """
+    Headings may appear inside body text (imperfect extraction), and the same
+    "第X回/章" can appear multiple times (TOC / references / page headers).
+
+    We should pick the most plausible boundaries based on the majority chapter
+    length, not the earliest occurrence.
+    """
+
+    toc = "目录\n" + "\n".join([f"第{i}回 虚假目录" for i in range(1, 6)]) + "\n\n"
+    body_parts: list[str] = [toc]
+    for i in range(1, 6):
+        body_parts.append(f"一些前文。第{i}回 真正第{i}回\n")
+        body_parts.append(("甲" * (260 + i * 20)) + "\n")
+        if i == 3:
+            # A non-heading reference that still matches the permissive regex.
+            body_parts.append("中间提到（第3回）但这不是标题。\n")
+        body_parts.append("\n")
+
+    txt = "".join(body_parts).encode("utf-8")
+
+    with TestClient(app) as client:
+        src = client.post(
+            "/api/tools/continue_sources/upload?preview_mode=head&preview_chars=200",
+            files={"file": ("book.txt", txt, "text/plain")},
+        ).json()
+        sid = src["source_id"]
+
+        res = client.get(
+            f"/api/tools/continue_sources/{sid}/chapter_index?overwrite=true&preview_chars=40&max_chapters=100"
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body.get("source_id") == sid
+        assert body.get("total_chapters") == 5
+        assert isinstance(body.get("chapters"), list)
+        assert "真正第1回" in (body["chapters"][0].get("header") or "")

@@ -444,6 +444,13 @@ Versioning policy (from v1.0.x onward):
 - Docs:
   - 更新 `README.md` / `README.zh-CN.md` 的图谱使用说明。
 
+### v2.1.2 (Book: Chapter Split — Inline Headings + Dedupe Heuristics)
+- 章节分块（`chapter_index`）增强:
+  - 支持“标题藏在正文里”的情况：章节识别不再强依赖“标题必须独占一行”。
+  - 当同一个“第X章/回”出现多次（目录/引用/页眉重复等），会结合“绝大多数章节长度”做去噪与选择，更倾向于选出真实章节边界。
+- Tests:
+  - 新增回归：正文内标题 + 重复标题（目录/引用）去噪应能得到正确章节数。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

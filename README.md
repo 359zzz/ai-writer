@@ -84,7 +84,7 @@ Security note: the UI only shows key presence (present/missing). It never displa
 - Book continuation (long books):
   - Continue tab → Book Continue
   - Upload a book as a local “book source”
-  - Step 1: Detect chapters (and optionally tune + save)
+  - Step 1: Detect chapters (works even when headings are embedded in body text; duplicates are filtered; optionally tune + save)
   - Step 2: Summarize into KB (chapter mode)
   - Step 3: Compile book state
   - Step 4: Open Continue workspace (book mode) and write chapters (supports batch + persisted chapters)

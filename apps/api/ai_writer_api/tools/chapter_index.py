@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import bisect
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,6 +37,106 @@ _CN_NUM = "0-9一二三四五六七八九十百千万零〇两"
 _CHAPTER_HEADING_RE = re.compile(
     rf"^\s*第\s*([{_CN_NUM}]+)\s*(章|回|卷|节)\s*[:：\-\—\.\s　\t]*([^\r\n]*)\s*$"
 )
+
+# A more permissive detector for headings that may appear "inside" the body text
+# due to imperfect extraction/formatting (e.g. PDF/EPUB text merge).
+#
+# Key heuristic: avoid matching "在第十二回里..." style references by requiring the
+# previous character NOT to be a CJK ideograph. (Punctuation / whitespace are ok.)
+_CHAPTER_HEADING_ANY_RE = re.compile(
+    rf"(?<![\u4e00-\u9fff])"
+    rf"第\s*([{_CN_NUM}]+)\s*(章|回|卷|节)"
+    rf"(?:\s*[（(]?\s*[上中下序终完]\s*[）)]?)?"
+    rf"\s*[:：\-\—\.\s　\t]*([^\r\n]{{0,60}})"
+)
+
+
+_CN_DIGIT_MAP: dict[str, int] = {
+    "零": 0,
+    "〇": 0,
+    "0": 0,
+    "一": 1,
+    "1": 1,
+    "二": 2,
+    "两": 2,
+    "2": 2,
+    "三": 3,
+    "3": 3,
+    "四": 4,
+    "4": 4,
+    "五": 5,
+    "5": 5,
+    "六": 6,
+    "6": 6,
+    "七": 7,
+    "7": 7,
+    "八": 8,
+    "8": 8,
+    "九": 9,
+    "9": 9,
+}
+
+_CN_UNIT_MAP: dict[str, int] = {
+    "十": 10,
+    "百": 100,
+    "千": 1000,
+    "万": 10_000,
+}
+
+
+def _parse_cn_int(text: str) -> int | None:
+    s = (text or "").strip()
+    if not s:
+        return None
+    if re.fullmatch(r"\d{1,6}", s):
+        try:
+            return int(s)
+        except Exception:
+            return None
+
+    total = 0
+    section = 0
+    number = 0
+    any_hit = False
+    for ch in s:
+        if ch in _CN_DIGIT_MAP:
+            number = _CN_DIGIT_MAP[ch]
+            any_hit = True
+            continue
+        if ch in _CN_UNIT_MAP:
+            unit = _CN_UNIT_MAP[ch]
+            any_hit = True
+            if unit >= 10_000:
+                section = (section + number) * unit
+                total += section
+                section = 0
+            else:
+                if number == 0:
+                    # e.g. "十二" / "十"
+                    number = 1
+                section += number * unit
+            number = 0
+            continue
+        # Unknown char: give up if no useful tokens so far, otherwise ignore.
+        if not any_hit:
+            return None
+
+    out = total + section + number
+    if out <= 0:
+        return None
+    return out
+
+
+@dataclass(frozen=True)
+class HeadingCandidate:
+    start_char: int
+    end_char: int
+    num_raw: str
+    num: int | None
+    unit: str
+    title: str
+    header: str
+    score: float
 
 
 @dataclass
@@ -254,92 +356,305 @@ def build_chapter_index(
     if out_path.exists() and not overwrite:
         return load_chapter_index(source_id=source_id)
 
-    chapters: list[ChapterMeta] = []
-    truncated = False
+    try:
+        full_text = src.text_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception as e:  # pragma: no cover
+        raise ChapterIndexError(f"chapter_index_read_text_failed:{type(e).__name__}") from e
 
-    # Streaming scan: keep offsets in character units (not bytes).
-    pos = 0
-    cur_start = -1
-    cur_header = ""
-    cur_label = ""
-    cur_title = ""
-    head_buf = ""
-    tail_buf = ""
-    capturing_head = True
+    total_len = len(full_text)
+    if total_len <= 0:
+        raise ChapterIndexError("chapter_index_empty_text")
 
-    def _finalize(end_pos: int) -> None:
-        nonlocal cur_start, cur_header, cur_label, cur_title, head_buf, tail_buf, capturing_head
-        if cur_start < 0:
-            return
-        idx = len(chapters) + 1
-        end = max(cur_start, int(end_pos))
-        chars = max(0, end - cur_start)
-        chapters.append(
-            ChapterMeta(
-                index=idx,
-                label=cur_label,
-                title=cur_title,
-                start_char=cur_start,
+    def score_candidate(start: int, end: int, title: str) -> float:
+        score = 0.0
+        if start <= 0:
+            score += 1.0
+        else:
+            prev = full_text[start - 1]
+            if prev in "\r\n":
+                score += 2.0
+            elif prev.isspace():
+                score += 0.3
+        if title.strip():
+            score += 0.5
+        # If a newline appears soon after the matched heading, it's likely a real header line.
+        tail = full_text[end : min(total_len, end + 80)]
+        if "\n" in tail or "\r" in tail:
+            score += 0.6
+        # Blank line before heading is a weak positive signal.
+        prev2 = full_text[max(0, start - 6) : start]
+        if "\n\n" in prev2 or "\r\n\r\n" in prev2:
+            score += 0.4
+        return score
+
+    candidates_raw: list[HeadingCandidate] = []
+    for m in _CHAPTER_HEADING_ANY_RE.finditer(full_text):
+        num_raw = (m.group(1) or "").strip()
+        unit = (m.group(2) or "").strip()
+        title = (m.group(3) or "").strip()
+        start = int(m.start())
+        end = int(m.end())
+        if start < 0 or start >= total_len:
+            continue
+        if end <= start:
+            continue
+        header = full_text[start:end].strip()
+        num = _parse_cn_int(num_raw)
+        candidates_raw.append(
+            HeadingCandidate(
+                start_char=start,
                 end_char=end,
-                chars=chars,
-                header=cur_header,
-                preview_head=(head_buf.strip()[:preview_chars_i] if preview_chars_i > 0 else ""),
-                preview_tail=(tail_buf.strip()[-preview_chars_i:] if preview_chars_i > 0 else ""),
+                num_raw=num_raw,
+                num=num,
+                unit=unit,
+                title=title,
+                header=header,
+                score=score_candidate(start, end, title),
             )
         )
-        cur_start = -1
-        cur_header = ""
-        cur_label = ""
-        cur_title = ""
-        head_buf = ""
-        tail_buf = ""
-        capturing_head = True
 
-    try:
-        with src.text_path.open("r", encoding="utf-8", errors="ignore") as f:
-            for raw_line in f:
-                line = raw_line.rstrip("\r\n")
-                m = _CHAPTER_HEADING_RE.match(line)
-                if m:
-                    # Start of a new chapter.
-                    _finalize(pos)
-                    if len(chapters) >= max_chapters_i:
-                        truncated = True
-                        break
-                    num_s = (m.group(1) or "").strip()
-                    unit = (m.group(2) or "").strip()
-                    tail = (m.group(3) or "").strip()
-                    label = f"第{num_s}{unit}"
-                    title = tail if tail else label
-                    cur_start = int(pos)
-                    cur_header = line.strip()
-                    cur_label = label
-                    cur_title = title
-                    head_buf = ""
-                    tail_buf = ""
-                    capturing_head = True
-                else:
-                    if cur_start >= 0 and preview_chars_i > 0:
-                        # head: capture early content (after the heading).
-                        if capturing_head and len(head_buf) < preview_chars_i:
-                            need = preview_chars_i - len(head_buf)
-                            if need > 0 and line.strip():
-                                head_buf += (line.strip() + "\n")[:need]
-                            if len(head_buf) >= preview_chars_i:
-                                capturing_head = False
+    if not candidates_raw:
+        raise ChapterIndexError("chapter_index_no_headings_found")
 
-                        # tail: rolling buffer
-                        if line.strip():
-                            tail_buf = (tail_buf + line.strip() + "\n")[-max(200, preview_chars_i * 2) :]
+    # Dedupe candidates by boundary position (keep the best-scored one).
+    by_start: dict[int, HeadingCandidate] = {}
+    for c in candidates_raw:
+        prev = by_start.get(c.start_char)
+        if not prev or c.score > prev.score:
+            by_start[c.start_char] = c
+    candidates = sorted(by_start.values(), key=lambda c: c.start_char)
 
-                pos += len(raw_line)
-    except ContinueSourceError:
-        raise
-    except Exception as e:  # pragma: no cover
-        raise ChapterIndexError(f"chapter_index_failed:{type(e).__name__}") from e
+    # Pick the most likely unit (章/回/卷/节) to reduce noise.
+    unit_counts: dict[str, int] = {}
+    for c in candidates:
+        if c.num is None:
+            continue
+        unit_counts[c.unit] = unit_counts.get(c.unit, 0) + 1
+    if not unit_counts:
+        for c in candidates:
+            unit_counts[c.unit] = unit_counts.get(c.unit, 0) + 1
+    best_unit = sorted(unit_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+    candidates = [c for c in candidates if c.unit == best_unit]
+    if not candidates:
+        raise ChapterIndexError("chapter_index_no_headings_found")
 
-    if not truncated:
-        _finalize(pos)
+    numeric = [c for c in candidates if c.num is not None]
+    # If we don't have usable numbers, fall back to simple position-based split.
+    if len(numeric) < 2:
+        picked = candidates[:max_chapters_i]
+    else:
+        # Find the longest consecutive run of chapter numbers (most likely real book structure).
+        nums = sorted({int(c.num) for c in numeric if c.num is not None})
+        best_start = nums[0]
+        best_len = 1
+        cur_start = nums[0]
+        cur_len = 1
+        for i in range(1, len(nums)):
+            if nums[i] == nums[i - 1] + 1:
+                cur_len += 1
+            else:
+                if cur_len > best_len:
+                    best_start, best_len = cur_start, cur_len
+                cur_start = nums[i]
+                cur_len = 1
+        if cur_len > best_len:
+            best_start, best_len = cur_start, cur_len
+
+        run_nums = list(range(best_start, best_start + best_len))
+        if len(run_nums) > max_chapters_i:
+            run_nums = run_nums[:max_chapters_i]
+        num_set = set(run_nums)
+
+        groups: list[list[HeadingCandidate]] = []
+        for n in run_nums:
+            g = [c for c in numeric if int(c.num or -1) == n]
+            g.sort(key=lambda c: c.start_char)
+            groups.append(g)
+
+        # Safety: prune per-number candidates to keep DP fast even on page-header duplicates.
+        def prune_group(g: list[HeadingCandidate], limit: int = 18) -> list[HeadingCandidate]:
+            if len(g) <= limit:
+                return g
+            by_pos = sorted(g, key=lambda c: c.start_char)
+            by_score = sorted(g, key=lambda c: (-c.score, c.start_char))
+            keep: dict[int, HeadingCandidate] = {}
+            for c in by_score[: max(6, limit // 2)]:
+                keep[c.start_char] = c
+            for c in by_pos[:4] + by_pos[-4:]:
+                keep[c.start_char] = c
+            pruned = sorted(keep.values(), key=lambda c: (-c.score, c.start_char))[:limit]
+            return sorted(pruned, key=lambda c: c.start_char)
+
+        groups = [prune_group(g) for g in groups]
+
+        # For TOC/page-header noise: if a candidate range contains *other* strong
+        # chapter headings (different numbers), it's probably a false boundary.
+        def is_strong_heading(c: HeadingCandidate) -> bool:
+            if c.start_char <= 0:
+                return True
+            prev_ch = full_text[c.start_char - 1]
+            return prev_ch in "\r\n"
+
+        strong_headings = sorted(
+            [
+                (c.start_char, int(c.num or 0))
+                for c in numeric
+                if c.num is not None and is_strong_heading(c)
+            ],
+            key=lambda t: t[0],
+        )
+        strong_starts = [p for p, _n in strong_headings]
+        strong_nums = [_n for _p, _n in strong_headings]
+
+        avg_len = max(1.0, float(total_len) / max(1, len(groups)))
+        min_seg_candidates = [
+            max(60, min(2500, int(avg_len * 0.08))),
+            max(40, min(1800, int(avg_len * 0.04))),
+            max(20, min(1200, int(avg_len * 0.02))),
+            0,
+        ]
+
+        def dp_pick(*, typical_len: float | None, min_seg_len: int) -> list[HeadingCandidate] | None:
+            if not groups or any(not g for g in groups):
+                return None
+            dp: list[list[float]] = [[-1e30 for _ in g] for g in groups]
+            prev_ix: list[list[int]] = [[-1 for _ in g] for g in groups]
+
+            for j, c in enumerate(groups[0]):
+                dp[0][j] = float(c.score)
+
+            def trans_bonus(seg_len: int) -> float:
+                if typical_len is None or typical_len <= 0:
+                    return 0.0
+                r = max(1e-6, float(seg_len) / float(typical_len))
+                pen = abs(math.log(r))
+                # Strong penalty when too off (helps reject TOC/page-header duplicates).
+                return -2.4 * pen
+
+            def intrusion_penalty(prev_start: int, cur_start: int, prev_num: int) -> float:
+                if not strong_headings:
+                    return 0.0
+                lo = bisect.bisect_right(strong_starts, int(prev_start))
+                hi = bisect.bisect_left(strong_starts, int(cur_start))
+                if hi <= lo:
+                    return 0.0
+                cnt = 0
+                # Cap scan/penalty to keep worst-case bounded.
+                for n in strong_nums[lo:hi]:
+                    if int(n) != int(prev_num):
+                        cnt += 1
+                        if cnt >= 10:
+                            break
+                return -0.9 * float(cnt)
+
+            for i in range(1, len(groups)):
+                for j, cur in enumerate(groups[i]):
+                    best = -1e30
+                    best_k = -1
+                    for k, prev in enumerate(groups[i - 1]):
+                        if prev.start_char >= cur.start_char:
+                            continue
+                        seg_len = int(cur.start_char - prev.start_char)
+                        if seg_len < int(min_seg_len):
+                            continue
+                        if dp[i - 1][k] <= -1e20:
+                            continue
+                        prev_num = int(prev.num or 0)
+                        cand = (
+                            dp[i - 1][k]
+                            + float(cur.score)
+                            + trans_bonus(seg_len)
+                            + intrusion_penalty(prev.start_char, cur.start_char, prev_num)
+                        )
+                        if cand > best:
+                            best = cand
+                            best_k = k
+                    dp[i][j] = best
+                    prev_ix[i][j] = best_k
+
+            last = dp[-1]
+            best_last = max(range(len(last)), key=lambda j: last[j], default=-1)
+            if best_last < 0 or last[best_last] <= -1e20:
+                return None
+            out: list[HeadingCandidate] = []
+            j = best_last
+            for i in reversed(range(len(groups))):
+                out.append(groups[i][j])
+                j = prev_ix[i][j]
+                if i > 0 and j < 0:
+                    return None
+            out.reverse()
+            return out
+
+        picked: list[HeadingCandidate] | None = None
+        used_min_seg_len = 0
+        for ms in min_seg_candidates:
+            picked = dp_pick(typical_len=None, min_seg_len=int(ms))
+            if picked:
+                used_min_seg_len = int(ms)
+                break
+        if not picked:
+            # Final fallback: greedily pick the first monotonic sequence.
+            picked = []
+            last_pos = -1
+            for g in groups:
+                nxt = next((c for c in g if c.start_char > last_pos), None)
+                if not nxt:
+                    break
+                picked.append(nxt)
+                last_pos = nxt.start_char
+
+        seg_lens = [
+            int(picked[i + 1].start_char - picked[i].start_char)
+            for i in range(len(picked) - 1)
+            if picked[i + 1].start_char > picked[i].start_char
+        ]
+        typical = None
+        if seg_lens:
+            seg_sorted = sorted(seg_lens)
+            trim = max(0, int(len(seg_sorted) * 0.1))
+            core = seg_sorted[trim : len(seg_sorted) - trim] if len(seg_sorted) >= 8 else seg_sorted
+            typical = float(core[len(core) // 2])
+            if typical <= 0:
+                typical = None
+
+        picked2 = dp_pick(typical_len=typical, min_seg_len=max(0, used_min_seg_len // 2))
+        if picked2:
+            picked = picked2
+
+    # Build final ChapterMeta list with previews.
+    chapters: list[ChapterMeta] = []
+    truncated = False
+    picked = sorted(picked, key=lambda c: c.start_char)
+    if len(picked) > max_chapters_i:
+        picked = picked[:max_chapters_i]
+        truncated = True
+
+    for i, c in enumerate(picked):
+        start = int(c.start_char)
+        end = int(picked[i + 1].start_char) if i + 1 < len(picked) else int(total_len)
+        end = max(start, min(end, int(total_len)))
+        label = f"第{c.num_raw}{c.unit}".strip()
+        title = (c.title or "").strip() or label
+        # previews: prefer content after the detected header span
+        head_src = full_text[min(end, int(c.end_char)) : end]
+        tail_src = full_text[start:end]
+        head = head_src.strip()
+        tail = tail_src.strip()
+
+        chapters.append(
+            ChapterMeta(
+                index=i + 1,
+                label=label,
+                title=title,
+                start_char=start,
+                end_char=end,
+                chars=max(0, end - start),
+                header=c.header,
+                preview_head=(head[:preview_chars_i] if preview_chars_i > 0 else ""),
+                preview_tail=(tail[-preview_chars_i:] if preview_chars_i > 0 else ""),
+            )
+        )
 
     if not chapters:
         raise ChapterIndexError("chapter_index_no_headings_found")
@@ -350,8 +665,9 @@ def build_chapter_index(
         "params": {
             "preview_chars": preview_chars_i,
             "max_chapters": max_chapters_i,
-            "pattern": "cn_default",
+            "pattern": "cn_default_v2",
             "overwrite": bool(overwrite),
+            "unit": best_unit,
         },
         "chapters": [c.to_dict() for c in chapters],
         "total_chapters": len(chapters),
