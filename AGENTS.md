@@ -458,6 +458,12 @@ Versioning policy (from v1.0.x onward):
 - Tests:
   - 扩展回归：覆盖“导航噪声 + 标题粘连”与“第X回中...”引用场景。
 
+### v2.1.4 (Dev: Auto-Kill Stale Ports on Startup)
+- Dev Script（`scripts/dev.ps1`）增强:
+  - 默认启动前会尝试自动清理被旧进程占用的端口（8000/3000），避免“启动成功但实际上仍在跑旧版本”的困惑。
+  - API 端口（8000）会先探测 `/api/health` 是否为 ai-writer-api，再做更安全的自动停止；对 `uvicorn --reload` 孤儿子进程（`spawn_main(parent_pid=...)`）也会尝试清理。
+  - 可用参数：`-NoAutoKill`（禁用自动清理），`-ForceKill`（强制清理未知占用者，谨慎使用）。
+
 ---
 
 ### Roadmap (Planned, Living Doc)
