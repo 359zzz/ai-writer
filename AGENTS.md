@@ -464,6 +464,10 @@ Versioning policy (from v1.0.x onward):
   - API 端口（8000）会先探测 `/api/health` 是否为 ai-writer-api，再做更安全的自动停止；对 `uvicorn --reload` 孤儿子进程（`spawn_main(parent_pid=...)`）也会尝试清理。
   - 可用参数：`-NoAutoKill`（禁用自动清理），`-ForceKill`（强制清理未知占用者，谨慎使用）。
 
+### v2.1.5 (Dev: Fix dev.ps1 Interpolation Parse Error)
+- 修复 `scripts/dev.ps1` 中的 PowerShell 字符串插值解析错误（`PID=$p: ...` 在某些情况下会被当作 `$p:` 解析导致脚本无法运行）。
+- 现在 `.\scripts\dev.ps1` 可正常执行端口检测与自动清理逻辑。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

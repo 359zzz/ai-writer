@@ -92,7 +92,7 @@ function Kill-ListenerOnPort(
     Write-Host "[dev] WARNING: Port $Port is in use, and the listener doesn't look like our $Label."
     foreach ($p in $pids) {
       $cmd = Try-GetCommandLine -Pid $p
-      if ($cmd) { Write-Host "[dev] Port $Port PID=$p: $cmd" } else { Write-Host "[dev] Port $Port PID=$p" }
+      if ($cmd) { Write-Host "[dev] Port $Port PID=${p}: $cmd" } else { Write-Host "[dev] Port $Port PID=${p}" }
     }
     if ($ForceKill) {
       Write-Host "[dev] ForceKill enabled. Attempting to stop the listener anyway..."
