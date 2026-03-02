@@ -187,11 +187,16 @@ def test_continue_source_chapter_index_inline_headings_and_dedupe() -> None:
     toc = "目录\n" + "\n".join([f"第{i}回 虚假目录" for i in range(1, 6)]) + "\n\n"
     body_parts: list[str] = [toc]
     for i in range(1, 6):
-        body_parts.append(f"一些前文。第{i}回 真正第{i}回\n")
+        # Common scraped texts inline a navigation tail right before the actual heading:
+        #   ... 回目录回首页第X回 标题
+        # The preceding char for "第" is CJK ('页'), so we must NOT rely on a negative
+        # lookbehind like (?<![\\u4e00-\\u9fff]).
+        body_parts.append(f"一些前文。后一页前一页回目录回首页第{i}回 真正第{i}回\n")
         body_parts.append(("甲" * (260 + i * 20)) + "\n")
         if i == 3:
             # A non-heading reference that still matches the permissive regex.
             body_parts.append("中间提到（第3回）但这不是标题。\n")
+            body_parts.append("第3回中既将前事略已表明，此处也不是标题。\n")
         body_parts.append("\n")
 
     txt = "".join(body_parts).encode("utf-8")

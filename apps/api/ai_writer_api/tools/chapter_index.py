@@ -39,15 +39,36 @@ _CHAPTER_HEADING_RE = re.compile(
 )
 
 # A more permissive detector for headings that may appear "inside" the body text
-# due to imperfect extraction/formatting (e.g. PDF/EPUB text merge).
+# due to imperfect extraction/formatting (e.g. PDF/EPUB text merge) OR due to
+# "navigation noise" getting inlined before the heading (common on scraped sites):
+#   ... 回目录回首页第二回 标题
 #
-# Key heuristic: avoid matching "在第十二回里..." style references by requiring the
-# previous character NOT to be a CJK ideograph. (Punctuation / whitespace are ok.)
+# We keep the regex permissive and rely on context-based filtering + a DP that
+# prefers plausible chapter lengths when multiple duplicates exist.
 _CHAPTER_HEADING_ANY_RE = re.compile(
-    rf"(?<![\u4e00-\u9fff])"
-    rf"第\s*([{_CN_NUM}]+)\s*(章|回|卷|节)"
-    rf"(?:\s*[（(]?\s*[上中下序终完]\s*[）)]?)?"
-    rf"\s*[:：\-\—\.\s　\t]*([^\r\n]{{0,60}})"
+    rf"第[ \t　]*([{_CN_NUM}]+)[ \t　]*(章|回|卷|节)"
+    rf"(?:[ \t　]*[（(]?[ \t　]*[上中下序终完][ \t　]*[）)]?)?"
+    rf"(?P<delim>[ \t　:：\-\—\.]*)"
+    rf"(?P<title>[^\r\n]{{0,60}})"
+)
+
+_PUNCT_BEFORE_HEADING = set(
+    "，。！？：；、,.!?;:\"'“”‘’（）()【】[]《》<>—-…·．"
+)
+
+# Common page/navigation tails seen in scraped Chinese novels.
+_NAV_SUFFIXES: tuple[str, ...] = (
+    "回目录回首页",
+    "返回目录",
+    "返回首页",
+    "回目录",
+    "回首页",
+    "上一页",
+    "下一页",
+    "前一页",
+    "后一页",
+    "上一章",
+    "下一章",
 )
 
 
@@ -134,9 +155,11 @@ class HeadingCandidate:
     num_raw: str
     num: int | None
     unit: str
+    delim: str
     title: str
     header: str
     score: float
+    ref_like: bool
 
 
 @dataclass
@@ -365,7 +388,42 @@ def build_chapter_index(
     if total_len <= 0:
         raise ChapterIndexError("chapter_index_empty_text")
 
-    def score_candidate(start: int, end: int, title: str) -> float:
+    def nav_bonus(start: int) -> float:
+        if start <= 0:
+            return 0.0
+        left = full_text[max(0, start - 90) : start]
+        left = left.replace("\r", "").replace("\n", "")
+        left_norm = re.sub(r"[\s　\t]+", "", left)
+        left_norm = re.sub(
+            r"[\-—_|\u00b7…。，、：;；.!！?？“”‘’（）()\[\]<>《》]",
+            "",
+            left_norm,
+        )
+        tail = left_norm[-40:]
+        for tok in _NAV_SUFFIXES:
+            if tail.endswith(tok):
+                return 1.8
+        if "回目录" in tail and "回首页" in tail:
+            return 1.2
+        if "回首页" in tail and ("上一页" in tail or "下一页" in tail or "前一页" in tail or "后一页" in tail):
+            return 1.0
+        return 0.0
+
+    def allow_by_left_context(*, start: int, nav_b: float) -> bool:
+        if start <= 0:
+            return True
+        prev = full_text[start - 1]
+        if prev in "\r\n":
+            return True
+        if prev.isspace():
+            return True
+        if prev in _PUNCT_BEFORE_HEADING:
+            return True
+        return nav_b > 0.0
+
+    def score_candidate(
+        *, start: int, end: int, core_end: int, delim: str, title: str, nav_b: float
+    ) -> tuple[float, bool]:
         score = 0.0
         if start <= 0:
             score += 1.0
@@ -375,31 +433,79 @@ def build_chapter_index(
                 score += 2.0
             elif prev.isspace():
                 score += 0.3
-        if title.strip():
+            elif prev in _PUNCT_BEFORE_HEADING:
+                score += 0.4
+
+        score += float(nav_b)
+
+        title_s = (title or "").strip()
+        delim_s = delim or ""
+
+        if title_s:
             score += 0.5
+
+        # Reward visible "heading delimiter" (spaces/colon/dash/dot) between the unit and title.
+        if delim_s:
+            score += 0.7
+
+        # Penalize reference-like patterns:
+        #   "第四回中既将..." (no delimiter, title begins immediately with '中/内/里' etc.)
+        ref_like = False
+        if not delim_s and title_s:
+            ch0 = title_s[:1]
+            if ch0 in {"中", "内", "里"}:
+                score -= 2.2
+                ref_like = True
+            else:
+                score -= 0.9
+
         # If a newline appears soon after the matched heading, it's likely a real header line.
         tail = full_text[end : min(total_len, end + 80)]
         if "\n" in tail or "\r" in tail:
             score += 0.6
+
         # Blank line before heading is a weak positive signal.
         prev2 = full_text[max(0, start - 6) : start]
         if "\n\n" in prev2 or "\r\n\r\n" in prev2:
             score += 0.4
-        return score
+
+        # If the delimiter/title captured nav noise, it's probably an artifact.
+        if ("回目录" in title_s) or ("回首页" in title_s) or ("返回目录" in title_s) or ("返回首页" in title_s):
+            score -= 1.3
+
+        # If there's no delimiter and the title is non-empty, ensure we didn't cross a newline boundary.
+        # (Our regex excludes newlines in delim/title, but core_end may still be at EOL.)
+        if not delim_s and title_s and core_end < total_len and full_text[core_end] in "\r\n":
+            score += 0.2
+
+        return score, ref_like
 
     candidates_raw: list[HeadingCandidate] = []
     for m in _CHAPTER_HEADING_ANY_RE.finditer(full_text):
         num_raw = (m.group(1) or "").strip()
         unit = (m.group(2) or "").strip()
-        title = (m.group(3) or "").strip()
+        delim = (m.group("delim") or "")
+        title = (m.group("title") or "")
         start = int(m.start())
         end = int(m.end())
         if start < 0 or start >= total_len:
             continue
         if end <= start:
             continue
+        nav_b = nav_bonus(start)
+        if not allow_by_left_context(start=start, nav_b=nav_b):
+            continue
         header = full_text[start:end].strip()
         num = _parse_cn_int(num_raw)
+        core_end = int(m.start("delim"))
+        score, ref_like = score_candidate(
+            start=start,
+            end=end,
+            core_end=core_end,
+            delim=delim,
+            title=title,
+            nav_b=nav_b,
+        )
         candidates_raw.append(
             HeadingCandidate(
                 start_char=start,
@@ -407,9 +513,11 @@ def build_chapter_index(
                 num_raw=num_raw,
                 num=num,
                 unit=unit,
+                delim=delim,
                 title=title,
                 header=header,
-                score=score_candidate(start, end, title),
+                score=score,
+                ref_like=ref_like,
             )
         )
 
@@ -490,10 +598,14 @@ def build_chapter_index(
         # For TOC/page-header noise: if a candidate range contains *other* strong
         # chapter headings (different numbers), it's probably a false boundary.
         def is_strong_heading(c: HeadingCandidate) -> bool:
+            if bool(getattr(c, "ref_like", False)):
+                return False
             if c.start_char <= 0:
                 return True
             prev_ch = full_text[c.start_char - 1]
-            return prev_ch in "\r\n"
+            if prev_ch in "\r\n":
+                return True
+            return nav_bonus(int(c.start_char)) > 0.0
 
         strong_headings = sorted(
             [

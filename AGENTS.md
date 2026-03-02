@@ -451,6 +451,13 @@ Versioning policy (from v1.0.x onward):
 - Tests:
   - 新增回归：正文内标题 + 重复标题（目录/引用）去噪应能得到正确章节数。
 
+### v2.1.3 (Book: Chapter Split — Navigation Noise + “第X回中” Reference Guard)
+- 章节分块（`chapter_index`）增强:
+  - 支持“回目录/回首页/上一页/下一页”等导航噪声与标题粘连的情况：如 `...回目录回首页第二回 标题` 也能正确识别章回边界。
+  - 降低误识别：对“第X回中/里/内...”这类正文引用（非标题）做降权，避免被选成真实章节起点。
+- Tests:
+  - 扩展回归：覆盖“导航噪声 + 标题粘连”与“第X回中...”引用场景。
+
 ---
 
 ### Roadmap (Planned, Living Doc)
