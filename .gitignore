@@ -35,5 +35,8 @@ data/
 *.db-shm
 exports/
 
+# --- Local reference / experiments (not shipped) ---
+_ref/
+
 # --- Export templates generated locally ---
 apps/api/templates/export/reference.docx

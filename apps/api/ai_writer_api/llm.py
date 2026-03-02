@@ -685,12 +685,51 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
 
     if cfg.provider == "openai":
         base = cfg.base_url or "https://api.openai.com/v1"
-        return await openai_compatible_generate(
-            base_url=base,
-            api_key=cfg.api_key,
-            model=cfg.model,
-            prefer=cfg.wire_api,
-        )
+        is_packy = _is_packy_base(base)
+        prefer: WireAPI = cfg.wire_api
+        allow_responses = True
+        if is_packy:
+            # PackyAPI is generally chat-first. Probing multiple wire APIs (e.g. /responses)
+            # can create extra 404s/502s and increase the chance of being flagged as abusive.
+            prefer = "chat"
+            allow_responses = False
+
+        try:
+            return await openai_compatible_generate(
+                base_url=base,
+                api_key=cfg.api_key,
+                model=cfg.model,
+                prefer=prefer,
+                allow_responses=allow_responses,
+            )
+        except LLMError as e:
+            # PackyAPI/proxies sometimes have transient 5xx HTML error pages for certain
+            # model IDs (notably gpt-5.2). Try one conservative fallback model before
+            # surfacing the error, keeping the request count tight.
+            if not is_packy:
+                raise
+            best = str(e)
+            cur_low = (cfg.model or "").strip().lower()
+            fallback_models: list[str] = []
+            if cur_low in {"gpt-5.2", "gpt-5", "gpt-5-codex", "gpt-5.2-codex"} or cur_low.startswith("gpt-5.2"):
+                fallback_models.append("gpt-5.1-codex")
+            elif ("openai_http_502:html_error_page" in best) and cur_low.startswith("gpt-5") and cur_low != "gpt-5.1-codex":
+                fallback_models.append("gpt-5.1-codex")
+
+            for fb in fallback_models[:1]:
+                if fb.strip().lower() == cur_low:
+                    continue
+                try:
+                    return await openai_compatible_generate(
+                        base_url=base,
+                        api_key=cfg.api_key,
+                        model=fb,
+                        prefer="chat",
+                        allow_responses=False,
+                    )
+                except LLMError as efb:
+                    best = max([best, str(efb)], key=err_score)
+            raise LLMError(best)
 
     # Gemini:
     # - Google official endpoints: Gemini v1beta shape

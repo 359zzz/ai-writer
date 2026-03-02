@@ -26,6 +26,23 @@ def list_chunks(project_id: str) -> list[KBChunk]:
         )
 
 
+@router.get("/chunks/{chunk_id}")
+def get_chunk(project_id: str, chunk_id: int) -> KBChunk:
+    """
+    Fetch a single KB chunk (including full content).
+
+    For large books, prefer /chunks_meta when listing; this endpoint is meant for
+    on-demand detail loading (graphs, inspectors, etc.).
+    """
+    with get_session() as session:
+        if not session.get(Project, project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+        chunk = session.get(KBChunk, chunk_id)
+        if not chunk or chunk.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Chunk not found")
+        return chunk
+
+
 @router.get("/chunks_meta")
 def list_chunks_meta(
     project_id: str,

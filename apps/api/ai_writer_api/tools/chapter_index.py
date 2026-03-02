@@ -747,7 +747,46 @@ def build_chapter_index(
         end = int(picked[i + 1].start_char) if i + 1 < len(picked) else int(total_len)
         end = max(start, min(end, int(total_len)))
         label = f"第{c.num_raw}{c.unit}".strip()
-        title = (c.title or "").strip() or label
+        title_raw = (c.title or "").strip()
+
+        def _clean_title(t: str) -> str:
+            s = (t or "").strip()
+            if not s:
+                return ""
+            s = re.sub(r"[ \t　]+", " ", s).strip()
+            # Drop obvious navigation noise if it got captured.
+            for tok in _NAV_SUFFIXES:
+                if tok and tok in s:
+                    s = s.replace(tok, " ").strip()
+            s = re.sub(r"[ \t　]+", " ", s).strip()
+            return s[:60].strip()
+
+        title = _clean_title(title_raw)
+        if (not title) or title == label:
+            # Fallback: try to read a "next line" title after the heading span.
+            # Common format:
+            #   第二回
+            #   贾夫人仙逝扬州城  冷子兴演说荣国府
+            look_start = int(min(end, max(0, int(c.end_char))))
+            look_end = int(min(end, look_start + 420))
+            tail = full_text[look_start:look_end]
+            for ln in tail.splitlines():
+                s = (ln or "").strip()
+                if not s:
+                    continue
+                # Skip common nav-only lines.
+                if any(tok in s for tok in _NAV_SUFFIXES) and len(s) <= 16:
+                    continue
+                # Avoid capturing the next chapter heading as a title.
+                if _CHAPTER_HEADING_RE.match(s):
+                    break
+                title2 = _clean_title(s)
+                if title2:
+                    title = title2
+                    break
+
+        if not title:
+            title = label
         # previews: prefer content after the detected header span
         head_src = full_text[min(end, int(c.end_char)) : end]
         tail_src = full_text[start:end]

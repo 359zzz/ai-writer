@@ -475,6 +475,24 @@ Versioning policy (from v1.0.x onward):
 - Tests:
   - 新增回归：BookSummarizer 返回非 JSON 文本时也应完成并落库。
 
+### v2.1.7 (Book: Compile/Summarize Reliability + Step Progress + Book Graphs)
+- 修复（根因级）：Gemini 调用链的异常抛出缩进错误，导致部分书籍链路（总结/编译等）在代理网关下易失败或表现异常。
+- PackyAPI/Gemini 更保守：
+  - Packy base 下 OpenAI-compatible 调用默认 chat-only（避免 `/responses` 探测噪声），并加入轻度节流/并发限制，降低被网关误判为异常流量的概率。
+- 书籍总结入库（`book_summarize`）更稳：
+  - `replace_existing=true` 不再“开局全删”，改为逐段写入前只删对应 index 的旧 chunk（避免网关抖动导致“先删光成果”）。
+  - 增加 `max_consecutive_failures` 断路器；章节模式下严格尊重 `max_chapters`（即使读取缓存 chapter_index 也会切片）。
+- 书籍状态编译（`book_compile`）更稳：
+  - 对长提示词做更严格的 compact；遇到可重试的网关错误会走一次“缩短上下文 + Flash 模型”救援重试。
+- 可观测性：后端 SSE 增加 `step/step_index/step_total`，前端「后端」卡片显示到“每个 agent 的每一步”（含 BookSummarizer 的分段进度）。
+- 图谱增强（书籍结构 / 章节关系 / 人物关系）：
+  - 书籍结构图：章节标题清洗 + 从章节总结兜底补全；显示章节线性链路。
+  - 新增 `book_relations`（章节非线性关系边）与 `book_characters`（人物卡 + 人物关系边）并在图谱工作区可生成/刷新与可视化。
+- API：
+  - 新增 KB 元数据列表 `/chunks_meta`（不返回全文 content），用于长书图谱/统计加载更快更稳。
+- Tests：
+  - 增加/扩展回归：book_summarize/book_compile 健壮性、图谱依赖的 KB meta 读取等。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

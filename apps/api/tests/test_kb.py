@@ -34,6 +34,12 @@ def test_kb_chunk_create_and_search() -> None:
         listed = chunks.json()
         assert any(int(it["id"]) == int(chunk["id"]) and it["title"] == "Lore v2" for it in listed)
 
+        got = client.get(f"/api/projects/{p['id']}/kb/chunks/{chunk['id']}")
+        assert got.status_code == 200
+        got_chunk = got.json()
+        assert int(got_chunk["id"]) == int(chunk["id"])
+        assert "crystals" in (got_chunk.get("content") or "")
+
         deleted = client.delete(f"/api/projects/{p['id']}/kb/chunks/{chunk['id']}")
         assert deleted.status_code == 200
 

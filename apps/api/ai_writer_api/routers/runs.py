@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlmodel import select
+from starlette.background import BackgroundTask
 
 from ..db import ENGINE, get_session
 from ..llm import LLMError, parse_json_loose, resolve_llm_config, generate_text
@@ -289,6 +290,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
     - continue: extract story state + continue (LLM; minimal)
     - book_summarize: chunk a stored book source and summarize chunks into local KB (LLM)
     - book_compile: compile stored book summaries into a compact book state (LLM)
+    - book_relations: derive chapter-to-chapter relations graph from stored summaries (LLM)
+    - book_characters: derive character cards + relationship graph from stored summaries (LLM)
     - book_continue: continue writing a new chapter based on compiled book state (LLM)
     """
     with get_session() as session:
@@ -499,6 +502,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             max_chunks = clamp_int(payload.get("max_chunks"), 200, 1, 2000)
             summary_max_chars = clamp_int(payload.get("summary_chars"), 500, 120, 2000)
             replace_existing = bool(payload.get("replace_existing", True))
+            max_consecutive_failures = clamp_int(payload.get("max_consecutive_failures"), 4, 2, 20)
 
             # Keep max_tokens small; this is a batch process and should be cost-safe.
             summary_max_tokens = clamp_int(
@@ -533,25 +537,10 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     parts.append(f"book_file:{filename_tag}")
                 return ",".join(parts)
 
-            if replace_existing:
-                # Best-effort cleanup: remove previous summaries for this book source.
-                # tags is a comma-separated string; use LIKE match on the stable prefix.
-                with ENGINE.connect() as conn:
-                    conn.execute(
-                        text(
-                            """
-                            DELETE FROM kb_chunk
-                            WHERE project_id = :project_id
-                              AND source_type = 'book_summary'
-                              AND tags LIKE :tag_pat;
-                            """
-                        ),
-                        {
-                            "project_id": project_id,
-                            "tag_pat": f"%book_source:{source_id}%",
-                        },
-                    )
-                    conn.commit()
+            # NOTE: when replace_existing=True, avoid deleting everything upfront.
+            # Gateway flakiness could otherwise wipe existing summaries and then fail.
+            # We delete per-part (chapter/chunk index) right before inserting the
+            # replacement chunk, which is safer for partial failures.
 
             yield emit(
                 "agent_started",
@@ -566,8 +555,14 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "segment_max_chars": segment_max_chars if segment_mode == "chapter" else None,
                     "summary_chars": summary_max_chars,
                     "replace_existing": replace_existing,
+                    "max_consecutive_failures": max_consecutive_failures,
                     "filename": filename,
                 },
+            )
+            yield emit(
+                "agent_output",
+                "BookSummarizer",
+                {"step": "prepare_index", "step_index": 1, "step_total": 3},
             )
 
             created = 0
@@ -575,12 +570,21 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             processed = 0
             skipped = 0
             json_parse_failed = 0
+            last_llm_error: str | None = None
+            consecutive_failures = 0
+            aborted_early = False
+            abort_msg: str | None = None
 
             summarizer_cfg = replace(
                 llm_cfg(),
                 temperature=0.2,
                 max_tokens=summary_max_tokens,
             )
+            if summarizer_cfg.provider == "gemini" and "packyapi.com" in (summarizer_cfg.base_url or "").lower():
+                # Summaries are a throughput-heavy step; prefer a Flash model for
+                # PackyAPI Gemini to reduce timeouts/ConnectError on long books.
+                if "flash" not in str(summarizer_cfg.model or "").lower():
+                    summarizer_cfg = replace(summarizer_cfg, model="gemini-3-flash-preview")
 
             def load_existing_part_indices(mode: str) -> set[int]:
                 if replace_existing:
@@ -640,6 +644,45 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         },
                     )
                     return
+                if not replace_existing:
+                    # Extra safety: even if our upfront scan missed existing parts
+                    # (e.g. transient DB errors), avoid unnecessary LLM calls by
+                    # checking existence for this specific part index.
+                    tag_key = "book_chapter" if segment_mode == "chapter" else "book_chunk"
+                    with ENGINE.connect() as conn:
+                        hit = conn.execute(
+                            text(
+                                """
+                                SELECT id
+                                FROM kb_chunk
+                                WHERE project_id = :project_id
+                                  AND source_type = 'book_summary'
+                                  AND tags LIKE :tag_source
+                                  AND (tags LIKE :tag_mid OR tags LIKE :tag_end)
+                                LIMIT 1;
+                                """
+                            ),
+                            {
+                                "project_id": project_id,
+                                "tag_source": f"%book_source:{source_id}%",
+                                "tag_mid": f"%{tag_key}:{idx},%",
+                                "tag_end": f"%,{tag_key}:{idx}",
+                            },
+                        ).first()
+                    if hit is not None:
+                        existing_part_indices.add(int(idx))
+                        skipped += 1
+                        yield emit(
+                            "agent_output",
+                            "BookSummarizer",
+                            {
+                                "chunk_index": idx,
+                                "segment_mode": segment_mode,
+                                "skipped": True,
+                                "reason": "already_summarized",
+                            },
+                        )
+                        return
 
                 processed += 1
                 snippet_s = (snippet or "").strip()
@@ -707,6 +750,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 try:
                     out = await generate_text(system_prompt=system, user_prompt=user, cfg=summarizer_cfg)
                 except LLMError as e:
+                    last_llm_error = str(e)
                     failed += 1
                     yield emit(
                         "agent_output",
@@ -720,6 +764,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     )
                     return
                 except Exception as e:
+                    last_llm_error = f"llm_failed:{type(e).__name__}"
                     failed += 1
                     yield emit(
                         "agent_output",
@@ -733,6 +778,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     )
                     return
 
+                last_llm_error = None
                 cleaned = strip_think_blocks(out).strip()
                 parsed: Any | None = None
                 parse_err: str | None = None
@@ -771,6 +817,29 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         record["parse_error"] = parse_err
 
                 content = json_dumps(record)
+                if replace_existing:
+                    # Safer replacement: delete any existing summary for the SAME part index
+                    # right before inserting the new one (avoid wiping everything upfront).
+                    tag_key = "book_chapter" if segment_mode == "chapter" else "book_chunk"
+                    with ENGINE.connect() as conn:
+                        conn.execute(
+                            text(
+                                """
+                                DELETE FROM kb_chunk
+                                WHERE project_id = :project_id
+                                  AND source_type = 'book_summary'
+                                  AND tags LIKE :tag_source
+                                  AND (tags LIKE :tag_mid OR tags LIKE :tag_end);
+                                """
+                            ),
+                            {
+                                "project_id": project_id,
+                                "tag_source": f"%book_source:{source_id}%",
+                                "tag_mid": f"%{tag_key}:{idx},%",
+                                "tag_end": f"%,{tag_key}:{idx}",
+                            },
+                        )
+                        conn.commit()
                 with get_session() as s_kb:
                     kb = KBChunk(
                         project_id=project_id,
@@ -802,6 +871,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     },
                 )
 
+            yield emit(
+                "agent_output",
+                "BookSummarizer",
+                {"step": "summarize_segments", "step_index": 2, "step_total": 3},
+            )
             if segment_mode == "chapter" and isinstance(chapter_index_obj, dict):
                 try:
                     full_text = src.text_path.read_text(encoding="utf-8", errors="ignore")
@@ -827,7 +901,33 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         segment_mode = "chunk"
                         existing_part_indices = load_existing_part_indices("chunk")
                     else:
-                        for i, ch in enumerate(chapters_raw, start=1):
+                        total_parts_raw = chapter_index_obj.get("total_chapters")
+                        try:
+                            total_parts = int(total_parts_raw) if total_parts_raw is not None else len(chapters_raw)
+                        except Exception:
+                            total_parts = len(chapters_raw)
+
+                        # Respect the API param max_chapters even when we are reading a cached chapter_index.json
+                        # (overwrite=false). This allows safe smoke tests and cost-controlled runs.
+                        chapters_use = chapters_raw
+                        try:
+                            max_chapters_i = int(max_chapters)
+                        except Exception:
+                            max_chapters_i = int(len(chapters_raw))
+                        if max_chapters_i > 0 and len(chapters_use) > max_chapters_i:
+                            chapters_use = chapters_use[:max_chapters_i]
+
+                        total_parts = len(chapters_use)
+                        yield emit(
+                            "agent_output",
+                            "BookSummarizer",
+                            {
+                                "segment_mode": "chapter",
+                                "total_parts": total_parts,
+                                "progress": {"done": int(created + skipped + failed), "total": int(total_parts)},
+                            },
+                        )
+                        for i, ch in enumerate(chapters_use, start=1):
                             if not isinstance(ch, dict):
                                 continue
                             try:
@@ -866,6 +966,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                             chapter_label = str(ch.get("label") or "").strip() or None
                             chapter_title = str(ch.get("title") or "").strip() or None
 
+                            good_before = int(created + skipped)
+                            failed_before = int(failed)
                             async for b in summarize_segment(
                                 idx=idx,
                                 start_char=start_char,
@@ -878,7 +980,70 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                             ):
                                 yield b
 
+                            good_after = int(created + skipped)
+                            if int(failed) > failed_before and good_after == good_before:
+                                consecutive_failures += 1
+                            else:
+                                consecutive_failures = 0
+
+                            if consecutive_failures >= max_consecutive_failures:
+                                err_tail = (last_llm_error or "")[:220]
+                                msg = f"book_summarize_aborted:consecutive_failures={consecutive_failures}"
+                                if err_tail:
+                                    msg += f":{err_tail}"
+                                aborted_early = True
+                                abort_msg = msg
+                                if (created + skipped) <= 0:
+                                    yield emit("run_error", "BookSummarizer", {"error": msg})
+                                    mark_run_failed(msg)
+                                    yield emit("run_completed", "Director", {})
+                                    return
+                                yield emit(
+                                    "agent_output",
+                                    "BookSummarizer",
+                                    {"error": msg, "soft_fail": True},
+                                )
+                                break
+                            yield emit(
+                                "agent_output",
+                                "BookSummarizer",
+                                {
+                                    "segment_mode": "chapter",
+                                    "chunk_index": idx,
+                                    "progress": {
+                                        "done": int(created + skipped + failed),
+                                        "total": int(total_parts),
+                                    },
+                                },
+                            )
+
             if segment_mode == "chunk":
+                # For progress UI, compute the actual number of chunks we will process
+                # (bounded by max_chunks). This is intentionally best-effort: if the
+                # count fails, fall back to max_chunks.
+                try:
+                    total_parts = sum(
+                        1
+                        for _idx, _start, _txt in iter_text_chunks(
+                            path=src.text_path,
+                            chunk_chars=chunk_chars,
+                            overlap_chars=overlap_chars,
+                            max_chunks=max_chunks,
+                        )
+                    )
+                except Exception:
+                    total_parts = int(max_chunks)
+                total_parts = max(0, min(int(total_parts), int(max_chunks)))
+
+                yield emit(
+                    "agent_output",
+                    "BookSummarizer",
+                    {
+                        "segment_mode": "chunk",
+                        "total_parts": int(total_parts),
+                        "progress": {"done": int(created + skipped + failed), "total": int(total_parts)},
+                    },
+                )
                 for idx, start_char, chunk_text in iter_text_chunks(
                     path=src.text_path,
                     chunk_chars=chunk_chars,
@@ -886,6 +1051,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     max_chunks=max_chunks,
                 ):
                     end_char = int(start_char) + len(chunk_text or "")
+                    good_before = int(created + skipped)
+                    failed_before = int(failed)
                     async for b in summarize_segment(
                         idx=idx,
                         start_char=start_char,
@@ -894,6 +1061,48 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     ):
                         yield b
 
+                    good_after = int(created + skipped)
+                    if int(failed) > failed_before and good_after == good_before:
+                        consecutive_failures += 1
+                    else:
+                        consecutive_failures = 0
+
+                    if consecutive_failures >= max_consecutive_failures:
+                        err_tail = (last_llm_error or "")[:220]
+                        msg = f"book_summarize_aborted:consecutive_failures={consecutive_failures}"
+                        if err_tail:
+                            msg += f":{err_tail}"
+                        aborted_early = True
+                        abort_msg = msg
+                        if (created + skipped) <= 0:
+                            yield emit("run_error", "BookSummarizer", {"error": msg})
+                            mark_run_failed(msg)
+                            yield emit("run_completed", "Director", {})
+                            return
+                        yield emit(
+                            "agent_output",
+                            "BookSummarizer",
+                            {"error": msg, "soft_fail": True},
+                        )
+                        break
+                    yield emit(
+                        "agent_output",
+                        "BookSummarizer",
+                        {
+                            "segment_mode": "chunk",
+                            "chunk_index": idx,
+                            "progress": {
+                                "done": int(created + skipped + failed),
+                                "total": int(total_parts),
+                            },
+                        },
+                    )
+
+            yield emit(
+                "agent_output",
+                "BookSummarizer",
+                {"step": "finalize", "step_index": 3, "step_total": 3},
+            )
             yield emit(
                 "artifact",
                 "BookSummarizer",
@@ -907,6 +1116,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "failed": failed,
                     "skipped": skipped,
                     "json_parse_failed": json_parse_failed,
+                    "aborted_early": aborted_early,
+                    "abort_msg": abort_msg,
                     "params": {
                         "segment_mode": segment_mode,
                         "chunk_chars": chunk_chars,
@@ -915,12 +1126,13 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         "max_chapters": max_chapters,
                         "segment_max_chars": segment_max_chars,
                         "replace_existing": replace_existing,
+                        "max_consecutive_failures": max_consecutive_failures,
                     },
                 },
             )
             yield emit("agent_finished", "BookSummarizer", {"created": created, "failed": failed})
 
-            if created <= 0:
+            if (created + skipped) <= 0:
                 msg = "book_summarize_no_results"
                 yield emit("run_error", "BookSummarizer", {"error": msg})
                 mark_run_failed(msg)
@@ -1111,12 +1323,26 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "selection": selection_note,
                 },
             )
+            yield emit(
+                "agent_output",
+                "BookCompiler",
+                {"step": "prepare_prompt", "step_index": 1, "step_total": 4},
+            )
 
             compiler_cfg0 = llm_cfg()
+            compiler_model = str(compiler_cfg0.model or "").strip()
+            base_low = (compiler_cfg0.base_url or "").lower()
+            if compiler_cfg0.provider == "gemini" and "packyapi.com" in base_low:
+                # BookCompile is a "reasoning + aggregation" step; some PackyAPI
+                # Gemini distributors can be slow/flaky on Pro models for large prompts.
+                # Prefer a Flash model for responsiveness; provider fallback still applies.
+                if "flash" not in compiler_model.lower():
+                    compiler_model = "gemini-3-flash-preview"
             compiler_cfg = replace(
                 compiler_cfg0,
                 temperature=0.2,
                 max_tokens=max(400, min(int(compiler_cfg0.max_tokens or 900), 1400)),
+                model=compiler_model or compiler_cfg0.model,
             )
             yield emit(
                 "tool_call",
@@ -1128,9 +1354,32 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "max_tokens": compiler_cfg.max_tokens,
                 },
             )
+            yield emit(
+                "agent_output",
+                "BookCompiler",
+                {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
+            )
 
             seg_word = "chapter" if compiled_segment_mode == "chapter" else "chunk"
             seg_word_cap = "Chapter" if compiled_segment_mode == "chapter" else "Chunk"
+
+            def compact_for_compile(item: dict[str, Any]) -> dict[str, Any]:
+                # Keep this prompt payload small and stable across gateways.
+                # The compiler only needs coarse signals (summary + key events),
+                # not the full per-segment JSON blobs.
+                return {
+                    "index": int(item.get("chunk_index") or 0),
+                    "chapter_label": _safe_str(item.get("chapter_label"), 120) or None,
+                    "chapter_title": _safe_str(item.get("chapter_title"), 160) or None,
+                    "summary": _safe_str(item.get("summary"), 420),
+                    "key_events": _safe_list(item.get("key_events"), 6),
+                    "characters": _safe_list(item.get("characters"), 8),
+                    "locations": _safe_list(item.get("locations"), 6),
+                    "timeline": _safe_list(item.get("timeline"), 6),
+                    "open_loops": _safe_list(item.get("open_loops"), 6),
+                }
+
+            selected_compact = [compact_for_compile(s) for s in selected]
 
             system = (
                 f"You are BookCompilerAgent. Compile a long book's {seg_word} summaries into a compact state for continuation. "
@@ -1155,17 +1404,109 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 f"{seg_word_cap} summaries available: {total}\n"
                 f"Included in this compile: {len(selected)} (selection={selection_note})\n\n"
                 f"{seg_word_cap}SummariesJSON:\n"
-                f"{json_dumps(selected)}\n"
+                f"{json_dumps(selected_compact)}\n"
             )
 
             try:
                 out = await generate_text(system_prompt=system, user_prompt=user, cfg=compiler_cfg)
             except LLMError as e:
                 msg = str(e)
-                yield emit("run_error", "BookCompiler", {"error": msg})
-                mark_run_failed(msg)
-                yield emit("run_completed", "Director", {})
-                return
+
+                def _looks_retryable(err: str) -> bool:
+                    s = (err or "").strip()
+                    if not s:
+                        return False
+                    if "html_error_page" in s:
+                        return True
+                    if s.startswith("openai_timeout") or s.startswith("openai_network_error"):
+                        return True
+                    if s.startswith("gemini_timeout") or s.startswith("gemini_network_error"):
+                        return True
+                    if re.match(r"^(openai|gemini)_http_(429|500|502|503|504)", s):
+                        return True
+                    # Packy-like model unavailability often benefits from retries/fallbacks.
+                    if ("无可用渠道" in s) or ("distributor" in s.lower()):
+                        return True
+                    return False
+
+                # Rescue retry: shrink prompt budget and try once more. This is
+                # specifically to reduce ConnectError/502 failures on large books
+                # without increasing request volume too much.
+                if _looks_retryable(msg) and len(selected_compact) > 18:
+                    yield emit(
+                        "agent_output",
+                        "BookCompiler",
+                        {"error": f"book_compile_retrying:{msg[:220]}", "soft_fail": True},
+                    )
+                    # Prefer: a small head + larger tail for continuation.
+                    head_n = min(10, len(selected_compact))
+                    tail_n = min(26, max(0, len(selected_compact) - head_n))
+                    selected_retry = selected_compact[:head_n] + (
+                        selected_compact[-tail_n:] if tail_n > 0 else []
+                    )
+                    # Extra shrink for safety.
+                    selected_retry = [
+                        {
+                            **it,
+                            "summary": _safe_str(it.get("summary"), 260),
+                            "key_events": _safe_list(it.get("key_events"), 4),
+                            "characters": _safe_list(it.get("characters"), 6),
+                            "locations": _safe_list(it.get("locations"), 4),
+                            "timeline": _safe_list(it.get("timeline"), 4),
+                            "open_loops": _safe_list(it.get("open_loops"), 4),
+                        }
+                        for it in selected_retry
+                    ]
+                    compiler_cfg_retry = replace(
+                        compiler_cfg,
+                        max_tokens=max(320, min(int(compiler_cfg.max_tokens or 800), 900)),
+                    )
+                    system_retry = (
+                        system
+                        + "\nRetry note: prompt was shortened due to gateway instability. "
+                        + "Return JSON only; keep fields compact."
+                    )
+                    user_retry = (
+                        f"Book filename: {filename}\n"
+                        f"Book source_id: {source_id}\n"
+                        f"{seg_word_cap} summaries available: {total}\n"
+                        f"Included in this compile: {len(selected_retry)} (selection=retry_head_tail)\n\n"
+                        f"{seg_word_cap}SummariesJSON:\n"
+                        f"{json_dumps(selected_retry)}\n"
+                    )
+                    yield emit(
+                        "tool_call",
+                        "BookCompiler",
+                        {
+                            "tool": "llm.generate_text",
+                            "provider": compiler_cfg_retry.provider,
+                            "model": compiler_cfg_retry.model,
+                            "max_tokens": compiler_cfg_retry.max_tokens,
+                            "attempt": 2,
+                            "selection": "retry_head_tail",
+                        },
+                    )
+                    try:
+                        out = await generate_text(
+                            system_prompt=system_retry, user_prompt=user_retry, cfg=compiler_cfg_retry
+                        )
+                    except LLMError as e2:
+                        msg2 = str(e2)
+                        yield emit("run_error", "BookCompiler", {"error": msg2})
+                        mark_run_failed(msg2)
+                        yield emit("run_completed", "Director", {})
+                        return
+                    except Exception as e2:
+                        msg2 = f"book_compile_failed:{type(e2).__name__}"
+                        yield emit("run_error", "BookCompiler", {"error": msg2})
+                        mark_run_failed(msg2)
+                        yield emit("run_completed", "Director", {})
+                        return
+                else:
+                    yield emit("run_error", "BookCompiler", {"error": msg})
+                    mark_run_failed(msg)
+                    yield emit("run_completed", "Director", {})
+                    return
             except Exception as e:
                 msg = f"book_compile_failed:{type(e).__name__}"
                 yield emit("run_error", "BookCompiler", {"error": msg})
@@ -1173,8 +1514,23 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 yield emit("run_completed", "Director", {})
                 return
 
+            yield emit(
+                "agent_output",
+                "BookCompiler",
+                {"step": "parse_json", "step_index": 3, "step_total": 4},
+            )
             cleaned = strip_think_blocks(out).strip()
-            parsed = parse_json_loose(cleaned)
+            parsed: Any | None = None
+            parse_err: str | None = None
+            try:
+                parsed = parse_json_loose(cleaned)
+            except Exception as e:
+                parse_err = type(e).__name__
+                yield emit(
+                    "agent_output",
+                    "BookCompiler",
+                    {"error": f"book_compile_json_parse_failed:{parse_err}", "soft_fail": True},
+                )
             state: dict[str, Any]
             if isinstance(parsed, dict):
                 state = parsed
@@ -1191,10 +1547,12 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         "open_loops",
                         "continuation_seed",
                     )
-                ):
+                    ):
                     state = _compact_compiled_book_state(state)
             else:
                 state = {"text": cleaned}
+                if parse_err:
+                    state["parse_error"] = parse_err
 
             record = {
                 "book_source_id": source_id,
@@ -1203,6 +1561,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 "selection": {"total": total, "used": len(selected), "strategy": selection_note},
                 "state": state,
             }
+            if parse_err:
+                record["parse_error"] = parse_err
 
             tags = [f"book_source:{source_id}", "book_state"]
             if filename_tag:
@@ -1211,6 +1571,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
 
             title = (
                 f"书籍状态（{filename[:40]}）" if output_lang == "zh" else f"Book state ({filename[:40]})"
+            )
+            yield emit(
+                "agent_output",
+                "BookCompiler",
+                {"step": "persist_book_state", "step_index": 4, "step_total": 4},
             )
             with get_session() as s_state:
                 kb = KBChunk(
@@ -1251,6 +1616,637 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             yield emit("run_completed", "Director", {})
             return
 
+        if kind == "book_relations":
+            source_id = str(payload.get("source_id") or payload.get("book_source_id") or "").strip()
+            if not source_id:
+                msg = "source_id_required"
+                yield emit("run_error", "BookRelations", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            try:
+                src = load_continue_source(source_id)
+            except ContinueSourceError as e:
+                msg = f"continue_source_load_failed:{str(e)}"
+                yield emit("run_error", "BookRelations", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            filename = str((src.meta or {}).get("filename") or "").strip() or "book"
+            filename_tag = filename.replace(",", " ").strip()[:64]
+
+            with get_session() as s_sum:
+                rows = list(
+                    s_sum.exec(
+                        select(KBChunk).where(
+                            KBChunk.project_id == project_id,
+                            KBChunk.source_type == "book_summary",
+                            KBChunk.tags.like(f"%book_source:{source_id}%"),
+                        )
+                    )
+                )
+
+            if not rows:
+                msg = "book_relations_requires_book_summaries"
+                yield emit("run_error", "BookRelations", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            def _safe_list(v: object, max_items: int = 8) -> list[str]:
+                if not isinstance(v, list):
+                    return []
+                out: list[str] = []
+                for x in v[: max(0, int(max_items))]:
+                    if isinstance(x, str) and x.strip():
+                        out.append(x.strip())
+                return out
+
+            def _safe_str(v: object, max_len: int = 600) -> str:
+                if not isinstance(v, str):
+                    return ""
+                s = v.strip()
+                if len(s) > max_len:
+                    s = s[: max_len].rstrip() + "…"
+                return s
+
+            parts: list[dict[str, Any]] = []
+            for r in rows:
+                idx: int | None = None
+                part_kind = "chunk"
+                m = re.search(r"(?:^|,|\s)book_chapter:(\d+)(?:$|,|\s)", r.tags or "")
+                if m:
+                    part_kind = "chapter"
+                    try:
+                        idx = int(m.group(1))
+                    except Exception:
+                        idx = None
+                else:
+                    m = re.search(r"(?:^|,|\s)book_chunk:(\d+)(?:$|,|\s)", r.tags or "")
+                    if m:
+                        try:
+                            idx = int(m.group(1))
+                        except Exception:
+                            idx = None
+                chapter_label: str | None = None
+                chapter_title: str | None = None
+                data_summary: dict[str, Any] | None = None
+                try:
+                    obj = json.loads(r.content)
+                    if isinstance(obj, dict):
+                        seg_mode = str(obj.get("segment_mode") or "").strip().lower()
+                        if seg_mode == "chapter":
+                            part_kind = "chapter"
+                        if idx is None and obj.get("chunk_index") is not None:
+                            try:
+                                idx = int(obj.get("chunk_index") or 0) or None
+                            except Exception:
+                                idx = None
+                        if idx is None and obj.get("chapter_index") is not None:
+                            try:
+                                idx = int(obj.get("chapter_index") or 0) or None
+                            except Exception:
+                                idx = None
+                        if obj.get("chapter_label") is not None:
+                            chapter_label = _safe_str(obj.get("chapter_label"), 120) or None
+                        if obj.get("chapter_title") is not None:
+                            chapter_title = _safe_str(obj.get("chapter_title"), 160) or None
+                        if isinstance(obj.get("data"), dict):
+                            data_summary = obj.get("data")  # type: ignore[assignment]
+                except Exception:
+                    data_summary = None
+
+                if idx is None:
+                    continue
+
+                if isinstance(data_summary, dict):
+                    parts.append(
+                        {
+                            "segment_mode": part_kind,
+                            "index": idx,
+                            "chapter_label": chapter_label,
+                            "chapter_title": chapter_title,
+                            "summary": _safe_str(data_summary.get("summary"), 320),
+                            "key_events": _safe_list(data_summary.get("key_events"), 6),
+                            "characters": _safe_list(data_summary.get("characters"), 10),
+                            "locations": _safe_list(data_summary.get("locations"), 6),
+                            "open_loops": _safe_list(data_summary.get("open_loops"), 8),
+                        }
+                    )
+                else:
+                    parts.append(
+                        {
+                            "segment_mode": part_kind,
+                            "index": idx,
+                            "chapter_label": chapter_label,
+                            "chapter_title": chapter_title,
+                            "summary": _safe_str(r.content, 320),
+                            "key_events": [],
+                            "characters": [],
+                            "locations": [],
+                            "open_loops": [],
+                        }
+                    )
+
+            # Prefer chapter-based summaries when available.
+            if any(str(s.get("segment_mode") or "") == "chapter" for s in parts):
+                parts = [s for s in parts if str(s.get("segment_mode") or "") == "chapter"]
+
+            parts.sort(key=lambda x: int(x.get("index") or 0))
+            total = len(parts)
+            if total <= 0:
+                msg = "book_relations_no_valid_summaries"
+                yield emit("run_error", "BookRelations", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            selected: list[dict[str, Any]] = parts
+            selection_note = "all"
+            if total > 120:
+                selected = parts[:20] + parts[-100:]
+                selection_note = "first_20_plus_last_100"
+
+            yield emit(
+                "agent_started",
+                "BookRelations",
+                {
+                    "source_id": source_id,
+                    "filename": filename,
+                    "segment_mode": "chapter" if any(p.get("segment_mode") == "chapter" for p in selected) else "chunk",
+                    "total_summaries": total,
+                    "used_summaries": len(selected),
+                    "selection": selection_note,
+                },
+            )
+            yield emit(
+                "agent_output",
+                "BookRelations",
+                {"step": "prepare_prompt", "step_index": 1, "step_total": 4},
+            )
+
+            rel_cfg0 = llm_cfg()
+            rel_model = str(rel_cfg0.model or "").strip()
+            if rel_cfg0.provider == "gemini" and "packyapi.com" in (rel_cfg0.base_url or "").lower():
+                if "flash" not in rel_model.lower():
+                    rel_model = "gemini-3-flash-preview"
+            rel_cfg = replace(
+                rel_cfg0,
+                temperature=0.2,
+                max_tokens=max(500, min(int(rel_cfg0.max_tokens or 900), 1400)),
+                model=rel_model or rel_cfg0.model,
+            )
+            yield emit(
+                "tool_call",
+                "BookRelations",
+                {
+                    "tool": "llm.generate_text",
+                    "provider": rel_cfg.provider,
+                    "model": rel_cfg.model,
+                    "max_tokens": rel_cfg.max_tokens,
+                },
+            )
+            yield emit(
+                "agent_output",
+                "BookRelations",
+                {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
+            )
+
+            system = (
+                "You are BookRelationsAgent. Build a chapter relationship graph for a long novel. "
+                f"{lang_hint_json} "
+                "Return JSON only. Do NOT include chain-of-thought. "
+                "Output a concise set of NON-LINEAR edges across chapters. "
+                "Edge types allowed: causal, foreshadow, payoff, character_arc, theme, structure, suspense, parallel, contrast. "
+                "Constraints: output <= 120 edges total; avoid duplicates; prefer meaningful long-range links; "
+                "each edge must have: from, to, type, label (short), strength (0..1). "
+                "Schema:\n"
+                "{\n"
+                '  "edges": [\n'
+                '    {"from": 1, "to": 8, "type": "foreshadow", "label": "...", "strength": 0.7}\n'
+                "  ]\n"
+                "}\n"
+            )
+            user = (
+                f"Book filename: {filename}\n"
+                f"Book source_id: {source_id}\n"
+                f"Summaries available: {total}\n"
+                f"Included in this analysis: {len(selected)} (selection={selection_note})\n\n"
+                "ChapterSummariesJSON:\n"
+                f"{json_dumps(selected)}\n"
+            )
+
+            try:
+                out = await generate_text(system_prompt=system, user_prompt=user, cfg=rel_cfg)
+            except LLMError as e:
+                msg = str(e)
+                yield emit("run_error", "BookRelations", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+            except Exception as e:
+                msg = f"book_relations_failed:{type(e).__name__}"
+                yield emit("run_error", "BookRelations", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            yield emit(
+                "agent_output",
+                "BookRelations",
+                {"step": "parse_json", "step_index": 3, "step_total": 4},
+            )
+            cleaned = strip_think_blocks(out).strip()
+            parsed: Any | None = None
+            parse_err: str | None = None
+            try:
+                parsed = parse_json_loose(cleaned)
+            except Exception as e:
+                parse_err = type(e).__name__
+                yield emit(
+                    "agent_output",
+                    "BookRelations",
+                    {"error": f"book_relations_json_parse_failed:{parse_err}", "soft_fail": True},
+                )
+
+            record: dict[str, Any] = {
+                "book_source_id": source_id,
+                "filename": filename,
+                "generated_at": _now_utc().isoformat(),
+                "selection": {"total": total, "used": len(selected), "strategy": selection_note},
+                "graph": parsed if isinstance(parsed, dict) else {"text": cleaned[:8000]},
+            }
+            if parse_err:
+                record["parse_error"] = parse_err
+
+            tags = [f"book_source:{source_id}", "book_relations"]
+            if filename_tag:
+                tags.append(f"book_file:{filename_tag}")
+            kb_tags = ",".join(tags)
+            title = (
+                f"章节关系图谱（{filename[:40]}）" if output_lang == "zh" else f"Chapter relations ({filename[:40]})"
+            )
+            yield emit(
+                "agent_output",
+                "BookRelations",
+                {"step": "persist_graph", "step_index": 4, "step_total": 4},
+            )
+            with get_session() as s_rel:
+                kb = KBChunk(
+                    project_id=project_id,
+                    source_type="book_relations",
+                    title=title,
+                    content=json_dumps(record),
+                    tags=kb_tags,
+                )
+                s_rel.add(kb)
+                s_rel.commit()
+                s_rel.refresh(kb)
+
+            edges_count = 0
+            if isinstance(parsed, dict) and isinstance(parsed.get("edges"), list):
+                edges_count = len(parsed.get("edges") or [])
+
+            yield emit(
+                "artifact",
+                "BookRelations",
+                {
+                    "artifact_type": "book_relations",
+                    "source_id": source_id,
+                    "kb_chunk_id": kb.id,
+                    "edges": edges_count,
+                    "parse_error": parse_err,
+                },
+            )
+            yield emit("agent_finished", "BookRelations", {"kb_chunk_id": kb.id, "edges": edges_count})
+
+            mark_run_completed()
+            yield emit("run_completed", "Director", {})
+            return
+
+        if kind == "book_characters":
+            source_id = str(payload.get("source_id") or payload.get("book_source_id") or "").strip()
+            if not source_id:
+                msg = "source_id_required"
+                yield emit("run_error", "BookCharacters", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            try:
+                src = load_continue_source(source_id)
+            except ContinueSourceError as e:
+                msg = f"continue_source_load_failed:{str(e)}"
+                yield emit("run_error", "BookCharacters", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            filename = str((src.meta or {}).get("filename") or "").strip() or "book"
+            filename_tag = filename.replace(",", " ").strip()[:64]
+
+            with get_session() as s_sum:
+                rows = list(
+                    s_sum.exec(
+                        select(KBChunk).where(
+                            KBChunk.project_id == project_id,
+                            KBChunk.source_type == "book_summary",
+                            KBChunk.tags.like(f"%book_source:{source_id}%"),
+                        )
+                    )
+                )
+
+            if not rows:
+                msg = "book_characters_requires_book_summaries"
+                yield emit("run_error", "BookCharacters", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            def _safe_list(v: object, max_items: int = 8) -> list[str]:
+                if not isinstance(v, list):
+                    return []
+                out: list[str] = []
+                for x in v[: max(0, int(max_items))]:
+                    if isinstance(x, str) and x.strip():
+                        out.append(x.strip())
+                return out
+
+            def _safe_str(v: object, max_len: int = 600) -> str:
+                if not isinstance(v, str):
+                    return ""
+                s = v.strip()
+                if len(s) > max_len:
+                    s = s[: max_len].rstrip() + "…"
+                return s
+
+            parts: list[dict[str, Any]] = []
+            for r in rows:
+                idx: int | None = None
+                part_kind = "chunk"
+                m = re.search(r"(?:^|,|\s)book_chapter:(\d+)(?:$|,|\s)", r.tags or "")
+                if m:
+                    part_kind = "chapter"
+                    try:
+                        idx = int(m.group(1))
+                    except Exception:
+                        idx = None
+                else:
+                    m = re.search(r"(?:^|,|\s)book_chunk:(\d+)(?:$|,|\s)", r.tags or "")
+                    if m:
+                        try:
+                            idx = int(m.group(1))
+                        except Exception:
+                            idx = None
+
+                chapter_label: str | None = None
+                chapter_title: str | None = None
+                data_summary: dict[str, Any] | None = None
+                try:
+                    obj = json.loads(r.content)
+                    if isinstance(obj, dict):
+                        seg_mode = str(obj.get("segment_mode") or "").strip().lower()
+                        if seg_mode == "chapter":
+                            part_kind = "chapter"
+                        if idx is None and obj.get("chunk_index") is not None:
+                            try:
+                                idx = int(obj.get("chunk_index") or 0) or None
+                            except Exception:
+                                idx = None
+                        if idx is None and obj.get("chapter_index") is not None:
+                            try:
+                                idx = int(obj.get("chapter_index") or 0) or None
+                            except Exception:
+                                idx = None
+                        if obj.get("chapter_label") is not None:
+                            chapter_label = _safe_str(obj.get("chapter_label"), 120) or None
+                        if obj.get("chapter_title") is not None:
+                            chapter_title = _safe_str(obj.get("chapter_title"), 160) or None
+                        if isinstance(obj.get("data"), dict):
+                            data_summary = obj.get("data")  # type: ignore[assignment]
+                except Exception:
+                    data_summary = None
+
+                if idx is None:
+                    continue
+
+                if isinstance(data_summary, dict):
+                    parts.append(
+                        {
+                            "segment_mode": part_kind,
+                            "index": idx,
+                            "chapter_label": chapter_label,
+                            "chapter_title": chapter_title,
+                            "summary": _safe_str(data_summary.get("summary"), 280),
+                            "key_events": _safe_list(data_summary.get("key_events"), 8),
+                            "characters": _safe_list(data_summary.get("characters"), 16),
+                            "open_loops": _safe_list(data_summary.get("open_loops"), 10),
+                        }
+                    )
+                else:
+                    parts.append(
+                        {
+                            "segment_mode": part_kind,
+                            "index": idx,
+                            "chapter_label": chapter_label,
+                            "chapter_title": chapter_title,
+                            "summary": _safe_str(r.content, 280),
+                            "key_events": [],
+                            "characters": [],
+                            "open_loops": [],
+                        }
+                    )
+
+            # Prefer chapter-based summaries when available.
+            if any(str(s.get("segment_mode") or "") == "chapter" for s in parts):
+                parts = [s for s in parts if str(s.get("segment_mode") or "") == "chapter"]
+
+            parts.sort(key=lambda x: int(x.get("index") or 0))
+            total = len(parts)
+            if total <= 0:
+                msg = "book_characters_no_valid_summaries"
+                yield emit("run_error", "BookCharacters", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            selected: list[dict[str, Any]] = parts
+            selection_note = "all"
+            if total > 120:
+                selected = parts[:20] + parts[-100:]
+                selection_note = "first_20_plus_last_100"
+
+            yield emit(
+                "agent_started",
+                "BookCharacters",
+                {
+                    "source_id": source_id,
+                    "filename": filename,
+                    "segment_mode": "chapter" if any(p.get("segment_mode") == "chapter" for p in selected) else "chunk",
+                    "total_summaries": total,
+                    "used_summaries": len(selected),
+                    "selection": selection_note,
+                },
+            )
+            yield emit(
+                "agent_output",
+                "BookCharacters",
+                {"step": "prepare_prompt", "step_index": 1, "step_total": 4},
+            )
+
+            char_cfg0 = llm_cfg()
+            char_model = str(char_cfg0.model or "").strip()
+            if char_cfg0.provider == "gemini" and "packyapi.com" in (char_cfg0.base_url or "").lower():
+                if "flash" not in char_model.lower():
+                    char_model = "gemini-3-flash-preview"
+            char_cfg = replace(
+                char_cfg0,
+                temperature=0.2,
+                max_tokens=max(600, min(int(char_cfg0.max_tokens or 900), 1600)),
+                model=char_model or char_cfg0.model,
+            )
+            yield emit(
+                "tool_call",
+                "BookCharacters",
+                {
+                    "tool": "llm.generate_text",
+                    "provider": char_cfg.provider,
+                    "model": char_cfg.model,
+                    "max_tokens": char_cfg.max_tokens,
+                },
+            )
+            yield emit(
+                "agent_output",
+                "BookCharacters",
+                {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
+            )
+
+            system = (
+                "You are BookCharacterGraphAgent. Extract character cards and relationships from chapter summaries of a novel. "
+                f"{lang_hint_json} "
+                "Return JSON only. Do NOT include chain-of-thought. "
+                "Prefer the main cast; avoid tiny one-off characters. "
+                "IDs must be stable: set character.id equal to character.name, and relation.source/target must match character.id. "
+                "Relation types allowed: family, love, friend, enemy, master_servant, mentor, rival, ally, colleague, other. "
+                "Constraints: characters<=40, relations<=120; keep all string fields concise. "
+                "Schema:\n"
+                "{\n"
+                '  "characters": [\n'
+                '    {"id":"林黛玉","name":"林黛玉","gender":"女","identity":"...","personality":"...","plot":"...","chapters":[1,2]}\n'
+                "  ],\n"
+                '  "relations": [\n'
+                '    {"source":"贾宝玉","target":"林黛玉","type":"love","label":"知己/倾慕","detail":"...","chapters":[1,2],"strength":0.8}\n'
+                "  ]\n"
+                "}\n"
+            )
+            user = (
+                f"Book filename: {filename}\n"
+                f"Book source_id: {source_id}\n"
+                f"Summaries available: {total}\n"
+                f"Included in this analysis: {len(selected)} (selection={selection_note})\n\n"
+                "ChapterSummariesJSON:\n"
+                f"{json_dumps(selected)}\n"
+            )
+
+            try:
+                out = await generate_text(system_prompt=system, user_prompt=user, cfg=char_cfg)
+            except LLMError as e:
+                msg = str(e)
+                yield emit("run_error", "BookCharacters", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+            except Exception as e:
+                msg = f"book_characters_failed:{type(e).__name__}"
+                yield emit("run_error", "BookCharacters", {"error": msg})
+                mark_run_failed(msg)
+                yield emit("run_completed", "Director", {})
+                return
+
+            yield emit(
+                "agent_output",
+                "BookCharacters",
+                {"step": "parse_json", "step_index": 3, "step_total": 4},
+            )
+            cleaned = strip_think_blocks(out).strip()
+            parsed: Any | None = None
+            parse_err: str | None = None
+            try:
+                parsed = parse_json_loose(cleaned)
+            except Exception as e:
+                parse_err = type(e).__name__
+                yield emit(
+                    "agent_output",
+                    "BookCharacters",
+                    {"error": f"book_characters_json_parse_failed:{parse_err}", "soft_fail": True},
+                )
+
+            record: dict[str, Any] = {
+                "book_source_id": source_id,
+                "filename": filename,
+                "generated_at": _now_utc().isoformat(),
+                "selection": {"total": total, "used": len(selected), "strategy": selection_note},
+                "graph": parsed if isinstance(parsed, dict) else {"text": cleaned[:8000]},
+            }
+            if parse_err:
+                record["parse_error"] = parse_err
+
+            tags = [f"book_source:{source_id}", "book_characters"]
+            if filename_tag:
+                tags.append(f"book_file:{filename_tag}")
+            kb_tags = ",".join(tags)
+            title = (
+                f"人物关系图谱（{filename[:40]}）" if output_lang == "zh" else f"Character graph ({filename[:40]})"
+            )
+            yield emit(
+                "agent_output",
+                "BookCharacters",
+                {"step": "persist_graph", "step_index": 4, "step_total": 4},
+            )
+            with get_session() as s_char:
+                kb = KBChunk(
+                    project_id=project_id,
+                    source_type="book_characters",
+                    title=title,
+                    content=json_dumps(record),
+                    tags=kb_tags,
+                )
+                s_char.add(kb)
+                s_char.commit()
+                s_char.refresh(kb)
+
+            char_count = 0
+            rel_count = 0
+            if isinstance(parsed, dict):
+                if isinstance(parsed.get("characters"), list):
+                    char_count = len(parsed.get("characters") or [])
+                if isinstance(parsed.get("relations"), list):
+                    rel_count = len(parsed.get("relations") or [])
+
+            yield emit(
+                "artifact",
+                "BookCharacters",
+                {
+                    "artifact_type": "book_characters",
+                    "source_id": source_id,
+                    "kb_chunk_id": kb.id,
+                    "characters": char_count,
+                    "relations": rel_count,
+                    "parse_error": parse_err,
+                },
+            )
+            yield emit(
+                "agent_finished",
+                "BookCharacters",
+                {"kb_chunk_id": kb.id, "characters": char_count, "relations": rel_count},
+            )
+
+            mark_run_completed()
+            yield emit("run_completed", "Director", {})
+            return
+
         kb_mode = "weak"
         try:
             kb_mode = str(((project.settings or {}).get("kb") or {}).get("mode") or "weak")
@@ -1267,7 +2263,13 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             yield emit(
                 "agent_output",
                 "ConfigAutofill",
-                {"skipped": True, "reason": "book_mode_skip_autofill"},
+                {
+                    "skipped": True,
+                    "reason": "book_mode_skip_autofill",
+                    "step": "skipped",
+                    "step_index": 1,
+                    "step_total": 1,
+                },
             )
             yield emit("agent_finished", "ConfigAutofill", {})
         elif kb_mode == "strong":
@@ -1277,6 +2279,9 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 {
                     "skipped": True,
                     "reason": "strong_kb_mode_no_random_autofill",
+                    "step": "skipped",
+                    "step_index": 1,
+                    "step_total": 1,
                 },
             )
             yield emit("agent_finished", "ConfigAutofill", {})
@@ -1285,6 +2290,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             # we should still allow the main pipeline (Extractor/Outliner/Writer) to run.
             patch: dict[str, Any] | None = None
             try:
+                yield emit(
+                    "agent_output",
+                    "ConfigAutofill",
+                    {"step": "prepare_prompt", "step_index": 1, "step_total": 4},
+                )
                 system = (
                     "You are ConfigAutofillAgent for a novel writing platform. "
                     f"{lang_hint_json} "
@@ -1313,13 +2323,28 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "ConfigAutofill",
                     {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
                 )
+                yield emit(
+                    "agent_output",
+                    "ConfigAutofill",
+                    {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
+                )
                 autofill_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
+                yield emit(
+                    "agent_output",
+                    "ConfigAutofill",
+                    {"step": "parse_json", "step_index": 3, "step_total": 4},
+                )
                 parsed = parse_json_loose(autofill_text)
                 if isinstance(parsed, dict):
                     patch = parsed
                     with get_session() as s4:
                         p4 = s4.get(Project, project_id)
                         if p4:
+                            yield emit(
+                                "agent_output",
+                                "ConfigAutofill",
+                                {"step": "persist_settings", "step_index": 4, "step_total": 4},
+                            )
                             p4.settings = deep_merge(p4.settings or {}, patch)  # type: ignore[assignment]
                             p4.updated_at = _now_utc()
                             s4.add(p4)
@@ -1404,6 +2429,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         if kind == "continue" and source_text:
             try:
                 yield emit("agent_started", "Extractor", {})
+                yield emit(
+                    "agent_output",
+                    "Extractor",
+                    {"step": "prepare_prompt", "step_index": 1, "step_total": 4},
+                )
                 system = (
                     "You are ExtractorAgent. Extract a structured StoryState from an existing manuscript excerpt. "
                     f"{lang_hint_json} "
@@ -1428,13 +2458,28 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "Extractor",
                     {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
                 )
+                yield emit(
+                    "agent_output",
+                    "Extractor",
+                    {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
+                )
                 extracted_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
+                yield emit(
+                    "agent_output",
+                    "Extractor",
+                    {"step": "parse_json", "step_index": 3, "step_total": 4},
+                )
                 parsed = parse_json_loose(extracted_text)
                 if isinstance(parsed, dict):
                     story_state = parsed
                     with get_session() as s4b:
                         p4b = s4b.get(Project, project_id)
                         if p4b:
+                            yield emit(
+                                "agent_output",
+                                "Extractor",
+                                {"step": "persist_story_state", "step_index": 4, "step_total": 4},
+                            )
                             p4b.settings = deep_merge(p4b.settings or {}, {"story_state": story_state})  # type: ignore[assignment]
                             p4b.updated_at = _now_utc()
                             s4b.add(p4b)
@@ -1472,6 +2517,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         ):
             try:
                 yield emit("agent_started", "Outliner", {})
+                yield emit(
+                    "agent_output",
+                    "Outliner",
+                    {"step": "prepare_prompt", "step_index": 1, "step_total": 5},
+                )
                 system = (
                     "You are OutlinerAgent. Create a concise chapter outline for a novel. "
                     f"{lang_hint_json} "
@@ -1500,8 +2550,18 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "Outliner",
                     {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
                 )
+                yield emit(
+                    "agent_output",
+                    "Outliner",
+                    {"step": "llm.generate_text", "step_index": 2, "step_total": 5},
+                )
                 outline_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
                 try:
+                    yield emit(
+                        "agent_output",
+                        "Outliner",
+                        {"step": "parse_json", "step_index": 3, "step_total": 5},
+                    )
                     outline = parse_json_loose(outline_text)
                 except Exception:
                     # Retry once with stricter guidance (some gateways sometimes
@@ -1526,6 +2586,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         + "\n\nIMPORTANT: Output JSON only. No markdown, no commentary, no code fences.",
                         cfg=cfg_retry,
                     )
+                    yield emit(
+                        "agent_output",
+                        "Outliner",
+                        {"step": "parse_json", "step_index": 3, "step_total": 5},
+                    )
                     outline = parse_json_loose(outline_text2)
                 # Some code-first models may still default to English. If we asked for zh,
                 # do a single best-effort translation pass for the natural language fields.
@@ -1545,6 +2610,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
 
                     if sample_values and not any(_CJK_RE.search(v) for v in sample_values):
                         try:
+                            yield emit(
+                                "agent_output",
+                                "Outliner",
+                                {"step": "translate_to_zh", "step_index": 4, "step_total": 5},
+                            )
                             system_t = (
                                 "You are OutlineTranslatorAgent. "
                                 "Convert an outline JSON to Simplified Chinese (zh-CN). "
@@ -1570,7 +2640,18 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                                 outline = translated
                         except Exception:
                             pass
+                    else:
+                        yield emit(
+                            "agent_output",
+                            "Outliner",
+                            {"step": "translate_to_zh", "step_index": 4, "step_total": 5, "skipped": True},
+                        )
                 if isinstance(outline, dict) and isinstance(outline.get("chapters"), list):
+                    yield emit(
+                        "agent_output",
+                        "Outliner",
+                        {"step": "persist_outline", "step_index": 5, "step_total": 5},
+                    )
                     with get_session() as s5:
                         p5 = s5.get(Project, project_id)
                         if p5:
@@ -1667,6 +2748,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 "BookContinue",
                 {"source_id": book_source_id, "chapter_index": chapter_index},
             )
+            yield emit(
+                "agent_output",
+                "BookContinue",
+                {"step": "prepare_context", "step_index": 1, "step_total": 4},
+            )
 
             try:
                 yield emit(
@@ -1689,6 +2775,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "tool_result",
                     "BookContinue",
                     {"tool": "continue_sources.load_excerpt", "chars": len(book_excerpt)},
+                )
+                yield emit(
+                    "agent_output",
+                    "BookContinue",
+                    {"step": "load_excerpt", "step_index": 2, "step_total": 4},
                 )
             except Exception as e:
                 book_excerpt = ""
@@ -1757,6 +2848,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 yield emit("run_completed", "Director", {})
                 return
 
+            yield emit(
+                "agent_output",
+                "BookContinue",
+                {"step": "load_book_state", "step_index": 3, "step_total": 4},
+            )
             book_kb_context = [
                 {"id": int(state_row.id), "title": state_row.title, "content": state_row.content},
                 *[
@@ -1769,6 +2865,9 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 "agent_output",
                 "BookContinue",
                 {
+                    "step": "finalize",
+                    "step_index": 4,
+                    "step_total": 4,
                     "book_state_kb_id": int(state_row.id),
                     "summary_chunks_loaded": len(summary_rows),
                     "excerpt_chars": len(book_excerpt),
@@ -1818,6 +2917,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             # BookPlanner: generate a small chapter plan for this continuation chapter.
             try:
                 yield emit("agent_started", "BookPlanner", {"chapter_index": chapter_index})
+                yield emit(
+                    "agent_output",
+                    "BookPlanner",
+                    {"step": "prepare_prompt", "step_index": 1, "step_total": 4},
+                )
                 system = (
                     "You are BookPlannerAgent. Plan the next continuation chapter for a long book. "
                     f"{lang_hint_json} "
@@ -1858,14 +2962,29 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         "max_tokens": planner_cfg.max_tokens,
                     },
                 )
+                yield emit(
+                    "agent_output",
+                    "BookPlanner",
+                    {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
+                )
                 plan_text = await generate_text(system_prompt=system, user_prompt=user, cfg=planner_cfg)
                 plan_text = strip_think_blocks(plan_text)
+                yield emit(
+                    "agent_output",
+                    "BookPlanner",
+                    {"step": "parse_json", "step_index": 3, "step_total": 4},
+                )
                 plan_parsed = parse_json_loose(plan_text)
                 if isinstance(plan_parsed, dict):
                     chapter_plan = plan_parsed
                     chapter_plan["index"] = chapter_index
                 else:
                     chapter_plan = {"index": chapter_index}
+                yield emit(
+                    "agent_output",
+                    "BookPlanner",
+                    {"step": "plan_ready", "step_index": 4, "step_total": 4},
+                )
                 yield emit("artifact", "BookPlanner", {"artifact_type": "chapter_plan", "plan": chapter_plan})
                 yield emit("agent_finished", "BookPlanner", {})
             except Exception as e:
@@ -1992,6 +3111,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         writer_max_tokens = llm_cfg().max_tokens
         try:
             yield emit("agent_started", "Writer", {"chapter_index": chapter_index})
+            yield emit(
+                "agent_output",
+                "Writer",
+                {"step": "prepare_prompt", "step_index": 1, "step_total": 4},
+            )
             system = (
                 "You are WriterAgent. Write a novel chapter in Markdown. "
                 f"{lang_hint_md} "
@@ -2085,6 +3209,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             desired_max_tokens = max(int(cfg0.max_tokens), min(max_tokens_cap, max(80, int(chapter_words * 1.4))))
             cfg = replace(cfg0, max_tokens=desired_max_tokens) if desired_max_tokens != cfg0.max_tokens else cfg0
             writer_max_tokens = cfg.max_tokens
+            yield emit(
+                "agent_output",
+                "Writer",
+                {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
+            )
             yield emit(
                 "tool_call",
                 "Writer",
@@ -2193,7 +3322,22 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         writer_text = writer_text2
                     else:
                         raise LLMError(f"writer_output_too_short:cjk={cjk_count2},min={min_len}")
-            yield emit("agent_output", "Writer", {"text": writer_text[:400]})
+            yield emit(
+                "agent_output",
+                "Writer",
+                {
+                    "step": "validate_output",
+                    "step_index": 3,
+                    "step_total": 4,
+                    "max_tokens": writer_max_tokens,
+                    "min_cjk": min_len if output_lang == "zh" else None,
+                },
+            )
+            yield emit(
+                "agent_output",
+                "Writer",
+                {"step": "finalize", "step_index": 4, "step_total": 4, "text": writer_text[:400]},
+            )
             yield emit("agent_finished", "Writer", {})
         except LLMError as e:
             msg = str(e)
@@ -2212,6 +3356,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         edited_text = writer_text
         try:
             yield emit("agent_started", "Editor", {})
+            yield emit(
+                "agent_output",
+                "Editor",
+                {"step": "prepare_prompt", "step_index": 1, "step_total": 4},
+            )
             system = (
                 "You are EditorAgent. Revise a novel chapter in Markdown. "
                 f"{lang_hint_md} "
@@ -2228,6 +3377,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             editor_max_tokens = max(int(cfg0.max_tokens), int(writer_max_tokens))
             cfg = replace(cfg0, max_tokens=editor_max_tokens) if editor_max_tokens != cfg0.max_tokens else cfg0
             yield emit(
+                "agent_output",
+                "Editor",
+                {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
+            )
+            yield emit(
                 "tool_call",
                 "Editor",
                 {
@@ -2239,6 +3393,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             )
             edited_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
             edited_text = strip_think_blocks(edited_text)
+            yield emit(
+                "agent_output",
+                "Editor",
+                {"step": "validate_output", "step_index": 3, "step_total": 4},
+            )
             # Guardrail: some models may incorrectly summarize/shorten or output
             # partial content; fall back to the original writer output.
             w = writer_text.strip()
@@ -2254,19 +3413,35 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 suspicious = True
             if suspicious:
                 raise ValueError("editor_suspicious_output")
-            yield emit("agent_output", "Editor", {"text": edited_text[:400]})
+            yield emit(
+                "agent_output",
+                "Editor",
+                {"step": "finalize", "step_index": 4, "step_total": 4, "text": edited_text[:400]},
+            )
             yield emit("agent_finished", "Editor", {})
         except Exception as e:
             edited_text = writer_text
             yield emit(
                 "agent_output",
                 "Editor",
-                {"error": f"editor_fallback_to_writer:{type(e).__name__}"},
+                {
+                    "step": "finalize",
+                    "step_index": 4,
+                    "step_total": 4,
+                    "error": f"editor_fallback_to_writer:{type(e).__name__}",
+                    "soft_fail": True,
+                    "text": writer_text[:240],
+                },
             )
             yield emit("agent_finished", "Editor", {})
 
         # Agent: LoreKeeper (evidence audit + canon guard)
         yield emit("agent_started", "LoreKeeper", {"kb_mode": kb_mode})
+        yield emit(
+            "agent_output",
+            "LoreKeeper",
+            {"step": "prepare_context", "step_index": 1, "step_total": 5},
+        )
         tbd_count = edited_text.count("[[TBD]]")
         cited_ids: list[int] = []
         warnings: list[str] = []
@@ -2297,6 +3472,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
 
             # Evidence audit (JSON output)
             try:
+                yield emit(
+                    "agent_output",
+                    "LoreKeeper",
+                    {"step": "evidence_audit", "step_index": 2, "step_total": 5},
+                )
                 system = (
                     "You are LoreKeeperAgent. Audit a chapter for Strong KB mode evidence. "
                     f"{lang_hint_json} "
@@ -2328,6 +3508,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     {"tool": "llm.generate_text", "provider": cfg.provider, "model": cfg.model},
                 )
                 evidence_text = await generate_text(system_prompt=system, user_prompt=user, cfg=cfg)
+                yield emit(
+                    "agent_output",
+                    "LoreKeeper",
+                    {"step": "parse_json", "step_index": 3, "step_total": 5},
+                )
                 parsed = parse_json_loose(evidence_text)
                 if isinstance(parsed, dict):
                     evidence_report = parsed
@@ -2388,6 +3573,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 )
                 # Sanitize via a minimal rewrite pass (does not invent facts; only redacts/asserts TBD).
                 try:
+                    yield emit(
+                        "agent_output",
+                        "LoreKeeper",
+                        {"step": "sanitize_rewrite", "step_index": 4, "step_total": 5},
+                    )
                     system2 = (
                         "You are LoreKeeperAgent. Rewrite a chapter Markdown to comply with Strong KB mode. "
                         f"{lang_hint_md} "
@@ -2417,6 +3607,12 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         tbd_count = edited_text.count("[[TBD]]")
                 except Exception as e:
                     warnings.append(f"sanitize_failed:{type(e).__name__}")
+            else:
+                yield emit(
+                    "agent_output",
+                    "LoreKeeper",
+                    {"step": "sanitize_rewrite", "step_index": 4, "step_total": 5, "skipped": True},
+                )
 
             # If we didn't rewrite, still append a to-confirm list when needed.
             if to_confirm and ("To Confirm" not in edited_text and "待确认" not in edited_text):
@@ -2439,11 +3635,29 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             # Weak mode: keep a light warning only.
             if tbd_count > 0:
                 warnings.append("Found [[TBD]] markers.")
+            yield emit(
+                "agent_output",
+                "LoreKeeper",
+                {"step": "evidence_audit", "step_index": 2, "step_total": 5, "skipped": True},
+            )
+            yield emit(
+                "agent_output",
+                "LoreKeeper",
+                {"step": "parse_json", "step_index": 3, "step_total": 5, "skipped": True},
+            )
+            yield emit(
+                "agent_output",
+                "LoreKeeper",
+                {"step": "sanitize_rewrite", "step_index": 4, "step_total": 5, "skipped": True},
+            )
 
         yield emit(
             "agent_output",
             "LoreKeeper",
             {
+                "step": "finalize",
+                "step_index": 5,
+                "step_total": 5,
                 "tbd_count": tbd_count,
                 "warnings": warnings,
                 "rewritten": rewritten,
@@ -2500,4 +3714,52 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         mark_run_completed()
         yield emit("run_completed", "Director", {})
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    def _finalize_run_if_still_running() -> None:
+        """
+        If the client disconnects or the streaming response ends unexpectedly,
+        the in-request pipeline is cancelled and would otherwise leave the run
+        in a perpetual "running" state. Mark it failed so the UI can recover.
+        """
+
+        with get_session() as s:
+            r = s.get(Run, run.id)
+            if not r or r.status != "running":
+                return
+
+            msg = "run_aborted:stream_closed"
+
+            last = s.exec(
+                select(TraceEvent).where(TraceEvent.run_id == run.id).order_by(TraceEvent.seq.desc()).limit(1)
+            ).first()
+            next_seq = int(last.seq) + 1 if last else 1
+            s.add(
+                TraceEvent(
+                    run_id=run.id,
+                    seq=next_seq,
+                    ts=_now_utc(),
+                    event_type="run_error",
+                    agent="Director",
+                    payload={"error": msg},
+                )
+            )
+            s.add(
+                TraceEvent(
+                    run_id=run.id,
+                    seq=next_seq + 1,
+                    ts=_now_utc(),
+                    event_type="run_completed",
+                    agent="Director",
+                    payload={},
+                )
+            )
+            r.status = "failed"
+            r.finished_at = _now_utc()
+            r.error = msg[:500]
+            s.add(r)
+            s.commit()
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        background=BackgroundTask(_finalize_run_if_still_running),
+    )

@@ -6,6 +6,10 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { MarkdownPreview } from "@/components/MarkdownPreview";
 import { BookStructureGraph, type BookStructureGraphData } from "@/components/BookStructureGraph";
 import {
+  CharacterRelationGraph,
+  type CharacterRelationGraphData,
+} from "@/components/CharacterRelationGraph";
+import {
   OutlineGraphEditor,
   type OutlineEdgeData,
   type OutlineGraph,
@@ -475,7 +479,9 @@ export default function Home() {
     "projects" | "background" | "outline" | "writing"
   >("writing");
   const [continuePane, setContinuePane] = useState<"article" | "book">("article");
-  const [graphPane, setGraphPane] = useState<"outline" | "book">("outline");
+  const [graphPane, setGraphPane] = useState<
+    "outline" | "book" | "characters"
+  >("outline");
   const [showQuickStart, setShowQuickStart] = useState<boolean>(false);
   const [agentsView, setAgentsView] = useState<"timeline" | "graph">("timeline");
   const [expandedEventKey, setExpandedEventKey] = useState<string | null>(null);
@@ -612,6 +618,13 @@ export default function Home() {
   const [bookGraphError, setBookGraphError] = useState<string | null>(null);
   const [bookGraphData, setBookGraphData] =
     useState<BookStructureGraphData | null>(null);
+  const [bookCharacterGraphLoading, setBookCharacterGraphLoading] =
+    useState<boolean>(false);
+  const [bookCharacterGraphError, setBookCharacterGraphError] = useState<
+    string | null
+  >(null);
+  const [bookCharacterGraphData, setBookCharacterGraphData] =
+    useState<CharacterRelationGraphData | null>(null);
   const [graphBookSourceId, setGraphBookSourceId] = useState<string | null>(
     null,
   );
@@ -720,6 +733,8 @@ export default function Home() {
       Retriever: "检索器",
       BookSummarizer: "书籍总结",
       BookCompiler: "书籍编译",
+      BookRelations: "章节关系",
+      BookCharacters: "人物关系",
       BookContinue: "书籍续写准备",
       BookPlanner: "书籍续写规划",
     };
@@ -742,6 +757,8 @@ export default function Home() {
       Retriever: "#64748B",
       BookSummarizer: "#A855F7",
       BookCompiler: "#06B6D4",
+      BookRelations: "#F43F5E",
+      BookCharacters: "#22C55E",
       BookContinue: "#7C3AED",
       BookPlanner: "#EC4899",
     };
@@ -767,6 +784,8 @@ export default function Home() {
       continue: "续写",
       book_summarize: "书籍总结入库",
       book_compile: "书籍编译",
+      book_relations: "章节关系图谱",
+      book_characters: "人物关系图谱",
       book_continue: "书籍续写",
     };
     return map[kind] ?? kind;
@@ -1137,6 +1156,9 @@ export default function Home() {
     setBookGraphData(null);
     setBookGraphError(null);
     setBookGraphLoading(false);
+    setBookCharacterGraphData(null);
+    setBookCharacterGraphError(null);
+    setBookCharacterGraphLoading(false);
     setGraphBookSourceId(null);
     setGraphBookSources([]);
     setGraphBookSourcesError(null);
@@ -1188,6 +1210,21 @@ export default function Home() {
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return (await res.json()) as KBChunkMetaItem[];
+    },
+    [apiBase],
+  );
+
+  const fetchKbChunkById = useCallback(
+    async (projectId: string, chunkId: number): Promise<KBChunkItem> => {
+      const res = await fetch(
+        `${apiBase}/api/projects/${projectId}/kb/chunks/${chunkId}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      return (await res.json()) as KBChunkItem;
     },
     [apiBase],
   );
@@ -1607,7 +1644,9 @@ export default function Home() {
     }
 
     let sawRunError = false;
+    let sawRunCompleted = false;
     let lastError: string | null = null;
+    let runId: string | null = null;
     try {
       // Ensure any in-flight Settings/Secrets save completes before starting a run,
       // otherwise the backend may start with stale provider/model/base_url.
@@ -1659,6 +1698,7 @@ export default function Home() {
               agent: string | null;
               data: Record<string, unknown>;
             };
+            runId = runId ?? evt.run_id;
             setActiveRunId((prev) => prev ?? evt.run_id);
             setRunEvents((prev) => [...prev, evt]);
             if (evt.type === "run_error") {
@@ -1670,6 +1710,9 @@ export default function Home() {
               const agent = evt.agent ? formatAgentName(evt.agent) : "Director";
               lastError = `${agent}: ${err}`;
               setRunError(`${agent}: ${err}`);
+            }
+            if (evt.type === "run_completed") {
+              sawRunCompleted = true;
             }
             if (
               evt.type === "artifact" &&
@@ -1754,6 +1797,52 @@ export default function Home() {
           } catch {
             // ignore partial/bad events
           }
+        }
+      }
+
+      // If the SSE stream ends without an explicit run_completed event, treat it
+      // as a failure surface (network/SSE interruptions are common on long jobs).
+      // Query the run state once so the UI can recover deterministically.
+      if (runId && !sawRunCompleted) {
+        try {
+          const check = await fetch(`${apiBase}/api/runs/${encodeURIComponent(runId)}`, {
+            cache: "no-store",
+          });
+          if (check.ok) {
+            const info = (await check.json()) as {
+              status?: unknown;
+              error?: unknown;
+            };
+            const status = typeof info.status === "string" ? info.status : "";
+            const err = typeof info.error === "string" ? info.error : "";
+            if (status === "completed") {
+              sawRunCompleted = true;
+            } else {
+              sawRunError = true;
+              lastError =
+                status === "failed"
+                  ? `Director: ${err || "run_failed"}`
+                  : lang === "zh"
+                    ? "SSE 连接已结束，但后端任务未完成（可能断连/被取消/仍在运行）。可去「Agent 协作」查看运行详情或重试。"
+                    : "SSE ended but the backend run did not complete (disconnected/cancelled/still running). Check Agents or retry.";
+              setRunError(lastError);
+            }
+          } else {
+            sawRunError = true;
+            const raw = await check.text();
+            lastError =
+              lang === "zh"
+                ? `SSE 连接已结束，且无法查询后端运行状态：${raw || `HTTP ${check.status}`}`
+                : `SSE ended and failed to query run status: ${raw || `HTTP ${check.status}`}`;
+            setRunError(lastError);
+          }
+        } catch (e) {
+          sawRunError = true;
+          lastError =
+            lang === "zh"
+              ? `SSE 连接已结束，且查询运行状态失败：${(e as Error).message}`
+              : `SSE ended and run status check failed: ${(e as Error).message}`;
+          setRunError(lastError);
         }
       }
     } finally {
@@ -2943,7 +3032,7 @@ export default function Home() {
         : [];
 
       const tag = `book_source:${sourceId}`;
-      const [summaries, states, manuscripts] = await Promise.all([
+      const [summaries, states, manuscripts, relationsMeta] = await Promise.all([
         fetchKbChunksMeta(projectId, {
           source_type: "book_summary",
           tag_contains: tag,
@@ -2959,7 +3048,62 @@ export default function Home() {
           tag_contains: tag,
           limit: 5000,
         }),
+        fetchKbChunksMeta(projectId, {
+          source_type: "book_relations",
+          tag_contains: tag,
+          limit: 20,
+        }),
       ]);
+
+      let nonlinear_edges:
+        | BookStructureGraphData["nonlinear_edges"]
+        | undefined = undefined;
+      if (relationsMeta.length > 0) {
+        try {
+          const latest = relationsMeta[0];
+          const chunk = await fetchKbChunkById(projectId, latest.id);
+          const obj = JSON.parse(chunk.content) as {
+            graph?: unknown;
+            edges?: unknown;
+          };
+          const graph = obj.graph && typeof obj.graph === "object" ? (obj.graph as Record<string, unknown>) : null;
+          const edgesRaw =
+            (graph && Array.isArray((graph as Record<string, unknown>).edges)
+              ? (graph as Record<string, unknown>).edges
+              : null) ??
+            (Array.isArray(obj.edges) ? obj.edges : null);
+          if (Array.isArray(edgesRaw)) {
+            const parsed = edgesRaw
+              .map((e) => {
+                if (!e || typeof e !== "object") return null;
+                const rec = e as Record<string, unknown>;
+                const from = typeof rec.from === "number" ? rec.from : Number(rec.from ?? NaN);
+                const to = typeof rec.to === "number" ? rec.to : Number(rec.to ?? NaN);
+                const type = typeof rec.type === "string" ? rec.type : String(rec.type ?? "");
+                const label = typeof rec.label === "string" ? rec.label : undefined;
+                const strength =
+                  typeof rec.strength === "number"
+                    ? rec.strength
+                    : Number(rec.strength ?? NaN);
+                if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+                if (from <= 0 || to <= 0) return null;
+                return {
+                  from: Math.floor(from),
+                  to: Math.floor(to),
+                  type: type.trim() || "relation",
+                  label: label?.trim() || undefined,
+                  strength: Number.isFinite(strength) ? strength : undefined,
+                };
+              })
+              .filter((x): x is NonNullable<typeof x> => Boolean(x))
+              .slice(0, 240);
+            nonlinear_edges = parsed;
+          }
+        } catch {
+          // Non-critical: relations graph is optional.
+          nonlinear_edges = undefined;
+        }
+      }
 
       const payload: BookStructureGraphData = {
         source_id: sourceId,
@@ -2974,6 +3118,7 @@ export default function Home() {
         summaries,
         book_state: states[0] ?? null,
         continuation_manuscripts: manuscripts,
+        nonlinear_edges,
       };
       setBookGraphData(payload);
     } catch (e) {
@@ -2981,6 +3126,123 @@ export default function Home() {
       setBookGraphError((e as Error).message);
     } finally {
       setBookGraphLoading(false);
+    }
+  }
+
+  async function refreshBookCharacterGraphData(
+    projectId: string,
+    sourceId: string,
+  ): Promise<void> {
+    setBookCharacterGraphError(null);
+    setBookCharacterGraphLoading(true);
+    try {
+      const tag = `book_source:${sourceId}`;
+      const meta = await fetchKbChunksMeta(projectId, {
+        source_type: "book_characters",
+        tag_contains: tag,
+        limit: 20,
+      });
+      if (meta.length === 0) {
+        setBookCharacterGraphData(null);
+        return;
+      }
+
+      const latest = meta[0];
+      const chunk = await fetchKbChunkById(projectId, latest.id);
+      const obj = JSON.parse(chunk.content) as {
+        generated_at?: unknown;
+        graph?: unknown;
+        characters?: unknown;
+        relations?: unknown;
+      };
+      const graph =
+        obj.graph && typeof obj.graph === "object"
+          ? (obj.graph as Record<string, unknown>)
+          : (obj as unknown as Record<string, unknown>);
+
+      const charsRaw = graph.characters ?? obj.characters;
+      const relsRaw = graph.relations ?? obj.relations;
+      const charsArr = Array.isArray(charsRaw) ? charsRaw : [];
+      const relsArr = Array.isArray(relsRaw) ? relsRaw : [];
+
+      const characters = charsArr
+        .map((c) => {
+          if (!c || typeof c !== "object") return null;
+          const rec = c as Record<string, unknown>;
+          const name = typeof rec.name === "string" ? rec.name.trim() : "";
+          const idRaw = typeof rec.id === "string" ? rec.id.trim() : "";
+          const id = idRaw || name;
+          if (!id || !name) return null;
+          return {
+            id,
+            name,
+            aliases: Array.isArray(rec.aliases)
+              ? (rec.aliases.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean) as string[])
+              : undefined,
+            gender: typeof rec.gender === "string" ? rec.gender.trim() : undefined,
+            identity: typeof rec.identity === "string" ? rec.identity.trim() : undefined,
+            personality: typeof rec.personality === "string" ? rec.personality.trim() : undefined,
+            plot: typeof rec.plot === "string" ? rec.plot.trim() : undefined,
+            chapters: Array.isArray(rec.chapters)
+              ? (rec.chapters.map((x) => (typeof x === "number" ? x : Number(x))).filter((n) => Number.isFinite(n) && n > 0).map((n) => Math.floor(n)) as number[])
+              : undefined,
+            related_events: Array.isArray(rec.related_events)
+              ? (rec.related_events.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean) as string[])
+              : undefined,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x))
+        .slice(0, 200);
+
+      const validIds = new Set(characters.map((c) => c.id));
+      const relations = relsArr
+        .map((r) => {
+          if (!r || typeof r !== "object") return null;
+          const rec = r as Record<string, unknown>;
+          const source = typeof rec.source === "string" ? rec.source.trim() : "";
+          const target = typeof rec.target === "string" ? rec.target.trim() : "";
+          if (!source || !target) return null;
+          if (!validIds.has(source) || !validIds.has(target)) return null;
+          const type = typeof rec.type === "string" ? rec.type.trim() : "other";
+          const label = typeof rec.label === "string" ? rec.label.trim() : undefined;
+          const detail = typeof rec.detail === "string" ? rec.detail.trim() : undefined;
+          const strength =
+            typeof rec.strength === "number"
+              ? rec.strength
+              : Number(rec.strength ?? NaN);
+          const chapters = Array.isArray(rec.chapters)
+            ? (rec.chapters
+                .map((x) => (typeof x === "number" ? x : Number(x)))
+                .filter((n) => Number.isFinite(n) && n > 0)
+                .map((n) => Math.floor(n)) as number[])
+            : undefined;
+          return {
+            source,
+            target,
+            type: type || "other",
+            label,
+            detail,
+            chapters,
+            strength: Number.isFinite(strength) ? strength : undefined,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x))
+        .slice(0, 500);
+
+      const generated_at =
+        typeof obj.generated_at === "string" ? obj.generated_at : undefined;
+
+      setBookCharacterGraphData({
+        source_id: sourceId,
+        generated_at,
+        characters,
+        relations,
+      });
+    } catch (e) {
+      setBookCharacterGraphData(null);
+      setBookCharacterGraphError((e as Error).message);
+    } finally {
+      setBookCharacterGraphLoading(false);
     }
   }
 
@@ -3155,6 +3417,8 @@ export default function Home() {
       ],
       book_summarize: ["BookSummarizer"],
       book_compile: ["BookCompiler"],
+      book_relations: ["BookRelations"],
+      book_characters: ["BookCharacters"],
       book_continue: [
         "ConfigAutofill",
         "BookContinue",
@@ -3180,20 +3444,234 @@ export default function Home() {
       }
     }
 
-    const total = plan.length > 0 ? plan.length : Math.max(1, finished.size);
-    const done = Math.min(total, finished.size);
-    const inflight = current && !finished.has(current) ? 0.35 : 0;
-    const pct = Math.min(99, Math.round(((done + inflight) / total) * 100));
+    const currentStep = (() => {
+      if (!current) return null;
+      for (let i = runEvents.length - 1; i >= 0; i -= 1) {
+        const evt = runEvents[i];
+        if (evt.agent !== current) continue;
+        const d = evt.data as Record<string, unknown>;
+        if (evt.type === "agent_output") {
+          const step = typeof d.step === "string" ? d.step.trim() : "";
+          const stepIndexRaw = d.step_index;
+          const stepTotalRaw = d.step_total;
+          const stepIndex =
+            typeof stepIndexRaw === "number"
+              ? stepIndexRaw
+              : Number(stepIndexRaw ?? NaN);
+          const stepTotal =
+            typeof stepTotalRaw === "number"
+              ? stepTotalRaw
+              : Number(stepTotalRaw ?? NaN);
+          if (step) {
+            if (
+              Number.isFinite(stepIndex) &&
+              Number.isFinite(stepTotal) &&
+              stepTotal > 0
+            ) {
+              return `${step} (${Math.max(0, Math.floor(stepIndex))}/${Math.max(1, Math.floor(stepTotal))})`;
+            }
+            return step;
+          }
+        }
+        if (evt.type === "tool_call") {
+          const tool = typeof d.tool === "string" ? d.tool : "";
+          const chunkIndex =
+            typeof d.chunk_index === "number"
+              ? d.chunk_index
+              : Number(d.chunk_index ?? NaN);
+          const segmentMode = typeof d.segment_mode === "string" ? d.segment_mode : "";
+          if (Number.isFinite(chunkIndex) && chunkIndex > 0) {
+            return `${tool || "tool_call"} · ${segmentMode || "part"} #${chunkIndex}`;
+          }
+          return tool ? `tool_call · ${tool}` : "tool_call";
+        }
+        if (evt.type === "artifact") {
+          const t = typeof d.artifact_type === "string" ? d.artifact_type : "";
+          return t ? `artifact · ${t}` : "artifact";
+        }
+        if (evt.type === "agent_output") {
+          const err = typeof d.error === "string" ? d.error : "";
+          if (err) return `output · ${err}`;
+          const skipped = Boolean(d.skipped);
+          if (skipped) return "output · skipped";
+          const prog = d.progress as { done?: unknown; total?: unknown } | undefined;
+          const doneRaw = prog && typeof prog === "object" ? prog.done : undefined;
+          const totalRaw = prog && typeof prog === "object" ? prog.total : undefined;
+          const doneN = typeof doneRaw === "number" ? doneRaw : Number(doneRaw ?? NaN);
+          const totalN = typeof totalRaw === "number" ? totalRaw : Number(totalRaw ?? NaN);
+          if (Number.isFinite(doneN) && Number.isFinite(totalN) && totalN > 0) {
+            return `progress · ${Math.max(0, Math.floor(doneN))}/${Math.max(1, Math.floor(totalN))}`;
+          }
+          return "output";
+        }
+      }
+      return null;
+    })();
+
+    const steps =
+      plan.length > 0
+        ? plan.map((agent) => ({
+            agent,
+            status: finished.has(agent)
+              ? ("done" as const)
+              : current === agent
+                ? ("running" as const)
+                : ("pending" as const),
+          }))
+        : [];
+
+    // Default progress model: agent-level stepper.
+    let total = plan.length > 0 ? plan.length : Math.max(1, finished.size);
+    let done = Math.min(total, finished.size);
+    let inflight = current && !finished.has(current) ? 0.35 : 0;
+    let pct = Math.min(99, Math.round(((done + inflight) / total) * 100));
+    let bookSummarizerPartProgress: { done: number; total: number } | null = null;
+
+    // BookSummarizer is long-running within a single agent; prefer part-level
+    // progress when the backend provides {progress:{done,total}} events.
+    if (activeRunKind === "book_summarize") {
+      for (let i = runEvents.length - 1; i >= 0; i -= 1) {
+        const evt = runEvents[i];
+        if (evt.agent !== "BookSummarizer") continue;
+        if (evt.type !== "agent_output") continue;
+        const d = evt.data as Record<string, unknown>;
+        const prog = d.progress as { done?: unknown; total?: unknown } | undefined;
+        const doneRaw = prog && typeof prog === "object" ? prog.done : undefined;
+        const totalRaw = prog && typeof prog === "object" ? prog.total : undefined;
+        const doneN = typeof doneRaw === "number" ? doneRaw : Number(doneRaw ?? NaN);
+        const totalN = typeof totalRaw === "number" ? totalRaw : Number(totalRaw ?? NaN);
+        if (Number.isFinite(doneN) && Number.isFinite(totalN) && totalN > 0) {
+          done = Math.max(0, Math.min(Math.floor(doneN), Math.floor(totalN)));
+          total = Math.max(1, Math.floor(totalN));
+          inflight = 0;
+          pct = Math.min(99, Math.round((done / total) * 100));
+          bookSummarizerPartProgress = { done, total };
+          break;
+        }
+      }
+    }
+
+    const errorAgents = new Set<string>();
+    for (const evt of runEvents) {
+      if (evt.type === "run_error" && evt.agent) errorAgents.add(evt.agent);
+    }
+
+    const agentDetails =
+      plan.length > 0
+        ? plan.map((agent) => {
+            const status = finished.has(agent)
+              ? ("done" as const)
+              : errorAgents.has(agent)
+                ? ("error" as const)
+                : current === agent
+                  ? ("running" as const)
+                  : ("pending" as const);
+
+            let label: string | null = null;
+            let agentPct: number | null = null;
+
+            // Prefer structured per-agent steps from backend.
+            for (let i = runEvents.length - 1; i >= 0; i -= 1) {
+              const evt = runEvents[i];
+              if (evt.agent !== agent) continue;
+              const d = evt.data as Record<string, unknown>;
+              if (evt.type === "agent_output") {
+                const step = typeof d.step === "string" ? d.step.trim() : "";
+                const stepIndexRaw = d.step_index;
+                const stepTotalRaw = d.step_total;
+                const stepIndex =
+                  typeof stepIndexRaw === "number"
+                    ? stepIndexRaw
+                    : Number(stepIndexRaw ?? NaN);
+                const stepTotal =
+                  typeof stepTotalRaw === "number"
+                    ? stepTotalRaw
+                    : Number(stepTotalRaw ?? NaN);
+                if (step) {
+                  if (
+                    Number.isFinite(stepIndex) &&
+                    Number.isFinite(stepTotal) &&
+                    stepTotal > 0
+                  ) {
+                    const si = Math.max(0, Math.floor(stepIndex));
+                    const st = Math.max(1, Math.floor(stepTotal));
+                    label = `${step} (${si}/${st})`;
+                    agentPct = Math.max(0, Math.min(100, Math.round((si / st) * 100)));
+                  } else {
+                    label = step;
+                  }
+                  break;
+                }
+
+                // BookSummarizer reports progress per segment/chunk.
+                const prog = d.progress as { done?: unknown; total?: unknown } | undefined;
+                const doneRaw = prog && typeof prog === "object" ? prog.done : undefined;
+                const totalRaw = prog && typeof prog === "object" ? prog.total : undefined;
+                const doneN =
+                  typeof doneRaw === "number" ? doneRaw : Number(doneRaw ?? NaN);
+                const totalN =
+                  typeof totalRaw === "number" ? totalRaw : Number(totalRaw ?? NaN);
+                if (Number.isFinite(doneN) && Number.isFinite(totalN) && totalN > 0) {
+                  const dd = Math.max(0, Math.floor(doneN));
+                  const tt = Math.max(1, Math.floor(totalN));
+                  label = `${lang === "zh" ? "分段" : "parts"} · ${dd}/${tt}`;
+                  agentPct = Math.max(0, Math.min(100, Math.round((dd / tt) * 100)));
+                  break;
+                }
+
+                const err = typeof d.error === "string" ? d.error.trim() : "";
+                if (err) {
+                  label = err;
+                  break;
+                }
+              }
+
+              if (evt.type === "tool_call") {
+                const tool = typeof d.tool === "string" ? d.tool : "";
+                label = tool ? `tool_call · ${tool}` : "tool_call";
+                break;
+              }
+              if (evt.type === "artifact") {
+                const t = typeof d.artifact_type === "string" ? d.artifact_type : "";
+                label = t ? `artifact · ${t}` : "artifact";
+                break;
+              }
+              if (evt.type === "agent_started") {
+                label = lang === "zh" ? "开始" : "started";
+                break;
+              }
+            }
+
+            if (agent === "BookSummarizer" && bookSummarizerPartProgress) {
+              const dd = bookSummarizerPartProgress.done;
+              const tt = bookSummarizerPartProgress.total;
+              label = `${lang === "zh" ? "分段" : "parts"} · ${dd}/${tt}`;
+              agentPct = Math.max(0, Math.min(100, Math.round((dd / tt) * 100)));
+            }
+
+            if (finished.has(agent)) {
+              agentPct = 100;
+              if (!label) label = lang === "zh" ? "完成" : "done";
+            }
+            if (status === "pending") {
+              agentPct = 0;
+            }
+            return { agent, status, label, pct: agentPct };
+          })
+        : [];
 
     return {
       kind: activeRunKind,
       run_id: activeRunId,
       current_agent: current,
+      current_step: currentStep,
+      steps,
+      agent_details: agentDetails,
       done,
       total,
       pct,
     };
-  }, [runInProgress, activeRunKind, activeRunId, runEvents]);
+  }, [runInProgress, activeRunKind, activeRunId, runEvents, lang]);
 
   const showBgImage = uiBackground.enabled && Boolean(uiBackground.image_data_url);
 
@@ -3343,7 +3821,7 @@ export default function Home() {
                       : ""}
                   </div>
                   <div className="shrink-0">
-                    {tt("progress")}: {runProgress.pct}%
+                    {tt("progress")}: {runProgress.pct}% · {runProgress.done}/{runProgress.total}
                   </div>
                 </div>
                 <div className="mt-2 h-2 w-full rounded-full bg-zinc-200 dark:bg-zinc-800">
@@ -3352,6 +3830,110 @@ export default function Home() {
                     style={{ width: `${runProgress.pct}%` }}
                   />
                 </div>
+                {runProgress.current_step ? (
+                  <div className="mt-2 text-xs text-[var(--ui-muted)]">
+                    {lang === "zh" ? "步骤" : "Step"}: {runProgress.current_step}
+                  </div>
+                ) : null}
+                {runProgress.steps && runProgress.steps.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {runProgress.steps.map((s) => {
+                      const base =
+                        "rounded-md border px-2 py-0.5 text-[11px] transition-colors";
+                      const cls =
+                        s.status === "done"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                          : s.status === "running"
+                            ? "border-[var(--ui-accent)] bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                            : "border-zinc-200 bg-[var(--ui-bg)] text-[var(--ui-muted)]";
+                      const title =
+                        s.status === "running" && runProgress.current_step
+                          ? runProgress.current_step
+                          : undefined;
+                      return (
+                        <span
+                          key={s.agent}
+                          className={[base, cls].join(" ")}
+                          title={title}
+                        >
+                          {formatAgentName(s.agent)}
+                        </span>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {runProgress.agent_details && runProgress.agent_details.length > 0 ? (
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    {runProgress.agent_details.map((a) => {
+                      const boxBase =
+                        "rounded-md border bg-[var(--ui-surface)] p-2";
+                      const boxCls =
+                        a.status === "done"
+                          ? "border-emerald-200"
+                          : a.status === "running"
+                            ? "border-[var(--ui-accent)]"
+                            : a.status === "error"
+                              ? "border-red-200"
+                              : "border-zinc-200 dark:border-zinc-800";
+                      const badgeBase =
+                        "rounded-md border px-1.5 py-0.5 text-[10px]";
+                      const badgeCls =
+                        a.status === "done"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                          : a.status === "running"
+                            ? "border-[var(--ui-accent)] bg-[var(--ui-accent)] text-[var(--ui-accent-foreground)]"
+                            : a.status === "error"
+                              ? "border-red-200 bg-red-50 text-red-900"
+                              : "border-zinc-200 bg-[var(--ui-bg)] text-[var(--ui-muted)]";
+
+                      return (
+                        <div
+                          key={a.agent}
+                          className={[boxBase, boxCls].join(" ")}
+                          title={a.label ?? undefined}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 truncate text-[11px] font-medium">
+                              {formatAgentName(a.agent)}
+                            </div>
+                            <span className={[badgeBase, badgeCls].join(" ")}>
+                              {a.status === "done"
+                                ? lang === "zh"
+                                  ? "完成"
+                                  : "done"
+                                : a.status === "running"
+                                  ? lang === "zh"
+                                    ? "运行中"
+                                    : "running"
+                                  : a.status === "error"
+                                    ? lang === "zh"
+                                      ? "错误"
+                                      : "error"
+                                    : lang === "zh"
+                                      ? "等待"
+                                      : "pending"}
+                            </span>
+                          </div>
+                          {a.label ? (
+                            <div className="mt-1 line-clamp-2 text-[11px] text-[var(--ui-muted)]">
+                              {a.label}
+                            </div>
+                          ) : null}
+                          {typeof a.pct === "number" ? (
+                            <div className="mt-2 h-1 w-full rounded-full bg-zinc-200 dark:bg-zinc-800">
+                              <div
+                                className="h-1 rounded-full bg-[var(--ui-accent)]"
+                                style={{
+                                  width: `${Math.max(0, Math.min(100, a.pct))}%`,
+                                }}
+                              />
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
                 {runError ? (
                   <div className="mt-2 text-xs text-red-600 dark:text-red-400">
                     {tt("error")}: {runError}
@@ -6647,6 +7229,7 @@ export default function Home() {
                   [
                     ["outline", lang === "zh" ? "大纲图" : "Outline graph"],
                     ["book", lang === "zh" ? "书籍结构图" : "Book structure"],
+                    ["characters", lang === "zh" ? "人物关系图" : "Character graph"],
                   ] as const
                 ).map(([k, label]) => (
                   <button
@@ -6732,7 +7315,7 @@ export default function Home() {
                   })()}
                 </div>
               </div>
-            ) : (
+            ) : graphPane === "book" ? (
               <div className="mt-6">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="text-sm font-medium">
@@ -6778,6 +7361,23 @@ export default function Home() {
                         : lang === "zh"
                           ? "刷新"
                           : "Refresh"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!selectedProjectId || !graphBookSourceId || runInProgress}
+                      onClick={() => {
+                        if (!selectedProjectId || !graphBookSourceId) return;
+                        runPipeline("book_relations", { source_id: graphBookSourceId })
+                          .then(() =>
+                            refreshBookStructureGraphData(selectedProjectId, graphBookSourceId),
+                          )
+                          .catch(() => {
+                            // error surfaced via backend card / runError
+                          });
+                      }}
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                    >
+                      {lang === "zh" ? "生成章节关系（LLM）" : "Build relations (LLM)"}
                     </button>
                     <button
                       type="button"
@@ -6882,6 +7482,152 @@ export default function Home() {
                       {lang === "zh"
                         ? "提示：如果你之前只做过“总结入库”，也可以先点「扫描已入库书籍」，再选择对应书籍源。"
                         : "Tip: if you only summarized into KB before, click “Scan books in KB”, then pick a book source."}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm font-medium">
+                    {lang === "zh" ? "人物关系图" : "Character graph"}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={!selectedProjectId || graphBookSourcesLoading}
+                      onClick={() => {
+                        if (!selectedProjectId) return;
+                        setGraphBookSources([]);
+                        setGraphBookSourcesError(null);
+                        loadGraphBookSources(selectedProjectId).catch(() => {
+                          // error surfaced via state
+                        });
+                      }}
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                    >
+                      {graphBookSourcesLoading
+                        ? lang === "zh"
+                          ? "扫描中..."
+                          : "Scanning..."
+                        : lang === "zh"
+                          ? "扫描已入库书籍"
+                          : "Scan books in KB"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        !selectedProjectId ||
+                        !graphBookSourceId ||
+                        bookCharacterGraphLoading
+                      }
+                      onClick={() => {
+                        if (!selectedProjectId || !graphBookSourceId) return;
+                        refreshBookCharacterGraphData(
+                          selectedProjectId,
+                          graphBookSourceId,
+                        ).catch(() => {
+                          // error surfaced via state
+                        });
+                      }}
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                    >
+                      {bookCharacterGraphLoading
+                        ? lang === "zh"
+                          ? "加载中..."
+                          : "Loading..."
+                        : lang === "zh"
+                          ? "刷新"
+                          : "Refresh"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!selectedProjectId || !graphBookSourceId || runInProgress}
+                      onClick={() => {
+                        if (!selectedProjectId || !graphBookSourceId) return;
+                        runPipeline("book_characters", { source_id: graphBookSourceId })
+                          .then(() =>
+                            refreshBookCharacterGraphData(selectedProjectId, graphBookSourceId),
+                          )
+                          .catch(() => {
+                            // error surfaced via backend card / runError
+                          });
+                      }}
+                      className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-3 py-2 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                    >
+                      {lang === "zh" ? "生成人物关系（LLM）" : "Build characters (LLM)"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTab("continue");
+                        setContinuePane("book");
+                      }}
+                      className="rounded-md bg-[var(--ui-accent)] px-3 py-2 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
+                    >
+                      {lang === "zh" ? "去书籍续写" : "Open Book Continue"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-2 rounded-md border border-zinc-200 bg-[var(--ui-bg)] p-3 text-xs text-[var(--ui-muted)] dark:border-zinc-800">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div>{lang === "zh" ? "书籍源" : "Book source"}:</div>
+                    <select
+                      value={graphBookSourceId ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value || null;
+                        setGraphBookSourceId(v);
+                        setBookCharacterGraphData(null);
+                        setBookCharacterGraphError(null);
+                      }}
+                      disabled={graphBookSourcesLoading || graphBookSources.length === 0}
+                      className="min-w-[260px] rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] disabled:opacity-50"
+                    >
+                      {graphBookSources.length === 0 ? (
+                        <option value="">
+                          {graphBookSourcesLoading
+                            ? lang === "zh"
+                              ? "扫描中..."
+                              : "Scanning..."
+                            : lang === "zh"
+                              ? "暂无书籍"
+                              : "No books"}
+                        </option>
+                      ) : (
+                        graphBookSources.map((s) => (
+                          <option key={s.source_id} value={s.source_id}>
+                            {s.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    {bookCharacterGraphData?.generated_at ? (
+                      <div className="ml-auto">
+                        {lang === "zh" ? "生成于" : "Generated"}:{" "}
+                        {new Date(bookCharacterGraphData.generated_at).toLocaleString()}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                {bookCharacterGraphError ? (
+                  <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                    {tt("error")}: {bookCharacterGraphError}
+                  </div>
+                ) : null}
+
+                <div className="mt-4">
+                  {bookCharacterGraphData ? (
+                    <CharacterRelationGraph
+                      lang={lang === "zh" ? "zh" : "en"}
+                      data={bookCharacterGraphData}
+                    />
+                  ) : (
+                    <div className="text-sm text-[var(--ui-muted)]">
+                      {lang === "zh"
+                        ? "提示：先选择书籍源，然后点击「生成人物关系（LLM）」或「刷新」。"
+                        : "Tip: pick a book source, then build/refresh the character graph."}
                     </div>
                   )}
                 </div>

@@ -633,6 +633,102 @@ def test_book_summarize_tolerates_non_json_output(monkeypatch: pytest.MonkeyPatc
         )
 
 
+def test_book_summarize_all_skipped_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    v2.x regression test:
+    - When replace_existing=false and all parts were already summarized, the run should
+      complete successfully (created=0, skipped>0) instead of failing with
+      book_summarize_no_results.
+    - It should also avoid making any LLM calls when everything is skipped.
+    """
+
+    import ai_writer_api.routers.runs as runs_mod
+
+    async def fake_generate_text_ok(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        if "BookSummarizerAgent" in system_prompt:
+            return json.dumps(
+                {
+                    "summary": "demo",
+                    "key_events": ["event"],
+                    "characters": ["Alice"],
+                    "locations": ["Town"],
+                    "timeline": ["Day 1"],
+                    "open_loops": ["mystery"],
+                },
+                ensure_ascii=True,
+            )
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text_ok)
+
+    with TestClient(app) as client:
+        p = client.post("/api/projects", json={"title": "Book Sum Skip Test"}).json()
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
+            json={
+                "text": "第1章：开端\n" + ("A" * 1200) + "\n\n第2章：继续\n" + ("B" * 1200),
+                "filename": "book.txt",
+            },
+        ).json()
+
+        # First pass: summarize normally (creates KB chunks).
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={
+                "kind": "book_summarize",
+                "source_id": src["source_id"],
+                "segment_mode": "chapter",
+                "replace_existing": True,
+            },
+        ) as res:
+            assert res.status_code == 200
+            for raw in res.iter_lines():
+                if not raw or not raw.startswith("data:"):
+                    continue
+                if json.loads(raw.replace("data:", "", 1).strip()).get("type") == "run_completed":
+                    break
+
+        # Second pass: replace_existing=false should skip all parts and NOT call LLM.
+        async def fake_generate_text_must_not_run(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+            raise AssertionError("LLM should not be called when all parts are skipped")
+
+        monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text_must_not_run)
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={
+                "kind": "book_summarize",
+                "source_id": src["source_id"],
+                "segment_mode": "chapter",
+                "replace_existing": False,
+            },
+        ) as res2:
+            assert res2.status_code == 200
+            events2: list[dict[str, object]] = []
+            for raw in res2.iter_lines():
+                if not raw or not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events2.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+        stats = [
+            (e.get("data") or {})
+            for e in events2
+            if e.get("type") == "artifact"
+            and e.get("agent") == "BookSummarizer"
+            and (e.get("data") or {}).get("artifact_type") == "book_summarize_stats"
+        ]
+        assert stats
+        created = int((stats[-1].get("created") or 0))
+        skipped = int((stats[-1].get("skipped") or 0))
+        assert created == 0
+        assert skipped >= 1
+
+
 def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     v1.11 regression test:
