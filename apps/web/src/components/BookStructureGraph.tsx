@@ -91,16 +91,25 @@ export function BookStructureGraph({
   data: BookStructureGraphData;
   maxChapters?: number;
 }) {
-  const { nodes, edges, truncated } = useMemo(() => {
+  const { nodes, edges } = useMemo(() => {
     const chapters = Array.isArray(data.chapters) ? data.chapters : [];
     const shown = chapters.slice(0, Math.max(1, Math.min(maxChapters, 2000)));
     const truncated = chapters.length > shown.length;
 
     const summaryByChapter = new Map<number, KBChunkMeta>();
+    let summaryCount = 0;
+    let chapterSummaryCount = 0;
+    let chunkSummaryCount = 0;
     for (const s of data.summaries || []) {
+      summaryCount += 1;
       const idx = parseTagInt(s.tags, "book_chapter");
-      if (!idx) continue;
-      if (!summaryByChapter.has(idx)) summaryByChapter.set(idx, s);
+      if (idx && idx > 0) {
+        chapterSummaryCount += 1;
+        if (!summaryByChapter.has(idx)) summaryByChapter.set(idx, s);
+      } else {
+        const chunkIdx = parseTagInt(s.tags, "book_chunk");
+        if (chunkIdx && chunkIdx > 0) chunkSummaryCount += 1;
+      }
     }
 
     const continuationByChapterId = new Map<string, KBChunkMeta>();
@@ -133,6 +142,31 @@ export function BookStructureGraph({
         color: sourceColor,
       } satisfies CardNodeData,
     });
+
+    if (chapters.length === 0 && summaryCount > 0) {
+      const nodeId = "summaries";
+      nodesOut.push({
+        id: nodeId,
+        type: "bookCard",
+        position: { x: 0, y: 140 },
+        data: {
+          label: lang === "zh" ? "已入库总结（book_summary）" : "Summaries (book_summary)",
+          stats:
+            lang === "zh"
+              ? `总数=${summaryCount} · 逐章=${chapterSummaryCount} · 分片=${chunkSummaryCount}`
+              : `total=${summaryCount} · chapter=${chapterSummaryCount} · chunk=${chunkSummaryCount}`,
+          color: "rgba(16,185,129,0.7)",
+        } satisfies CardNodeData,
+      });
+      edgesOut.push({
+        id: "e:book->summaries",
+        source: `book:${data.source_id}`,
+        target: nodeId,
+        type: "smoothstep",
+        markerEnd: { type: MarkerType.ArrowClosed },
+        style: { stroke: "rgba(16,185,129,0.55)", strokeWidth: 2 },
+      });
+    }
 
     for (let i = 0; i < shown.length; i++) {
       const c = shown[i];
@@ -310,7 +344,7 @@ export function BookStructureGraph({
       });
     }
 
-    return { nodes: nodesOut, edges: edgesOut, truncated };
+    return { nodes: nodesOut, edges: edgesOut };
   }, [data, lang, maxChapters]);
 
   const nodeTypes = useMemo(() => ({ bookCard: CardNodeView }), []);
@@ -323,41 +357,55 @@ export function BookStructureGraph({
     );
   }
 
-  if (!Array.isArray(data.chapters) || data.chapters.length === 0) {
+  const hasChapters = Array.isArray(data.chapters) && data.chapters.length > 0;
+  const hasAnyArtifacts =
+    (data.book_state != null) ||
+    (Array.isArray(data.summaries) && data.summaries.length > 0) ||
+    (Array.isArray(data.continuation_manuscripts) && data.continuation_manuscripts.length > 0);
+
+  if (!hasChapters && !hasAnyArtifacts) {
     return (
       <div className="text-sm text-[var(--ui-muted)]">
         {lang === "zh"
-          ? "暂无章节索引。请先在“书籍续写”里执行章节分块。"
-          : "No chapter index yet. Detect chapters first in Book Continue."}
+          ? "暂无可展示的书籍结构信息。"
+          : "No book structure data to visualize yet."}
       </div>
     );
   }
 
   return (
-    <div className="h-[620px] rounded-lg border border-zinc-200 bg-[var(--ui-surface)]">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        defaultEdgeOptions={{
-          markerEnd: { type: MarkerType.ArrowClosed },
-          style: { stroke: "rgba(100,116,139,0.7)", strokeWidth: 2 },
-        }}
-        fitView
-      >
-        <Background gap={18} size={1} />
-        <MiniMap
-          nodeColor={(n) => {
-            const d = n.data as { color?: string } | undefined;
-            return d?.color ?? "rgba(100,116,139,0.45)";
+    <div className="space-y-2">
+      {!hasChapters ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+          {lang === "zh"
+            ? "提示：当前书籍源还没有章节索引（chapter_index）。你仍可查看已入库的总结/状态/续写产物；若需要章节链，请先在「续写 → 书籍续写」执行章节分块。"
+            : "Tip: this book source has no chapter_index yet. You can still view summaries/state/continuations; to render a chapter chain, detect chapters first in Continue → Book Continue."}
+        </div>
+      ) : null}
+      <div className="h-[620px] rounded-lg border border-zinc-200 bg-[var(--ui-surface)]">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          defaultEdgeOptions={{
+            markerEnd: { type: MarkerType.ArrowClosed },
+            style: { stroke: "rgba(100,116,139,0.7)", strokeWidth: 2 },
           }}
-          nodeStrokeWidth={2}
-          pannable
-          zoomable
-        />
-        <Controls />
-      </ReactFlow>
+          fitView
+        >
+          <Background gap={18} size={1} />
+          <MiniMap
+            nodeColor={(n) => {
+              const d = n.data as { color?: string } | undefined;
+              return d?.color ?? "rgba(100,116,139,0.45)";
+            }}
+            nodeStrokeWidth={2}
+            pannable
+            zoomable
+          />
+          <Controls />
+        </ReactFlow>
+      </div>
     </div>
   );
 }
-

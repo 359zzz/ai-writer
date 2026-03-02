@@ -436,6 +436,14 @@ Versioning policy (from v1.0.x onward):
   - 新增 `GET /kb/chunks_meta` 仅返回 KB 元数据（不返回大段 content），便于长书图谱与统计。
   - `book_continue` 生成章节写入 manuscript KB 时会附带 `book_source:*` 标签，支持书籍结构图关联续写产物。
 
+### v2.1.1 (Graph: Project Selector + De-duplicate Run DAG)
+- 图谱工作区:
+  - 顶部新增“项目”选择器：大纲图/书籍结构图支持切换项目回放（用于查看历史项目产物）。
+  - 运行流程图（Run DAG）从图谱页移除，统一在「Agent 协作」页查看（避免重复视图）。
+  - 书籍结构图在缺少 `chapter_index` 时仍可展示已入库的总结/状态/续写产物，并提示用户先执行章节分块（兼容历史数据）。
+- Docs:
+  - 更新 `README.md` / `README.zh-CN.md` 的图谱使用说明。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

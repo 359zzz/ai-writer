@@ -91,17 +91,18 @@
 大文件建议直接上传：后端会把全文保存到 `apps/api/data/continue_sources/`（已 gitignore），前端只拿到一段预览，
 避免“把 60 万字全文塞进 textarea / 再次 POST”导致的卡死问题。
 
-### 5）图谱（长任务进度 + 可视化）
+### 5）图谱（大纲 / 书籍结构可视化）
 
-- 图谱 → 运行流程图：
-  - 选择某次 run，查看聚合后的流程 DAG（agent/tool/artifact/错误/耗时）。
-  - 中途刷新页面后仍可通过轮询恢复（基于 SQLite 中保存的 trace）。
+- 图谱页顶部可选择“项目”（Project），用于回放该项目的大纲/书籍结构。
 - 图谱 → 大纲图：
   - 可视化已保存的大纲导图；若没有导图但有文字大纲，会显示为简化的章节链。
   - 该视图为只读（仅平移/缩放）。
 - 图谱 → 书籍结构图：
-  - 展示：`chapter_index` → `book_summary`（逐章总结）→ `book_state` → 续写章节（manuscript）。
+  - 可先点“扫描已入库书籍”，从该项目知识库中找到历史 `book_source:*`（无需你记住 source_id）。
+  - 展示：`chapter_index` → `book_summary`（逐章总结）→ `book_state` → 续写产物（manuscript）。
   - 推荐流程：上传书籍 → 章节分块（可微调保存）→ 按章节总结入库 → 编译书籍状态 → 续写章节。
+- 运行流程图（run DAG）：
+  - 请在「Agent 协作」页的 Graph 视图查看（避免重复）。
 
 ### 6）导出
 

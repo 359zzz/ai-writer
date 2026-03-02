@@ -92,17 +92,18 @@ Security note: the UI only shows key presence (present/missing). It never displa
 For large books, uploading is recommended: the backend stores the full text locally under `apps/api/data/continue_sources/`
 (gitignored) and only returns a short preview to the browser.
 
-### 5) Graph (long-task progress + visualization)
+### 5) Graph (Outline / Book visualization)
 
-- Graph → Run DAG:
-  - Select a run to view the aggregated DAG (agents/tools/artifacts/errors).
-  - If you refresh the page mid-run, the Graph view can recover by polling the stored trace.
+- The Graph page has a project selector at the top (so you can replay older projects).
 - Graph → Outline graph:
   - Visualizes your saved outline mindmap (or the saved text outline as a simple chapter chain).
   - This view is read-only (pan/zoom only).
 - Graph → Book structure:
+  - Click “Scan books in KB” to discover historical `book_source:*` from the selected project's KB (no need to remember source_id).
   - Visualizes: `chapter_index` → `book_summary` (per chapter) → `book_state` → continuation manuscripts.
   - Recommended flow: upload book → detect/tune chapters → summarize into KB → compile book state → write chapters.
+- For run DAG / execution flow graphs:
+  - Use the Agents page (timeline + graph) to avoid duplicated views.
 
 ### 6) Export
 
