@@ -3462,15 +3462,47 @@ export default function Home() {
             typeof stepTotalRaw === "number"
               ? stepTotalRaw
               : Number(stepTotalRaw ?? NaN);
+          const elapsedRaw = d.elapsed_s;
+          const elapsed =
+            typeof elapsedRaw === "number"
+              ? elapsedRaw
+              : Number(elapsedRaw ?? NaN);
+          const waiting =
+            Boolean(d.waiting) ||
+            (typeof d.status === "string" && d.status.toLowerCase() === "waiting");
+          const attemptRaw = d.attempt;
+          const attempt =
+            typeof attemptRaw === "number"
+              ? attemptRaw
+              : Number(attemptRaw ?? NaN);
+          const selection =
+            typeof d.selection === "string" ? d.selection.trim() : "";
           if (step) {
+            const suffixParts: string[] = [];
+            if (waiting && Number.isFinite(elapsed) && elapsed > 0) {
+              suffixParts.push(
+                `${lang === "zh" ? "等待" : "waiting"} ${Math.max(0, Math.floor(elapsed))}s`,
+              );
+            }
+            if (Number.isFinite(attempt) && attempt > 0) {
+              suffixParts.push(
+                `${lang === "zh" ? "尝试" : "attempt"} ${Math.max(0, Math.floor(attempt))}`,
+              );
+            }
+            if (selection && selection !== "all") {
+              suffixParts.push(
+                `${lang === "zh" ? "选择" : "selection"}=${selection}`,
+              );
+            }
+            const suffix = suffixParts.length > 0 ? ` · ${suffixParts.join(" · ")}` : "";
             if (
               Number.isFinite(stepIndex) &&
               Number.isFinite(stepTotal) &&
               stepTotal > 0
             ) {
-              return `${step} (${Math.max(0, Math.floor(stepIndex))}/${Math.max(1, Math.floor(stepTotal))})`;
+              return `${step} (${Math.max(0, Math.floor(stepIndex))}/${Math.max(1, Math.floor(stepTotal))})${suffix}`;
             }
-            return step;
+            return `${step}${suffix}`;
           }
         }
         if (evt.type === "tool_call") {
@@ -3587,7 +3619,39 @@ export default function Home() {
                   typeof stepTotalRaw === "number"
                     ? stepTotalRaw
                     : Number(stepTotalRaw ?? NaN);
+                const elapsedRaw = d.elapsed_s;
+                const elapsed =
+                  typeof elapsedRaw === "number"
+                    ? elapsedRaw
+                    : Number(elapsedRaw ?? NaN);
+                const waiting =
+                  Boolean(d.waiting) ||
+                  (typeof d.status === "string" && d.status.toLowerCase() === "waiting");
+                const attemptRaw = d.attempt;
+                const attempt =
+                  typeof attemptRaw === "number"
+                    ? attemptRaw
+                    : Number(attemptRaw ?? NaN);
+                const selection =
+                  typeof d.selection === "string" ? d.selection.trim() : "";
                 if (step) {
+                  const suffixParts: string[] = [];
+                  if (waiting && Number.isFinite(elapsed) && elapsed > 0) {
+                    suffixParts.push(
+                      `${lang === "zh" ? "等待" : "waiting"} ${Math.max(0, Math.floor(elapsed))}s`,
+                    );
+                  }
+                  if (Number.isFinite(attempt) && attempt > 0) {
+                    suffixParts.push(
+                      `${lang === "zh" ? "尝试" : "attempt"} ${Math.max(0, Math.floor(attempt))}`,
+                    );
+                  }
+                  if (selection && selection !== "all") {
+                    suffixParts.push(
+                      `${lang === "zh" ? "选择" : "selection"}=${selection}`,
+                    );
+                  }
+                  const suffix = suffixParts.length > 0 ? ` · ${suffixParts.join(" · ")}` : "";
                   if (
                     Number.isFinite(stepIndex) &&
                     Number.isFinite(stepTotal) &&
@@ -3595,10 +3659,10 @@ export default function Home() {
                   ) {
                     const si = Math.max(0, Math.floor(stepIndex));
                     const st = Math.max(1, Math.floor(stepTotal));
-                    label = `${step} (${si}/${st})`;
+                    label = `${step} (${si}/${st})${suffix}`;
                     agentPct = Math.max(0, Math.min(100, Math.round((si / st) * 100)));
                   } else {
-                    label = step;
+                    label = `${step}${suffix}`;
                   }
                   break;
                 }

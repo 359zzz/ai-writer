@@ -493,6 +493,12 @@ Versioning policy (from v1.0.x onward):
 - Tests：
   - 增加/扩展回归：book_summarize/book_compile 健壮性、图谱依赖的 KB meta 读取等。
 
+### v2.1.8 (Book: BookCompiler “Stuck” Heartbeats + Hard Timeout)
+- 修复体验问题：`book_compile` 的 LLM 调用阶段在 PackyAPI/Gemini 代理下偶尔会长时间无响应，看起来像“卡死”。
+  - 后端在 `BookCompiler` 的 `llm.generate_text` 阶段加入 SSE 心跳（每 ~8s 发一次，带 `elapsed_s/attempt/selection`），让前端可持续更新“等待中”状态。
+  - 增加外层 hard timeout（默认 120s/attempt）：超过即主动失败并给出明确错误，避免无限等待。
+- 前端：`后端` 进度条与 agent 详情会显示 “等待 Ns / 尝试 k / selection=...”。
+
 ---
 
 ### Roadmap (Planned, Living Doc)

@@ -1408,7 +1408,41 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             )
 
             try:
-                out = await generate_text(system_prompt=system, user_prompt=user, cfg=compiler_cfg)
+                # PackyAPI / Gemini proxies can occasionally "hang" (slow distributors / stalled connections).
+                # While we keep httpx timeouts reasonably bounded, add an outer hard timeout and
+                # emit SSE heartbeats so the UI doesn't look stuck.
+                hard_timeout_s = 120.0
+                heartbeat_s = 8.0
+                t0 = asyncio.get_running_loop().time()
+                task = asyncio.create_task(
+                    generate_text(system_prompt=system, user_prompt=user, cfg=compiler_cfg)
+                )
+                while True:
+                    done, _pending = await asyncio.wait({task}, timeout=heartbeat_s)
+                    if task in done:
+                        out = task.result()
+                        break
+                    elapsed = int(asyncio.get_running_loop().time() - t0)
+                    yield emit(
+                        "agent_output",
+                        "BookCompiler",
+                        {
+                            "step": "llm.generate_text",
+                            "step_index": 2,
+                            "step_total": 4,
+                            "waiting": True,
+                            "elapsed_s": elapsed,
+                            "attempt": 1,
+                            "selection": selection_note,
+                        },
+                    )
+                    if elapsed >= int(hard_timeout_s):
+                        task.cancel()
+                        try:
+                            await task
+                        except Exception:
+                            pass
+                        raise LLMError(f"book_compile_timeout:attempt=1,elapsed_s={elapsed}")
             except LLMError as e:
                 msg = str(e)
 
@@ -1487,9 +1521,44 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         },
                     )
                     try:
-                        out = await generate_text(
-                            system_prompt=system_retry, user_prompt=user_retry, cfg=compiler_cfg_retry
+                        hard_timeout_s = 120.0
+                        heartbeat_s = 8.0
+                        t0 = asyncio.get_running_loop().time()
+                        task = asyncio.create_task(
+                            generate_text(
+                                system_prompt=system_retry,
+                                user_prompt=user_retry,
+                                cfg=compiler_cfg_retry,
+                            )
                         )
+                        while True:
+                            done, _pending = await asyncio.wait({task}, timeout=heartbeat_s)
+                            if task in done:
+                                out = task.result()
+                                break
+                            elapsed = int(asyncio.get_running_loop().time() - t0)
+                            yield emit(
+                                "agent_output",
+                                "BookCompiler",
+                                {
+                                    "step": "llm.generate_text",
+                                    "step_index": 2,
+                                    "step_total": 4,
+                                    "waiting": True,
+                                    "elapsed_s": elapsed,
+                                    "attempt": 2,
+                                    "selection": "retry_head_tail",
+                                },
+                            )
+                            if elapsed >= int(hard_timeout_s):
+                                task.cancel()
+                                try:
+                                    await task
+                                except Exception:
+                                    pass
+                                raise LLMError(
+                                    f"book_compile_timeout:attempt=2,elapsed_s={elapsed}"
+                                )
                     except LLMError as e2:
                         msg2 = str(e2)
                         yield emit("run_error", "BookCompiler", {"error": msg2})
