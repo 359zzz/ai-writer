@@ -1209,7 +1209,10 @@ export default function Home() {
         { cache: "no-store" },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return (await res.json()) as KBChunkMetaItem[];
+      const data = (await res.json()) as KBChunkMetaItem[];
+      return data
+        .slice()
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     },
     [apiBase],
   );
@@ -4020,7 +4023,7 @@ export default function Home() {
               {tab === "create" ? tt("tab_writing") : tt("tab_continue")}
             </h1>
             <p className="mt-2 text-sm text-[var(--ui-muted)]">
-              {tt("writing_desc")}
+              {tab === "create" ? tt("writing_desc") : tt("continue_desc")}
             </p>
 
             {tab === "create" && createPane === "writing" && showQuickStart ? (
@@ -4815,6 +4818,31 @@ export default function Home() {
                                   }}
                                 />
                               </label>
+                              {continueSourceId ? (
+                                <button
+                                  type="button"
+                                  disabled={
+                                    continueSourceLoading ||
+                                    runInProgress ||
+                                    settingsSaving ||
+                                    secretsSaving ||
+                                    batchContinuing?.status === "running" ||
+                                    batchContinuing?.status === "stopping"
+                                  }
+                                  onClick={() => {
+                                    setContinueSourceId(null);
+                                    setContinueSourceMeta(null);
+                                  }}
+                                  className="rounded-md border border-zinc-200 bg-[var(--ui-control)] px-2 py-1 text-xs text-[var(--ui-control-text)] hover:bg-[var(--ui-bg)] disabled:opacity-50"
+                                  title={
+                                    lang === "zh"
+                                      ? "把当前预览内容转为可编辑文本"
+                                      : "Turn the current preview into editable text"
+                                  }
+                                >
+                                  {lang === "zh" ? "转为可编辑" : "Make editable"}
+                                </button>
+                              ) : null}
                               <button
                                 disabled={
                                   continueSourceLoading ||

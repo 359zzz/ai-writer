@@ -130,7 +130,10 @@
 - `apps/api`：FastAPI 后端
 - `apps/web`：Next.js 前端
 - `scripts`：本地一键启动脚本（PowerShell）
-- `AGENTS.md`：整体架构约束 + 按版本迭代记录（项目脑）
+- `AGENTS.md`：长期项目脑（目标 / 架构 / 术语 / 热点）
+- `HANDOFF.md`：快速接手与操作说明
+- `CHANGELOG.md`：已发布版本沿革
+- `ROADMAP.md`：未来规划与已确认决策
 
 ## 排错 / FAQ
 

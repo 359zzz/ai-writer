@@ -98,10 +98,10 @@ export function BookStructureGraph({
   data: BookStructureGraphData;
   maxChapters?: number;
 }) {
-  const [layoutMode, setLayoutMode] = useState<"vertical" | "timeline">("vertical");
+  const [layoutMode, setLayoutMode] = useState<"vertical" | "timeline">("timeline");
   const [showNonlinear, setShowNonlinear] = useState(true);
   const [showEdgeLabels, setShowEdgeLabels] = useState(false);
-  const [minStrength, setMinStrength] = useState(0.45);
+  const [minStrength, setMinStrength] = useState(0);
 
   const relationLegend = useMemo(() => {
     const items = [
@@ -158,10 +158,11 @@ export function BookStructureGraph({
 
   const { nodes, edges, nonlinearTotal, nonlinearShown } = useMemo(() => {
     const chapters = Array.isArray(data.chapters) ? data.chapters : [];
-    const shown = chapters.slice(0, Math.max(1, Math.min(maxChapters, 2000)));
-    const truncated = chapters.length > shown.length;
+    const shownChapters = chapters.slice(0, Math.max(1, Math.min(maxChapters, 2000)));
+    const truncated = chapters.length > shownChapters.length;
 
     const summaryByChapter = new Map<number, KBChunkMeta>();
+    const summaryByChunk = new Map<number, KBChunkMeta>();
     let summaryCount = 0;
     let chapterSummaryCount = 0;
     let chunkSummaryCount = 0;
@@ -173,9 +174,42 @@ export function BookStructureGraph({
         if (!summaryByChapter.has(idx)) summaryByChapter.set(idx, s);
       } else {
         const chunkIdx = parseTagInt(s.tags, "book_chunk");
-        if (chunkIdx && chunkIdx > 0) chunkSummaryCount += 1;
+        if (chunkIdx && chunkIdx > 0) {
+          chunkSummaryCount += 1;
+          if (!summaryByChunk.has(chunkIdx)) summaryByChunk.set(chunkIdx, s);
+        }
       }
     }
+
+    const hasChapterIndex = chapters.length > 0;
+    const fallbackMode: "chapter" | "chunk" =
+      chapterSummaryCount > 0 ? "chapter" : "chunk";
+    const fallbackIndices = Array.from(
+      (fallbackMode === "chapter" ? summaryByChapter : summaryByChunk).keys(),
+    )
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+
+    const shown = hasChapterIndex
+      ? shownChapters
+      : fallbackIndices.slice(0, Math.max(1, Math.min(maxChapters, 2000))).map((idx) => {
+          const label =
+            fallbackMode === "chapter"
+              ? lang === "zh"
+                ? `第${idx}章`
+                : `Chapter ${idx}`
+              : lang === "zh"
+                ? `片段${idx}`
+                : `Chunk ${idx}`;
+          return {
+            index: idx,
+            label,
+            title: "",
+            start_char: 0,
+            end_char: 0,
+            chars: 0,
+          } satisfies ChapterIndexChapter;
+        });
 
     const continuationByChapterId = new Map<string, KBChunkMeta>();
     for (const m of data.continuation_manuscripts || []) {
@@ -201,8 +235,8 @@ export function BookStructureGraph({
         label: lang === "zh" ? "书籍源" : "Book source",
         stats:
           (lang === "zh"
-            ? `source_id=${data.source_id.slice(0, 10)}… · 章节=${chapters.length}`
-            : `source_id=${data.source_id.slice(0, 10)}… · chapters=${chapters.length}`) +
+             ? `source_id=${data.source_id.slice(0, 10)}… · 章节=${chapters.length || fallbackIndices.length}`
+             : `source_id=${data.source_id.slice(0, 10)}… · chapters=${chapters.length || fallbackIndices.length}`) +
           (summaryCount > 0
             ? lang === "zh"
               ? ` · 总结=${summaryCount} (章=${chapterSummaryCount},片=${chunkSummaryCount})`
@@ -222,7 +256,7 @@ export function BookStructureGraph({
         c.label?.trim() ||
         (lang === "zh" ? `第${c.index}章` : `Chapter ${c.index}`);
       const nodeId = `chapter:${c.index}`;
-      const sum = summaryByChapter.get(c.index);
+      const sum = summaryByChapter.get(c.index) ?? summaryByChunk.get(c.index);
       const titleFromIndex = cleanChapterTitle(c.title || "");
       const titleFromSummary = sum ? cleanChapterTitle(sum.title || "") : "";
       const titleRaw = titleFromIndex || titleFromSummary;
@@ -236,8 +270,8 @@ export function BookStructureGraph({
           label: title ? `${label} · ${title}` : label,
           stats:
             (lang === "zh"
-              ? `chars≈${c.chars}${sum ? ` · 总结KB#${sum.id}` : ""}`
-              : `chars≈${c.chars}${sum ? ` · summary KB#${sum.id}` : ""}`) || "",
+              ? `${c.chars > 0 ? `chars≈${c.chars}` : ""}${sum ? `${c.chars > 0 ? " · " : ""}总结KB#${sum.id}` : ""}`
+              : `${c.chars > 0 ? `chars≈${c.chars}` : ""}${sum ? `${c.chars > 0 ? " · " : ""}summary KB#${sum.id}` : ""}`) || "",
           color: sum ? "rgba(16,185,129,0.8)" : "rgba(100,116,139,0.65)",
         } satisfies CardNodeData,
       });
@@ -257,12 +291,14 @@ export function BookStructureGraph({
           id: `e:ch:${prev.index}->${c.index}`,
           source: `chapter:${prev.index}`,
           target: nodeId,
-          type: layoutMode === "timeline" ? "bezier" : "smoothstep",
+            type: layoutMode === "timeline" ? "simplebezier" : "smoothstep",
           markerEnd: { type: MarkerType.ArrowClosed },
           style: { stroke: "rgba(100,116,139,0.6)", strokeWidth: 2.2 },
         });
       }
     }
+
+    const nodeIdSet = new Set(nodesOut.map((n) => n.id));
 
     // Book state node (compiled).
     if (data.book_state) {
@@ -312,7 +348,7 @@ export function BookStructureGraph({
       if (!strengthOk) continue;
       const srcId = `chapter:${Math.floor(from)}`;
       const dstId = `chapter:${Math.floor(to)}`;
-      if (!nodesOut.some((n) => n.id === srcId) || !nodesOut.some((n) => n.id === dstId)) {
+      if (!nodeIdSet.has(srcId) || !nodeIdSet.has(dstId)) {
         continue;
       }
 
@@ -338,7 +374,7 @@ export function BookStructureGraph({
         id: `e:nl:${srcId}->${dstId}:${type}`,
         source: srcId,
         target: dstId,
-        type: "bezier",
+        type: "simplebezier",
         label: edgeLabel,
         markerEnd: { type: MarkerType.ArrowClosed },
         style: { stroke, strokeWidth, opacity, strokeDasharray: "6 4" },

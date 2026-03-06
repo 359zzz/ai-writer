@@ -1,0 +1,13 @@
+{
+  "reportMissingImports": "warning",
+  "reportGeneralTypeIssues": "warning",
+  "venvPath": "apps/api",
+  "venv": ".venv",
+  "extraPaths": ["apps/api"],
+  "exclude": [
+    "apps/web/node_modules",
+    "apps/web/.next",
+    "apps/api/.venv",
+    "apps/api/data"
+  ]
+}

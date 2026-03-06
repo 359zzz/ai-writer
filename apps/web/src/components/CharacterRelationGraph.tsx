@@ -46,6 +46,68 @@ type CardNodeData = {
   color: string;
 };
 
+function buildAdjacency(
+  nodes: Array<{ id: string }>,
+  rels: CharacterRelation[],
+): Map<string, Set<string>> {
+  const adj = new Map<string, Set<string>>();
+  for (const n of nodes) {
+    adj.set(n.id, new Set());
+  }
+  for (const r of rels) {
+    const a = (r?.source || "").trim();
+    const b = (r?.target || "").trim();
+    if (!a || !b || a === b) continue;
+    if (!adj.has(a) || !adj.has(b)) continue;
+    adj.get(a)!.add(b);
+    adj.get(b)!.add(a);
+  }
+  return adj;
+}
+
+function computeComponents(adj: Map<string, Set<string>>): string[][] {
+  const remaining = new Set(adj.keys());
+  const comps: string[][] = [];
+  while (remaining.size > 0) {
+    const start = remaining.values().next().value as string;
+    remaining.delete(start);
+    const q: string[] = [start];
+    const comp: string[] = [start];
+    while (q.length > 0) {
+      const cur = q.shift()!;
+      for (const nb of adj.get(cur) ?? []) {
+        if (!remaining.has(nb)) continue;
+        remaining.delete(nb);
+        q.push(nb);
+        comp.push(nb);
+      }
+    }
+    comps.push(comp);
+  }
+  return comps;
+}
+
+function bfsLayers(
+  start: string,
+  adj: Map<string, Set<string>>,
+  allowed: Set<string>,
+): Map<string, number> {
+  const dist = new Map<string, number>();
+  const q: string[] = [start];
+  dist.set(start, 0);
+  while (q.length > 0) {
+    const cur = q.shift()!;
+    const d = dist.get(cur) ?? 0;
+    for (const nb of adj.get(cur) ?? []) {
+      if (!allowed.has(nb)) continue;
+      if (dist.has(nb)) continue;
+      dist.set(nb, d + 1);
+      q.push(nb);
+    }
+  }
+  return dist;
+}
+
 function CardNodeView({ data }: { data: CardNodeData }) {
   return (
     <div
@@ -141,6 +203,20 @@ export function CharacterRelationGraph({
     return rels.filter((r) => r && (r.source === selected.id || r.target === selected.id));
   }, [data.relations, selected]);
 
+  const neighborIds = useMemo(() => {
+    if (!selected) return new Set<string>();
+    const rels = Array.isArray(data.relations) ? data.relations : [];
+    const out = new Set<string>();
+    for (const r of rels) {
+      if (!r || typeof r !== "object") continue;
+      const src = String(r.source || "");
+      const dst = String(r.target || "");
+      if (src === selected.id && dst) out.add(dst);
+      if (dst === selected.id && src) out.add(src);
+    }
+    return out;
+  }, [data.relations, selected]);
+
   const relationLegend = useMemo(() => {
     const rels = Array.isArray(data.relations) ? data.relations : [];
     const uniq: string[] = [];
@@ -162,33 +238,101 @@ export function CharacterRelationGraph({
     const nodesOut: Node[] = [];
     const edgesOut: Edge[] = [];
 
-    const n = characters.length;
-    const radius = Math.max(240, Math.min(520, 90 * n));
-    const centerX = 0;
-    const centerY = 0;
+    const rels = Array.isArray(data.relations) ? data.relations : [];
+    const adj = buildAdjacency(characters, rels);
+    const degree = new Map<string, number>();
+    for (const [id, nbs] of adj.entries()) degree.set(id, nbs.size);
 
-    for (let i = 0; i < characters.length; i += 1) {
-      const c = characters[i];
-      const angle = (Math.PI * 2 * i) / Math.max(1, n);
-      const x = centerX + Math.cos(angle) * radius;
-      const y = centerY + Math.sin(angle) * radius;
+    const comps = computeComponents(adj);
+    comps.sort((a, b) => {
+      const da = Math.max(0, ...a.map((id) => degree.get(id) ?? 0));
+      const db = Math.max(0, ...b.map((id) => degree.get(id) ?? 0));
+      if (db !== da) return db - da;
+      return b.length - a.length;
+    });
+
+    const xGap = 320;
+    const yGap = 120;
+    const compGap = 420;
+    let xOffset = 0;
+
+    const positions = new Map<string, { x: number; y: number }>();
+
+    for (const comp of comps) {
+      const allowed = new Set(comp);
+      const center = [...comp]
+        .slice()
+        .sort((a, b) => {
+          const da = degree.get(a) ?? 0;
+          const db = degree.get(b) ?? 0;
+          if (db !== da) return db - da;
+          return a.localeCompare(b);
+        })[0]!;
+
+      const dist = bfsLayers(center, adj, allowed);
+      const maxLayer = Math.max(0, ...comp.map((id) => dist.get(id) ?? 999));
+      const layers: Record<number, string[]> = {};
+      for (const id of comp) {
+        const d = dist.get(id);
+        const layer = typeof d === "number" ? d : maxLayer + 1;
+        layers[layer] ??= [];
+        layers[layer].push(id);
+      }
+
+      const layerKeys = Object.keys(layers)
+        .map((x) => Number(x))
+        .filter((x) => Number.isFinite(x))
+        .sort((a, b) => a - b);
+
+      for (const lk of layerKeys) {
+        const ids = layers[lk] ?? [];
+        ids.sort((a, b) => {
+          const da = degree.get(a) ?? 0;
+          const db = degree.get(b) ?? 0;
+          if (db !== da) return db - da;
+          return a.localeCompare(b);
+        });
+        const startY = -((ids.length - 1) * yGap) / 2;
+        for (let i = 0; i < ids.length; i += 1) {
+          const id = ids[i]!;
+          positions.set(id, {
+            x: xOffset + lk * xGap,
+            y: startY + i * yGap,
+          });
+        }
+      }
+
+      const width = (Math.max(...layerKeys, 0) + 1) * xGap;
+      xOffset += Math.max(520, width) + compGap;
+    }
+
+    for (const c of characters) {
+      const pos = positions.get(c.id) ?? { x: 0, y: 0 };
       const subtitleParts: string[] = [];
       if (c.identity) subtitleParts.push(c.identity);
       if (c.gender) subtitleParts.push(c.gender);
       const subtitle = subtitleParts.filter(Boolean).join(" · ");
+
+      const isSelected = selectedId === c.id;
+      const isNeighbor = selectedId ? neighborIds.has(c.id) : false;
+      const dim = selectedId && !isSelected && !isNeighbor;
+
       nodesOut.push({
         id: c.id,
         type: "charCard",
-        position: { x, y },
+        position: pos,
+        style: dim ? { opacity: 0.25 } : undefined,
         data: {
           name: c.name,
           subtitle: subtitle || undefined,
-          color: "rgba(100,116,139,0.65)",
+          color: isSelected
+            ? "var(--ui-accent)"
+            : isNeighbor
+              ? "rgba(249,115,22,0.55)"
+              : "rgba(100,116,139,0.65)",
         } satisfies CardNodeData,
       });
     }
-
-    const rels = Array.isArray(data.relations) ? data.relations : [];
     for (const r of rels) {
       if (!r || typeof r !== "object") continue;
       if (!r.source || !r.target) continue;
@@ -196,6 +340,10 @@ export function CharacterRelationGraph({
       if (!nodesOut.some((nn) => nn.id === r.source)) continue;
       if (!nodesOut.some((nn) => nn.id === r.target)) continue;
       const color = colorByRelationType(r.type);
+
+       const incidentToSelected =
+         Boolean(selectedId) && (r.source === selectedId || r.target === selectedId);
+       const dim = Boolean(selectedId) && !incidentToSelected;
       edgesOut.push({
         id: `e:${r.source}->${r.target}:${r.type}`,
         source: r.source,
@@ -203,12 +351,16 @@ export function CharacterRelationGraph({
         type: "smoothstep",
         label: r.label ? String(r.label) : relationTypeLabel(r.type, lang),
         markerEnd: { type: MarkerType.ArrowClosed },
-        style: { stroke: color, strokeWidth: 2 },
+        style: {
+          stroke: color,
+          strokeWidth: dim ? 1.6 : 2.4,
+          opacity: dim ? 0.12 : 0.88,
+        },
       });
     }
 
     return { nodes: nodesOut, edges: edgesOut };
-  }, [characters, data.relations, lang]);
+  }, [characters, data.relations, lang, neighborIds, selectedId]);
 
   const nodeTypes = useMemo(() => ({ charCard: CardNodeView }), []);
 

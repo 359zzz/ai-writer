@@ -26,9 +26,9 @@ function Get-ListeningPids([int]$Port) {
   return @($conns | Select-Object -ExpandProperty OwningProcess -Unique)
 }
 
-function Try-GetCommandLine([int]$Pid) {
+function Try-GetCommandLine([int]$ProcessId) {
   try {
-    $p = Get-CimInstance Win32_Process -Filter "ProcessId=$Pid" -ErrorAction SilentlyContinue
+    $p = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
     if ($p -and $p.CommandLine) { return [string]$p.CommandLine }
   } catch {
     # ignore
@@ -66,7 +66,7 @@ function Kill-ListenerOnPort(
   $matchedCmd = $false
   if ($CommandLineRegex) {
     foreach ($p in $pids) {
-      $cmd = Try-GetCommandLine -Pid $p
+      $cmd = Try-GetCommandLine -ProcessId $p
       if ($cmd -and ($cmd -match $CommandLineRegex)) {
         $matchedCmd = $true
         break
@@ -91,7 +91,7 @@ function Kill-ListenerOnPort(
   } else {
     Write-Host "[dev] WARNING: Port $Port is in use, and the listener doesn't look like our $Label."
     foreach ($p in $pids) {
-      $cmd = Try-GetCommandLine -Pid $p
+      $cmd = Try-GetCommandLine -ProcessId $p
       if ($cmd) { Write-Host "[dev] Port $Port PID=${p}: $cmd" } else { Write-Host "[dev] Port $Port PID=${p}" }
     }
     if ($ForceKill) {
@@ -139,7 +139,7 @@ if (-not $NoAutoKill) {
   if ($existingApi) {
     $existingPid = $existingApi.OwningProcess
     Write-Host "[dev] WARNING: Port 8000 is already in use (PID=$existingPid). Stop it first to avoid running an old API."
-    $cmd = Try-GetCommandLine -Pid $existingPid
+    $cmd = Try-GetCommandLine -ProcessId $existingPid
     if ($cmd) { Write-Host "[dev] Existing process: $cmd" }
   }
 }
@@ -151,6 +151,12 @@ Start-Process -FilePath "powershell" -WorkingDirectory $apiDir -ArgumentList @(
   # to avoid accidentally starting the API with another Python from PATH.
   "& '$pythonExe' -m uvicorn ai_writer_api.main:app --reload --host 0.0.0.0 --port 8000"
 )
+
+Start-Sleep -Milliseconds 900
+$apiHealth = Test-AiWriterApiHealth -Port 8000
+if (-not $apiHealth) {
+  Write-Host "[dev] WARNING: API didn't become healthy on port 8000. Check the spawned API terminal for startup errors.";
+}
 
 Write-Host "[dev] Starting Web on http://localhost:3000"
 if (-not $NoAutoKill) {
@@ -164,5 +170,13 @@ Start-Process -FilePath "powershell" -WorkingDirectory $webDir -ArgumentList @(
   "-Command",
   "npm run dev -- --port 3000"
 )
+
+Start-Sleep -Milliseconds 900
+try {
+  $res = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:3000" -TimeoutSec 1
+  if (-not $res) { throw "empty" }
+} catch {
+  Write-Host "[dev] WARNING: Web didn't respond on port 3000 yet. Check the spawned Web terminal for startup errors.";
+}
 
 Write-Host "[dev] Started. Close the two spawned terminals to stop."

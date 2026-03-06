@@ -9,7 +9,9 @@ from ai_writer_api.llm import LLMError
 from ai_writer_api.main import app
 
 
-def test_continue_run_softfails_config_autofill(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_continue_run_softfails_config_autofill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     Regression test:
     - ConfigAutofill is best-effort in weak mode.
@@ -18,7 +20,9 @@ def test_continue_run_softfails_config_autofill(monkeypatch: pytest.MonkeyPatch)
 
     import ai_writer_api.routers.runs as runs_mod
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "ConfigAutofillAgent" in system_prompt:
             raise LLMError("openai_http_502:html_error_page")
         if "ExtractorAgent" in system_prompt:
@@ -29,7 +33,11 @@ def test_continue_run_softfails_config_autofill(monkeypatch: pytest.MonkeyPatch)
                     "world": "demo",
                     "timeline": [],
                     "open_loops": [],
-                    "style_profile": {"pov": "third", "tense": "past", "tone": "neutral"},
+                    "style_profile": {
+                        "pov": "third",
+                        "tense": "past",
+                        "tone": "neutral",
+                    },
                 },
                 ensure_ascii=True,
             )
@@ -48,7 +56,9 @@ def test_continue_run_softfails_config_autofill(monkeypatch: pytest.MonkeyPatch)
                 ensure_ascii=True,
             )
         if "WriterAgent" in system_prompt:
-            return "<think>planning</think>\n# Chapter 1: Test Chapter\n\nHello world.\n"
+            return (
+                "<think>planning</think>\n# Chapter 1: Test Chapter\n\nHello world.\n"
+            )
         if "EditorAgent" in system_prompt:
             return "<think>edit</think>\n# Chapter 1: Test Chapter\n\nHello world (edited).\n"
 
@@ -131,7 +141,9 @@ def test_run_prompts_follow_ui_lang(monkeypatch: pytest.MonkeyPatch) -> None:
 
     captured: dict[str, str] = {}
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "ConfigAutofillAgent" in system_prompt:
             return "{}"
         if "OutlinerAgent" in system_prompt:
@@ -209,7 +221,9 @@ def test_chapter_run_respects_skip_outliner(monkeypatch: pytest.MonkeyPatch) -> 
 
     system_prompts: list[str] = []
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         system_prompts.append(system_prompt)
         if "ConfigAutofillAgent" in system_prompt:
             return "{}"
@@ -262,7 +276,9 @@ def test_continue_run_softfails_outliner(monkeypatch: pytest.MonkeyPatch) -> Non
 
     import ai_writer_api.routers.runs as runs_mod
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "ConfigAutofillAgent" in system_prompt:
             return "{}"
         if "ExtractorAgent" in system_prompt:
@@ -273,7 +289,11 @@ def test_continue_run_softfails_outliner(monkeypatch: pytest.MonkeyPatch) -> Non
                     "world": "demo",
                     "timeline": [],
                     "open_loops": [],
-                    "style_profile": {"pov": "third", "tense": "past", "tone": "neutral"},
+                    "style_profile": {
+                        "pov": "third",
+                        "tense": "past",
+                        "tone": "neutral",
+                    },
                 },
                 ensure_ascii=True,
             )
@@ -337,7 +357,9 @@ def test_continue_run_softfails_outliner(monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
 
-def test_editor_suspicious_output_fallbacks_to_writer(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_editor_suspicious_output_fallbacks_to_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     Regression test:
     - Some models may summarize/shorten during the Editor pass, resulting in a
@@ -350,7 +372,9 @@ def test_editor_suspicious_output_fallbacks_to_writer(monkeypatch: pytest.Monkey
     writer_md = "# Chapter 1: Test\n\n" + ("Hello world. " * 120) + "\n"
     editor_md = "# Chapter 1: Test\n\nshort\n"
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "ConfigAutofillAgent" in system_prompt:
             return "{}"
         if "OutlinerAgent" in system_prompt:
@@ -421,7 +445,9 @@ def test_book_summarize_persists_kb_chunks(monkeypatch: pytest.MonkeyPatch) -> N
 
     import ai_writer_api.routers.runs as runs_mod
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "BookSummarizerAgent" in system_prompt:
             return json.dumps(
                 {
@@ -442,7 +468,10 @@ def test_book_summarize_persists_kb_chunks(monkeypatch: pytest.MonkeyPatch) -> N
         p = client.post("/api/projects", json={"title": "Book Sum Test"}).json()
         src = client.post(
             "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
-            json={"text": ("hello world. " * 600) + "\n" + ("more text. " * 600), "filename": "book.txt"},
+            json={
+                "text": ("hello world. " * 600) + "\n" + ("more text. " * 600),
+                "filename": "book.txt",
+            },
         ).json()
 
         with client.stream(
@@ -484,7 +513,9 @@ def test_book_summarize_persists_kb_chunks(monkeypatch: pytest.MonkeyPatch) -> N
         assert any(it.get("source_type") == "book_summary" for it in listed)
 
 
-def test_book_summarize_chapter_mode_uses_chapter_index(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_book_summarize_chapter_mode_uses_chapter_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     v2.x regression test:
     - book_summarize with segment_mode=chapter should summarize by detected chapters.
@@ -493,7 +524,9 @@ def test_book_summarize_chapter_mode_uses_chapter_index(monkeypatch: pytest.Monk
 
     import ai_writer_api.routers.runs as runs_mod
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "BookSummarizerAgent" in system_prompt:
             return json.dumps(
                 {
@@ -515,7 +548,10 @@ def test_book_summarize_chapter_mode_uses_chapter_index(monkeypatch: pytest.Monk
         src = client.post(
             "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
             json={
-                "text": "第1章：开端\n" + ("A" * 1200) + "\n\n第2章：继续\n" + ("B" * 1200),
+                "text": "第1章：开端\n"
+                + ("A" * 1200)
+                + "\n\n第2章：继续\n"
+                + ("B" * 1200),
                 "filename": "book.txt",
             },
         ).json()
@@ -562,7 +598,9 @@ def test_book_summarize_chapter_mode_uses_chapter_index(monkeypatch: pytest.Monk
         )
 
 
-def test_book_summarize_tolerates_non_json_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_book_summarize_tolerates_non_json_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     Real gateways occasionally return non-JSON text even when instructed.
 
@@ -573,7 +611,9 @@ def test_book_summarize_tolerates_non_json_output(monkeypatch: pytest.MonkeyPatc
 
     import ai_writer_api.routers.runs as runs_mod
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "BookSummarizerAgent" in system_prompt:
             return "这不是JSON，但应该被容错保存。"
         raise AssertionError("Unexpected agent system prompt")
@@ -581,11 +621,16 @@ def test_book_summarize_tolerates_non_json_output(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
 
     with TestClient(app) as client:
-        p = client.post("/api/projects", json={"title": "Book Sum Non-JSON Test"}).json()
+        p = client.post(
+            "/api/projects", json={"title": "Book Sum Non-JSON Test"}
+        ).json()
         src = client.post(
             "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
             json={
-                "text": "第1章：开端\n" + ("A" * 1200) + "\n\n第2章：继续\n" + ("B" * 1200),
+                "text": "第1章：开端\n"
+                + ("A" * 1200)
+                + "\n\n第2章：继续\n"
+                + ("B" * 1200),
                 "filename": "book.txt",
             },
         ).json()
@@ -628,12 +673,15 @@ def test_book_summarize_tolerates_non_json_output(monkeypatch: pytest.MonkeyPatc
         assert any(it.get("source_type") == "book_summary" for it in listed)
         # Should persist a JSON record with a text fallback + parse_error.
         assert any(
-            ("parse_error" in (it.get("content") or "")) and ("text" in (it.get("content") or ""))
+            ("parse_error" in (it.get("content") or ""))
+            and ("text" in (it.get("content") or ""))
             for it in listed
         )
 
 
-def test_book_summarize_all_skipped_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_book_summarize_all_skipped_is_not_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     v2.x regression test:
     - When replace_existing=false and all parts were already summarized, the run should
@@ -644,7 +692,9 @@ def test_book_summarize_all_skipped_is_not_an_error(monkeypatch: pytest.MonkeyPa
 
     import ai_writer_api.routers.runs as runs_mod
 
-    async def fake_generate_text_ok(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text_ok(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "BookSummarizerAgent" in system_prompt:
             return json.dumps(
                 {
@@ -666,7 +716,10 @@ def test_book_summarize_all_skipped_is_not_an_error(monkeypatch: pytest.MonkeyPa
         src = client.post(
             "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
             json={
-                "text": "第1章：开端\n" + ("A" * 1200) + "\n\n第2章：继续\n" + ("B" * 1200),
+                "text": "第1章：开端\n"
+                + ("A" * 1200)
+                + "\n\n第2章：继续\n"
+                + ("B" * 1200),
                 "filename": "book.txt",
             },
         ).json()
@@ -686,11 +739,16 @@ def test_book_summarize_all_skipped_is_not_an_error(monkeypatch: pytest.MonkeyPa
             for raw in res.iter_lines():
                 if not raw or not raw.startswith("data:"):
                     continue
-                if json.loads(raw.replace("data:", "", 1).strip()).get("type") == "run_completed":
+                if (
+                    json.loads(raw.replace("data:", "", 1).strip()).get("type")
+                    == "run_completed"
+                ):
                     break
 
         # Second pass: replace_existing=false should skip all parts and NOT call LLM.
-        async def fake_generate_text_must_not_run(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+        async def fake_generate_text_must_not_run(
+            *, system_prompt: str, user_prompt: str, cfg: object
+        ) -> str:  # type: ignore[override]
             raise AssertionError("LLM should not be called when all parts are skipped")
 
         monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text_must_not_run)
@@ -737,12 +795,19 @@ def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> No
 
     import ai_writer_api.routers.runs as runs_mod
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "BookCompilerAgent" in system_prompt:
             return json.dumps(
                 {
                     "book_summary": "demo",
-                    "style_profile": {"pov": "third", "tense": "past", "tone": "neutral", "genre": "fiction"},
+                    "style_profile": {
+                        "pov": "third",
+                        "tense": "past",
+                        "tone": "neutral",
+                        "genre": "fiction",
+                    },
                     "world": "demo",
                     "character_cards": [
                         {
@@ -756,7 +821,11 @@ def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> No
                     ],
                     "timeline": [{"when": "Day 1", "event": "demo"}],
                     "open_loops": ["mystery"],
-                    "continuation_seed": {"where_to_resume": "end", "next_scene": "demo", "constraints": []},
+                    "continuation_seed": {
+                        "where_to_resume": "end",
+                        "next_scene": "demo",
+                        "constraints": [],
+                    },
                 },
                 ensure_ascii=True,
             )
@@ -768,7 +837,10 @@ def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> No
         p = client.post("/api/projects", json={"title": "Book Compile Test"}).json()
         src = client.post(
             "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
-            json={"text": ("hello world. " * 200) + "\n" + ("more text. " * 200), "filename": "book.txt"},
+            json={
+                "text": ("hello world. " * 200) + "\n" + ("more text. " * 200),
+                "filename": "book.txt",
+            },
         ).json()
         sid = src["source_id"]
 
@@ -783,7 +855,11 @@ def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> No
                             "book_source_id": sid,
                             "chunk_index": i,
                             "start_char": (i - 1) * 1000,
-                            "data": {"summary": f"demo {i}", "key_events": [], "characters": []},
+                            "data": {
+                                "summary": f"demo {i}",
+                                "key_events": [],
+                                "characters": [],
+                            },
                         },
                         ensure_ascii=True,
                     ),
@@ -823,7 +899,9 @@ def test_book_compile_persists_book_state(monkeypatch: pytest.MonkeyPatch) -> No
         assert any(it.get("source_type") == "book_state" for it in listed)
 
 
-def test_book_compile_prefers_chapter_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_book_compile_prefers_chapter_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     v2.x regression test:
     - book_compile should prefer chapter-based summaries when both chunk and chapter summaries exist.
@@ -831,17 +909,28 @@ def test_book_compile_prefers_chapter_summaries(monkeypatch: pytest.MonkeyPatch)
 
     import ai_writer_api.routers.runs as runs_mod
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "BookCompilerAgent" in system_prompt:
             return json.dumps(
                 {
                     "book_summary": "demo",
-                    "style_profile": {"pov": "third", "tense": "past", "tone": "neutral", "genre": "fiction"},
+                    "style_profile": {
+                        "pov": "third",
+                        "tense": "past",
+                        "tone": "neutral",
+                        "genre": "fiction",
+                    },
                     "world": "demo",
                     "character_cards": [],
                     "timeline": [],
                     "open_loops": [],
-                    "continuation_seed": {"where_to_resume": "end", "next_scene": "demo", "constraints": []},
+                    "continuation_seed": {
+                        "where_to_resume": "end",
+                        "next_scene": "demo",
+                        "constraints": [],
+                    },
                 },
                 ensure_ascii=True,
             )
@@ -850,7 +939,9 @@ def test_book_compile_prefers_chapter_summaries(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
 
     with TestClient(app) as client:
-        p = client.post("/api/projects", json={"title": "Book Compile Prefer Chapter"}).json()
+        p = client.post(
+            "/api/projects", json={"title": "Book Compile Prefer Chapter"}
+        ).json()
         src = client.post(
             "/api/tools/continue_sources/text?preview_mode=head&preview_chars=200",
             json={"text": "第1章\nhello\n", "filename": "book.txt"},
@@ -863,7 +954,12 @@ def test_book_compile_prefers_chapter_summaries(monkeypatch: pytest.MonkeyPatch)
             json={
                 "title": "chunk sum 1",
                 "content": json.dumps(
-                    {"book_source_id": sid, "chunk_index": 1, "segment_mode": "chunk", "data": {"summary": "c"}},
+                    {
+                        "book_source_id": sid,
+                        "chunk_index": 1,
+                        "segment_mode": "chunk",
+                        "data": {"summary": "c"},
+                    },
                     ensure_ascii=True,
                 ),
                 "source_type": "book_summary",
@@ -917,7 +1013,9 @@ def test_book_compile_prefers_chapter_summaries(monkeypatch: pytest.MonkeyPatch)
         )
 
 
-def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_book_continue_writes_chapter_from_compiled_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     v1.12 regression test:
     - book_continue should use compiled book_state + local excerpt and persist a chapter.
@@ -926,10 +1024,17 @@ def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.Mo
 
     import ai_writer_api.routers.runs as runs_mod
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "BookPlannerAgent" in system_prompt:
             return "<think>plan</think>\n" + json.dumps(
-                {"index": 1, "title": "第1章：续写测试", "summary": "示例", "goal": "继续推进"},
+                {
+                    "index": 1,
+                    "title": "第1章：续写测试",
+                    "summary": "示例",
+                    "goal": "继续推进",
+                },
                 ensure_ascii=False,
             )
         if "WriterAgent" in system_prompt:
@@ -946,7 +1051,10 @@ def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.Mo
         p = client.post("/api/projects", json={"title": "Book Continue Test"}).json()
         src = client.post(
             "/api/tools/continue_sources/text?preview_mode=tail&preview_chars=200",
-            json={"text": "第一章内容……\n第二章内容……\n（结尾）\n", "filename": "book.txt"},
+            json={
+                "text": "第一章内容……\n第二章内容……\n（结尾）\n",
+                "filename": "book.txt",
+            },
         ).json()
         sid = src["source_id"]
 
@@ -967,13 +1075,19 @@ def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.Mo
             ],
             "timeline": [],
             "open_loops": [],
-            "continuation_seed": {"where_to_resume": "end", "next_scene": "demo", "constraints": []},
+            "continuation_seed": {
+                "where_to_resume": "end",
+                "next_scene": "demo",
+                "constraints": [],
+            },
         }
         created_state = client.post(
             f"/api/projects/{p['id']}/kb/chunks",
             json={
                 "title": "book state",
-                "content": json.dumps({"book_source_id": sid, "state": compiled_state}, ensure_ascii=False),
+                "content": json.dumps(
+                    {"book_source_id": sid, "state": compiled_state}, ensure_ascii=False
+                ),
                 "source_type": "book_state",
                 "tags": [f"book_source:{sid}", "book_state"],
             },
@@ -985,7 +1099,14 @@ def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.Mo
             f"/api/projects/{p['id']}/kb/chunks",
             json={
                 "title": "sum 1",
-                "content": json.dumps({"book_source_id": sid, "chunk_index": 1, "data": {"summary": "demo"}}, ensure_ascii=False),
+                "content": json.dumps(
+                    {
+                        "book_source_id": sid,
+                        "chunk_index": 1,
+                        "data": {"summary": "demo"},
+                    },
+                    ensure_ascii=False,
+                ),
                 "source_type": "book_summary",
                 "tags": [f"book_source:{sid}", "book_chunk:1"],
             },
@@ -1039,7 +1160,11 @@ def test_book_continue_writes_chapter_from_compiled_state(monkeypatch: pytest.Mo
         # so Book Structure graph can link continuation chapters back to this book.
         meta = client.get(
             f"/api/projects/{p['id']}/kb/chunks_meta",
-            params={"source_type": "manuscript", "tag_contains": f"book_source:{sid}", "limit": 50},
+            params={
+                "source_type": "manuscript",
+                "tag_contains": f"book_source:{sid}",
+                "limit": 50,
+            },
         )
         assert meta.status_code == 200
         meta_items = meta.json()
@@ -1098,7 +1223,9 @@ def test_run_meta_and_event_polling() -> None:
         assert all(int(e["seq"]) > after_seq for e in evts_after)
 
 
-def test_book_continue_budgets_compiled_state_for_writer_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_book_continue_budgets_compiled_state_for_writer_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     Regression test (v1.12.2):
     - Some proxies/gateways are sensitive to large prompts.
@@ -1110,10 +1237,17 @@ def test_book_continue_budgets_compiled_state_for_writer_prompt(monkeypatch: pyt
 
     captured: dict[str, str] = {}
 
-    async def fake_generate_text(*, system_prompt: str, user_prompt: str, cfg: object) -> str:  # type: ignore[override]
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
         if "BookPlannerAgent" in system_prompt:
             return json.dumps(
-                {"index": 1, "title": "第1章：续写测试", "summary": "示例", "goal": "继续推进"},
+                {
+                    "index": 1,
+                    "title": "第1章：续写测试",
+                    "summary": "示例",
+                    "goal": "继续推进",
+                },
                 ensure_ascii=False,
             )
         if "WriterAgent" in system_prompt:
@@ -1126,10 +1260,15 @@ def test_book_continue_budgets_compiled_state_for_writer_prompt(monkeypatch: pyt
     monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
 
     with TestClient(app) as client:
-        p = client.post("/api/projects", json={"title": "Book Continue Budget Test"}).json()
+        p = client.post(
+            "/api/projects", json={"title": "Book Continue Budget Test"}
+        ).json()
         src = client.post(
             "/api/tools/continue_sources/text?preview_mode=tail&preview_chars=200",
-            json={"text": "第一章内容……\n第二章内容……\n（结尾）\n", "filename": "book.txt"},
+            json={
+                "text": "第一章内容……\n第二章内容……\n（结尾）\n",
+                "filename": "book.txt",
+            },
         ).json()
         sid = src["source_id"]
 
@@ -1138,16 +1277,24 @@ def test_book_continue_budgets_compiled_state_for_writer_prompt(monkeypatch: pyt
             "book_summary": very_long,
             "style_profile": {"pov": "third", "tense": "past", "tone": "neutral"},
             "world": "demo",
-            "character_cards": [{"name": "Alice", "current_status": "ok", "relationships": "none"}],
+            "character_cards": [
+                {"name": "Alice", "current_status": "ok", "relationships": "none"}
+            ],
             "timeline": [],
             "open_loops": [],
-            "continuation_seed": {"where_to_resume": "end", "next_scene": "demo", "constraints": []},
+            "continuation_seed": {
+                "where_to_resume": "end",
+                "next_scene": "demo",
+                "constraints": [],
+            },
         }
         created_state = client.post(
             f"/api/projects/{p['id']}/kb/chunks",
             json={
                 "title": "book state",
-                "content": json.dumps({"book_source_id": sid, "state": compiled_state}, ensure_ascii=False),
+                "content": json.dumps(
+                    {"book_source_id": sid, "state": compiled_state}, ensure_ascii=False
+                ),
                 "source_type": "book_state",
                 "tags": [f"book_source:{sid}", "book_state"],
             },
@@ -1177,3 +1324,278 @@ def test_book_continue_budgets_compiled_state_for_writer_prompt(monkeypatch: pyt
 
     # The raw tail marker must not be present; it should have been clipped out.
     assert "TAIL_MARKER_SHOULD_NOT_APPEAR" not in captured.get("writer_user", "")
+
+
+def test_book_relations_rescue_can_fallback_to_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ai_writer_api.routers.runs as runs_mod
+
+    rel_calls: list[dict[str, object]] = []
+
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
+        if "BookRelationsAgent" not in system_prompt:
+            raise AssertionError("Unexpected agent system prompt")
+        rel_calls.append({"cfg": cfg, "user": user_prompt})
+        if len(rel_calls) == 1:
+            raise LLMError(
+                "openai_http_503:分组 gemini 下模型 gemini-3-flash-preview 无可用渠道（distributor）"
+            )
+        if len(rel_calls) == 2:
+            raise LLMError(
+                "openai_http_503:分组 gemini 下模型 gemini-3-pro-preview 无可用渠道（distributor）"
+            )
+        return json.dumps(
+            {
+                "edges": [
+                    {
+                        "from": 1,
+                        "to": 2,
+                        "type": "foreshadow",
+                        "label": "test",
+                        "strength": 0.8,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post(
+            "/api/projects",
+            json={"title": "Book Relations Fallback Test"},
+        ).json()
+
+        client.patch(
+            f"/api/projects/{p['id']}",
+            json={
+                "settings": {
+                    "llm": {
+                        "provider": "gemini",
+                        "temperature": 0.2,
+                        "max_tokens": 900,
+                        "gemini": {
+                            "model": "gemini-3-flash-preview",
+                            "base_url": "https://www.packyapi.com",
+                        },
+                    }
+                }
+            },
+        )
+
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=tail&preview_chars=200",
+            json={"text": "第一章\n第二章\n", "filename": "book.txt"},
+        ).json()
+        sid = src["source_id"]
+
+        s1 = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={
+                "title": "sum1",
+                "source_type": "book_summary",
+                "tags": [f"book_source:{sid}", "book_chapter:1"],
+                "content": json.dumps(
+                    {
+                        "book_source_id": sid,
+                        "data": {
+                            "summary": "A",
+                            "key_events": ["A1"],
+                            "characters": ["甲"],
+                            "locations": [],
+                            "open_loops": [],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+        assert s1.status_code == 200
+
+        s2 = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={
+                "title": "sum2",
+                "source_type": "book_summary",
+                "tags": [f"book_source:{sid}", "book_chapter:2"],
+                "content": json.dumps(
+                    {
+                        "book_source_id": sid,
+                        "data": {
+                            "summary": "B",
+                            "key_events": ["B1"],
+                            "characters": ["乙"],
+                            "locations": [],
+                            "open_loops": [],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+        assert s2.status_code == 200
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={"kind": "book_relations", "source_id": sid},
+        ) as res:
+            assert res.status_code == 200
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+    assert not any(e.get("type") == "run_error" for e in events)
+    tool_calls = [
+        e
+        for e in events
+        if e.get("type") == "tool_call" and e.get("agent") == "BookRelations"
+    ]
+    assert any(
+        (e.get("data") or {}).get("note", "").startswith("rescue_retry:")
+        for e in tool_calls
+    )
+    assert any(
+        (e.get("data") or {}).get("note", "").startswith("fallback_openai:")
+        for e in tool_calls
+    )
+    assert any(
+        e.get("type") == "artifact"
+        and e.get("agent") == "BookRelations"
+        and (e.get("data") or {}).get("artifact_type") == "book_relations"
+        for e in events
+    )
+
+
+def test_book_relations_parse_fail_can_repair_to_edges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ai_writer_api.routers.runs as runs_mod
+
+    calls: list[str] = []
+
+    async def fake_generate_text(
+        *, system_prompt: str, user_prompt: str, cfg: object
+    ) -> str:  # type: ignore[override]
+        if "BookRelationsJSONRepairAgent" in system_prompt:
+            calls.append("repair")
+            return json.dumps(
+                {
+                    "edges": [
+                        {
+                            "from": 1,
+                            "to": 2,
+                            "type": "foreshadow",
+                            "label": "修复",
+                            "strength": 0.7,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        if "BookRelationsAgent" in system_prompt:
+            calls.append("main")
+            return "下面是分析结果：第一回与第二回存在伏笔关系。"
+        raise AssertionError("Unexpected agent system prompt")
+
+    monkeypatch.setattr(runs_mod, "generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        p = client.post(
+            "/api/projects",
+            json={"title": "Book Relations Parse Repair Test"},
+        ).json()
+
+        src = client.post(
+            "/api/tools/continue_sources/text?preview_mode=tail&preview_chars=200",
+            json={"text": "第一章\n第二章\n", "filename": "book.txt"},
+        ).json()
+        sid = src["source_id"]
+
+        s1 = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={
+                "title": "sum1",
+                "source_type": "book_summary",
+                "tags": [f"book_source:{sid}", "book_chapter:1"],
+                "content": json.dumps(
+                    {
+                        "book_source_id": sid,
+                        "data": {
+                            "summary": "A",
+                            "key_events": ["A1"],
+                            "characters": ["甲"],
+                            "locations": [],
+                            "open_loops": [],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+        assert s1.status_code == 200
+
+        s2 = client.post(
+            f"/api/projects/{p['id']}/kb/chunks",
+            json={
+                "title": "sum2",
+                "source_type": "book_summary",
+                "tags": [f"book_source:{sid}", "book_chapter:2"],
+                "content": json.dumps(
+                    {
+                        "book_source_id": sid,
+                        "data": {
+                            "summary": "B",
+                            "key_events": ["B1"],
+                            "characters": ["乙"],
+                            "locations": [],
+                            "open_loops": [],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+        assert s2.status_code == 200
+
+        with client.stream(
+            "POST",
+            f"/api/projects/{p['id']}/runs/stream",
+            json={"kind": "book_relations", "source_id": sid},
+        ) as res:
+            assert res.status_code == 200
+            events: list[dict[str, object]] = []
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                if not raw.startswith("data:"):
+                    continue
+                evt = json.loads(raw.replace("data:", "", 1).strip())
+                events.append(evt)
+                if evt.get("type") == "run_completed":
+                    break
+
+    assert "main" in calls
+    assert "repair" in calls
+    artifacts = [
+        e
+        for e in events
+        if e.get("type") == "artifact"
+        and e.get("agent") == "BookRelations"
+        and (e.get("data") or {}).get("artifact_type") == "book_relations"
+    ]
+    assert artifacts
+    data = artifacts[-1].get("data") or {}
+    assert (data.get("edges") or 0) >= 1
+    assert not data.get("parse_error")

@@ -129,7 +129,10 @@ Run a short, safe smoke test (<=500 chars output):
 - `apps/api` FastAPI backend
 - `apps/web` Next.js frontend
 - `scripts` one-click local dev scripts (PowerShell)
-- `AGENTS.md` architecture + versioned iteration notes (project brain)
+- `AGENTS.md` long-term project brain (goals / architecture / terminology / hotspots)
+- `HANDOFF.md` quick takeover and operational notes
+- `CHANGELOG.md` released version history
+- `ROADMAP.md` future plans and confirmed decisions
 
 ## Troubleshooting
 

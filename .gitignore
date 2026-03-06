@@ -37,6 +37,9 @@ exports/
 
 # --- Local reference / experiments (not shipped) ---
 _ref/
+.serena/
+apps/api/api-boot.err.log
+apps/api/api-boot.out.log
 
 # --- Export templates generated locally ---
 apps/api/templates/export/reference.docx
