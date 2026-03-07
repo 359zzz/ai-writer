@@ -1,12 +1,14 @@
 {
   "name": "web",
-  "version": "2.1.11",
+  "version": "2.2.2",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "e2e:continue": "playwright test e2e/continue-acceptance.spec.ts --workers=1",
+    "e2e:book-graphs": "node e2e/book-graph-validation.js"
   },
   "dependencies": {
     "@xyflow/react": "^12.10.1",
@@ -18,6 +20,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

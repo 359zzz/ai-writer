@@ -477,3 +477,46 @@
   - 文档职责正式拆分为 `AGENTS.md` / `HANDOFF.md` / `CHANGELOG.md` / `ROADMAP.md`，并在 README 中同步接手入口。
   - `.gitignore` 新增本地 `.serena/` 与 `apps/api/api-boot.*.log`，避免把 agent 元数据与启动日志误提交到仓库。
 
+### v2.2.2（书籍：失败章节重试 + 图谱真实产物修复）
+- 书籍总结入库（`book_summarize`）增强：
+  - stats artifact 现在稳定返回 `failed_indices` 与 `failed_items`（含 `chapter_label` / `chapter_title` / `error`），前端可直接定位失败章节。
+  - 前端 `续写 -> 书籍续写` 结果区新增“重新总结失败章节 / 重新总结失败片段”按钮；会按失败索引重跑，而不是整书重来。
+- 书籍图谱（`book_relations` / `book_characters`）修复：
+  - `apps/api/ai_writer_api/routers/runs.py` 强化书籍总结归一化，新增对 `overall_summary`、`characters_involved`、dict 形态 `characters`、`events/timeline`、`themes/motifs` 的兼容。
+  - 图谱 heuristic 不再只吃结构化 `characters`；现在会结合章节标题与 summary 文本补全角色名，并在 LLM 只返回 generic `book_progression` 时，用 heuristic 替换/增强结果。
+  - 人物图与章节关系图现在能从“只有 summary 文本、结构字段很弱”的真实书籍总结中长出实际角色/关系产物。
+- 前端 / 本地联通：
+  - `apps/web/src/app/page.tsx` 默认 `apiBase` 改为跟随当前页面 host 推导（`localhost` / `127.0.0.1` 均可）。
+  - `apps/api/ai_writer_api/main.py` 允许 `http://localhost:3000` 与 `http://127.0.0.1:3000` 两个本地 origin，修复浏览器直接打开 `127.0.0.1:3000` 时的跨域取数失败。
+- 回归与真实验收：
+  - 新增后端回归，覆盖 mixed schema summaries 与“仅章节标题 + 纯文本 summary”的图谱 heuristic。
+  - 真实前端点击验收已跑通：上传测试书 -> 章节分块 -> 制造失败 -> 点击“重新总结失败章节” -> 生成章节关系图 -> 生成人物关系图；实测产物为 `summaries=7`、`relationEdges=8~10`、`characterCount=11~13`、`characterRelations=34~46`。
+  - 新增正式验收入口：`cd apps/web && npm run e2e:book-graphs`。
+
+### v2.2.1（开发：dev.ps1 端口占用恢复）
+- 修复 `scripts/dev.ps1` 在 3000 端口被旧 Next.js 子进程 `start-server.js` 占用时，识别失败导致再次启动 Web 报 `EADDRINUSE`。
+- 启动脚本现在会沿监听进程向上识别 `next dev` / `npm run dev` 进程链，并停止整棵旧 Web 进程树，而不只杀掉当前 listener。
+- 当 8000 / 3000 端口仍未成功释放时，脚本会明确跳过对应服务启动，避免“明知端口占用还继续拉起”造成二次报错。
+- API / Web 启动后的健康检查改为最多等待 15 秒，减少刚启动时的误报 warning。
+- 实测：连续多次执行 `.\scripts\dev.ps1 -SkipInstall`，API 与 Web 都可自动接管旧进程并成功启动。
+
+### v2.2.0（续写：Agent 稳定性重构 + 真实前端验收）
+- API（续写编排与模型兼容）：
+  - 重构文章续写链路的稳定性策略，不再只依赖 `soft_fail` 掩盖失败；现在明确以“拿到真实 `story_state` / `outline` / `chapter_markdown` 产物”为目标设计 fallback。
+  - `apps/api/ai_writer_api/llm.py`：为 Packy OpenAI-compatible 补充更明确的 fallback 序列（`gpt-5.4 -> gpt-5.2 -> gpt-5.1-codex`），并禁止 Packy Gemini 在底层做不可诊断的隐式跨模型乱跳。
+  - `apps/api/ai_writer_api/routers/runs.py`：
+    - Gemini + Packy 的 `ConfigAutofill` / `Extractor` / `Outliner` 优先走稳定 OpenAI-compatible 结构化通道。
+    - Gemini + Packy 的 `Editor` 优先走稳定 OpenAI-compatible 通道。
+    - `Writer` 仍先使用界面里用户实际选中的模型；当遇到 `no distributor`、`empty completion`、明显过短或其它可重试网关错误时，再按 trace 可见的策略重试并透明 fallback，确保章节产物能落地。
+    - 修复 Writer 在 gateway fallback 成功后，后续过短重试错误切回原 Gemini 的问题。
+- Tests：
+  - 扩展 `apps/api/tests/test_llm_config.py` 与 `apps/api/tests/test_runs.py`，覆盖 Packy Gemini 禁止隐式跨模型 fallback、结构化 agent fallback、Writer 同模型重试优先级、OpenAI-compatible writer fallback、Editor 可疑输出重试等关键回归。
+  - 后端回归实测通过：`44 passed`。
+- Web / E2E：
+  - 新增真实前端验收脚本 `apps/web/e2e/continue-acceptance.spec.ts`，会实际打开 `http://localhost:3000`、点击 `设置 -> 模型` 与 `续写`、上传测试书籍、点击 `抽取 + 续写`、轮询 run，并校验前端文本框里出现真实 Markdown 产物。
+  - 前端正式纳入 Playwright 依赖与 `e2e:continue` 脚本。
+  - 真实验收已覆盖并跑通 4 个模型：`gpt-5.2`、`gpt-5.4`、`gemini-3-flash-preview`、`gemini-2.5-pro`。
+- Docs / Repo：
+  - 同步更新 `AGENTS.md`、`HANDOFF.md`、`ROADMAP.md`，把“续写分 lane 保产物”的稳定性原则写入长期文档。
+  - `.gitignore` 新增 `.codex/` 与 `apps/web/test-results/`，避免把本地计划与 Playwright 产物误提交。
+

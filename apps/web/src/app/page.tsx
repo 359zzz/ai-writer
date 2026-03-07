@@ -151,6 +151,13 @@ type ChapterIndexResult = {
   updated_at?: string;
 };
 
+type BookSummarizeFailedItem = {
+  index: number;
+  chapter_label?: string;
+  chapter_title?: string;
+  error?: string;
+};
+
 type BookSummarizeStats = {
   source_id: string;
   filename?: string;
@@ -158,6 +165,8 @@ type BookSummarizeStats = {
   processed: number;
   created: number;
   failed: number;
+  failed_indices: number[];
+  failed_items: BookSummarizeFailedItem[];
   params?: Record<string, unknown>;
 };
 
@@ -697,7 +706,13 @@ export default function Home() {
     tab === "continue" ? "continue" : "create";
 
   const apiBase = useMemo(() => {
-    return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+    if (process.env.NEXT_PUBLIC_API_BASE_URL) {
+      return process.env.NEXT_PUBLIC_API_BASE_URL;
+    }
+    if (typeof window !== "undefined") {
+      return `${window.location.protocol}//${window.location.hostname}:8000`;
+    }
+    return "http://localhost:8000";
   }, []);
 
   const tt = (key: I18nKey) => t(lang, key);
@@ -1765,6 +1780,40 @@ export default function Home() {
                 typeof evt.data.segment_mode === "string"
                   ? evt.data.segment_mode
                   : undefined;
+              const failed_indices = Array.isArray(evt.data.failed_indices)
+                ? evt.data.failed_indices
+                    .map((x) => (typeof x === "number" ? x : Number(x)))
+                    .filter((n): n is number => Number.isFinite(n) && n > 0)
+                    .map((n) => Math.floor(n))
+                : [];
+              const failed_items = Array.isArray(evt.data.failed_items)
+                ? evt.data.failed_items
+                    .map((item) => {
+                      if (!item || typeof item !== "object") return null;
+                      const rec = item as Record<string, unknown>;
+                      const indexRaw =
+                        typeof rec.index === "number"
+                          ? rec.index
+                          : Number(rec.index ?? NaN);
+                      if (!Number.isFinite(indexRaw) || indexRaw <= 0) return null;
+                      return {
+                        index: Math.floor(indexRaw),
+                        chapter_label:
+                          typeof rec.chapter_label === "string"
+                            ? rec.chapter_label
+                            : undefined,
+                        chapter_title:
+                          typeof rec.chapter_title === "string"
+                            ? rec.chapter_title
+                            : undefined,
+                        error:
+                          typeof rec.error === "string" ? rec.error : undefined,
+                      } satisfies BookSummarizeFailedItem;
+                    })
+                    .filter(
+                      (item): item is BookSummarizeFailedItem => Boolean(item),
+                    )
+                : [];
               setBookSummarizeStats({
                 source_id: sid,
                 filename,
@@ -1772,6 +1821,8 @@ export default function Home() {
                 processed: Number.isFinite(processed) ? processed : 0,
                 created: Number.isFinite(created) ? created : 0,
                 failed: Number.isFinite(failed) ? failed : 0,
+                failed_indices,
+                failed_items,
                 params:
                   evt.data.params && typeof evt.data.params === "object"
                     ? (evt.data.params as Record<string, unknown>)
@@ -7170,19 +7221,105 @@ export default function Home() {
                                     }，入库 ${bookSummarizeStats.created}，失败 ${bookSummarizeStats.failed}`
                                   : `Processed ${bookSummarizeStats.processed}, stored ${bookSummarizeStats.created}, failed ${bookSummarizeStats.failed}`}
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setTab("create");
-                                  setCreatePane("background");
-                                }}
-                                className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
-                              >
-                                {lang === "zh"
-                                  ? "去背景设定查看知识库"
-                                  : "Open KB (Background)"}
-                              </button>
+                              <div className="flex flex-wrap items-center gap-2">
+                                {bookSummarizeStats.failed_indices.length > 0 ? (
+                                  <button
+                                    type="button"
+                                    disabled={runInProgress || !bookSummarizeStats.source_id}
+                                    onClick={() => {
+                                      const retrySourceId =
+                                        bookSummarizeStats.source_id || bookSourceId;
+                                      if (!retrySourceId) return;
+                                      runPipeline("book_summarize", {
+                                        ...(bookSummarizeStats.params ?? {}),
+                                        source_id: retrySourceId,
+                                        segment_indices:
+                                          bookSummarizeStats.failed_indices,
+                                        replace_existing: true,
+                                      })
+                                        .then((r) => {
+                                          if (r.ok) {
+                                            refreshKbChunks().catch(() => {
+                                              // ignore
+                                            });
+                                          }
+                                        })
+                                        .catch(() => {
+                                          // surfaced via runError
+                                        });
+                                    }}
+                                    className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-700 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                                  >
+                                    {lang === "zh"
+                                      ? bookSummarizeStats.segment_mode === "chapter"
+                                        ? "重新总结失败章节"
+                                        : "重新总结失败片段"
+                                      : "Retry failed summaries"}
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTab("create");
+                                    setCreatePane("background");
+                                  }}
+                                  className="rounded-md bg-[var(--ui-accent)] px-2 py-1 text-xs text-[var(--ui-accent-foreground)] hover:opacity-90"
+                                >
+                                  {lang === "zh"
+                                    ? "去背景设定查看知识库"
+                                    : "Open KB (Background)"}
+                                </button>
+                              </div>
                             </div>
+                            {bookSummarizeStats.failed_items.length > 0 ? (
+                              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50/70 p-2 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-200">
+                                <div className="font-medium">
+                                  {lang === "zh"
+                                    ? "失败章节 / 片段"
+                                    : "Failed chapters / chunks"}
+                                </div>
+                                <div className="mt-2 space-y-1">
+                                  {bookSummarizeStats.failed_items
+                                    .slice(0, 8)
+                                    .map((item) => {
+                                      const meta = [
+                                        item.chapter_label,
+                                        item.chapter_title,
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" / ");
+                                      const prefix =
+                                        bookSummarizeStats.segment_mode === "chapter"
+                                          ? lang === "zh"
+                                            ? `第 ${item.index} 章`
+                                            : `Chapter ${item.index}`
+                                          : lang === "zh"
+                                            ? `片段 #${item.index}`
+                                            : `Chunk #${item.index}`;
+                                      return (
+                                        <div
+                                          key={`${item.index}-${meta || item.error || "failed"}`}
+                                          className="truncate"
+                                          title={[prefix, meta, item.error]
+                                            .filter(Boolean)
+                                            .join(" / ")}
+                                        >
+                                          {[prefix, meta, item.error]
+                                            .filter(Boolean)
+                                            .join(" / ")}
+                                        </div>
+                                      );
+                                    })}
+                                  {bookSummarizeStats.failed_items.length > 8 ? (
+                                    <div className="text-[var(--ui-muted)]">
+                                      {lang === "zh"
+                                        ? `其余 ${bookSummarizeStats.failed_items.length - 8} 项可通过“重新总结失败章节”继续处理。`
+                                        : `${bookSummarizeStats.failed_items.length - 8} more items can be retried with the button above.`}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
 

@@ -91,12 +91,54 @@
 
 常见本地启动方式：
 - `./scripts/dev.ps1`
+- `scripts/dev.ps1` 现在会自动识别并清理旧的 API / Web 监听者；Web 侧会沿 `next dev -> start-server.js` 进程链整树清理，避免重复启动时报 `EADDRINUSE`。
+- 如果 8000 / 3000 端口仍被“不是本项目”的进程占用，且你没有显式传 `-ForceKill`，脚本会跳过对应服务启动并给出明确提示，而不是继续硬启动后报错。
 
 常见后端检查：
 - `GET /api/health`
 - 优先运行 `apps/api/tests/` 下与改动最相关的测试
 - 可选烟测：`apps/api/scripts/smoke_llm.py`
 - 端到端辅助脚本：`apps/api/scripts/e2e_book_flow.py`
+
+## 文章续写稳定性验收（v2.2.0 起）
+
+- 这条链路现在有一个明确原则：优先保证“真实章节产物稳定产出”，而不是要求所选 provider 独占全部 agent。
+- PackyAPI + Gemini 的文章续写链路当前约定为：
+  - `ConfigAutofill` / `Extractor` / `Outliner` 允许走稳定的 OpenAI-compatible 结构化通道。
+  - `Writer` 仍必须先使用界面里用户选中的模型；若出现 `no distributor`、`empty completion`、过短输出或其它可重试网关错误，再透明 fallback 到 OpenAI-compatible。
+  - `Editor` 允许走稳定的 OpenAI-compatible 通道，优先保证最终 `chapter_markdown` 落地产物。
+- 续写验收不能只看 `soft_fail`；必须同时确认：
+  - run `status=completed`
+  - artifacts 至少包含 `story_state`、`outline`、`chapter_markdown`
+  - 前端生成区出现真实 Markdown 正文
+  - trace 中无 `run_error`
+- 真实前端验收脚本：`apps/web/e2e/continue-acceptance.spec.ts`
+- 当前必须覆盖的 4 个模型：
+  - `gpt-5.2`
+  - `gpt-5.4`
+  - `gemini-3-flash-preview`
+  - `gemini-2.5-pro`
+- 建议验收命令：
+  - 后端：`.\apps\api\.venv\Scripts\python.exe -m pytest apps\api\tests`
+  - 前端 lint：`cd apps/web; npm run lint`
+  - 前端真实续写验收：`cd apps/web; npx playwright test e2e/continue-acceptance.spec.ts --workers=1`
+- 关键环境提示：`http://localhost:3000` 与 `http://127.0.0.1:3000` 现在都可用；前端默认 `apiBase` 会跟随当前 host 推导，后端 CORS 也同时允许两者。为减少文档歧义，自动化脚本仍默认使用 `http://localhost:3000`。
+
+## 书籍图谱验收（v2.2.2 起）
+
+- 书籍续写这条链路现在必须按“真实产物”验收，不能只看 run `completed` 或 `soft_fail`。
+- `总结入库` 后若存在失败章节/片段，界面会出现：
+  - `重新总结失败章节`
+  - `重新总结失败片段`
+- 图谱验收至少确认四件事：
+  - `book_summary` 条数大于 3
+  - `book_relations.graph.edges.length > 0`
+  - 至少存在 1 条非 `structure/book_progression` 的 meaningful edge
+  - `book_characters.graph.characters >= 2` 且 `graph.relations >= 1`
+- 正式前端验收脚本：`apps/web/e2e/book-graph-validation.js`
+- 建议验收命令：
+  - `cd apps/web && npm run e2e:book-graphs`
+- 该脚本会真实执行：上传测试书 -> 章节分块 -> 制造部分总结失败 -> 点击“重新总结失败章节” -> 生成章节关系图 -> 生成人物关系图，并在最后打印产物统计 JSON。
 
 ## 推荐接手顺序
 

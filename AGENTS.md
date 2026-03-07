@@ -69,6 +69,10 @@
 - 使用 **Supervisor / Orchestrator** 模式，由 Director 统一调度各类 Agent 与工具。
 - 通用创作链路中的关键角色包括：`ConfigAutofill`、`Extractor`、`Outliner`、`Writer`、`Editor`、`LoreKeeper`。
 - 长书链路中的关键步骤 / 角色包括：`book_summarize`、`book_compile`、`book_continue`，以及围绕图谱生成的关系 / 人物抽取流程。
+- 在 PackyAPI 的文章续写链路中，应优先保证“真实产物稳定产出”而不是让单一 provider 独占全部步骤：
+  - `ConfigAutofill` / `Extractor` / `Outliner` 在 Gemini + Packy 组合下，允许走稳定的 OpenAI-compatible 结构化通道。
+  - `Writer` 必须优先使用用户在界面中实际选中的模型；只有在模型不可用、空响应、明显过短或代理网关异常时，才允许透明 fallback。
+  - `Editor` 在 Gemini + Packy 组合下，允许走稳定的 OpenAI-compatible 通道，以提高章节产物稳定性与可诊断性。
 - 每次 `run` 都必须产生可持久化的 `trace` 事件流，记录开始 / 结束、工具调用、中间输出、错误与最终产物。
 - 前端既要支持 SSE 实时显示，也要支持基于 `run` 与事件序列的轮询恢复，保证刷新页面后仍可恢复进度。
 
@@ -92,6 +96,7 @@
 - `apps/web/src/app/page.tsx`：前端状态与工作区编排高度集中，是前端首要热点。
 - `apps/api/ai_writer_api/llm.py`：模型兼容、重试、fallback、PackyAPI 策略集中，改动必须谨慎。
 - `apps/api/ai_writer_api/tools/chapter_index.py`：章节识别规则密集，任何调整都应由回归测试兜底。
+- `apps/web/e2e/continue-acceptance.spec.ts`：文章续写的真实界面验收脚本；模型兼容或续写编排改动后必须优先回归。
 - 当这些热点的职责明显变化时，必须同步更新本文件与 `HANDOFF.md`。
 
 ### 1.9 术语约定

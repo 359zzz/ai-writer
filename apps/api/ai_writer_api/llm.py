@@ -163,6 +163,59 @@ def _normalize_openai_model_name(model: str) -> str:
     return m
 
 
+def _packy_openai_fallback_models(model: str, err: str = "") -> list[str]:
+    cur_low = (model or "").strip().lower()
+    err_low = (err or "").strip().lower()
+    out: list[str] = []
+
+    def add(candidate: str) -> None:
+        low = candidate.strip().lower()
+        if not low or low == cur_low:
+            return
+        if low in {it.lower() for it in out}:
+            return
+        out.append(candidate)
+
+    if cur_low.startswith("gpt-5.4"):
+        add("gpt-5.2")
+        add("gpt-5.1-codex")
+
+    if cur_low in {"gpt-5.2", "gpt-5", "gpt-5-codex", "gpt-5.2-codex"} or cur_low.startswith(
+        "gpt-5.2"
+    ):
+        add("gpt-5.1-codex")
+
+    if (
+        ("openai_http_404" in err_low)
+        or ("no distributor" in err_low)
+        or ("无可用渠道" in err_low)
+        or (cur_low.startswith("gpt-5") and cur_low != "gpt-5.1-codex")
+    ):
+        add("gpt-5.2")
+        add("gpt-5.1-codex")
+
+    return out
+
+
+def _gemini_proxy_fallback_models(model: str, base_url: str) -> list[str]:
+    fallback_models = [
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+    cur_low = (model or "").strip().lower()
+    fallbacks = [m for m in fallback_models if m.strip().lower() != cur_low]
+    if _is_packy_base(base_url):
+        # Packy Gemini should keep model selection explicit. Higher-level
+        # orchestrators perform targeted retries/fallbacks with trace events.
+        return []
+    return fallbacks
+
+
 def resolve_llm_config(project_settings: dict[str, Any], secrets: Secrets | None = None) -> LLMConfig:
     s = secrets or load_secrets()
     llm = project_settings.get("llm") if isinstance(project_settings, dict) else {}
@@ -709,16 +762,9 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
             if not is_packy:
                 raise
             best = str(e)
-            cur_low = (cfg.model or "").strip().lower()
-            fallback_models: list[str] = []
-            if cur_low in {"gpt-5.2", "gpt-5", "gpt-5-codex", "gpt-5.2-codex"} or cur_low.startswith("gpt-5.2"):
-                fallback_models.append("gpt-5.1-codex")
-            elif ("openai_http_502:html_error_page" in best) and cur_low.startswith("gpt-5") and cur_low != "gpt-5.1-codex":
-                fallback_models.append("gpt-5.1-codex")
+            fallback_models = _packy_openai_fallback_models(cfg.model, best)
 
-            for fb in fallback_models[:1]:
-                if fb.strip().lower() == cur_low:
-                    continue
+            for fb in fallback_models[:2]:
                 try:
                     return await openai_compatible_generate(
                         base_url=base,
@@ -743,25 +789,7 @@ async def generate_text(system_prompt: str, user_prompt: str, cfg: LLMConfig) ->
     base_low = (base or "").lower()
     prefer_openai_first = "packyapi.com" in base_low
 
-    # Keep this list conservative: it should only contain broadly-available model IDs.
-    fallback_models = [
-        # PackyAPI docs (third-party clients) commonly recommend Gemini 3.
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
-        # Widely available 2.5 fallbacks.
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-3.1-pro-preview",
-        # Older/common flash fallbacks (some gateways expose these instead).
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-    ]
-    cur_low = (cfg.model or "").strip().lower()
-    fallbacks = [m for m in fallback_models if m.strip().lower() != cur_low]
-    if _is_packy_base(base):
-        # Keep fallback probing tight for PackyAPI to avoid looking like a
-        # request flood: try a few common alternatives, then give up.
-        fallbacks = fallbacks[:4]
+    fallbacks = _gemini_proxy_fallback_models(cfg.model, base)
 
     async def openai_chat(model: str) -> str:
         return await openai_compatible_generate(

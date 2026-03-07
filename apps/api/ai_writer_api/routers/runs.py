@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import Counter, defaultdict
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
@@ -171,6 +172,591 @@ def _clip_str_list(value: object, *, max_items: int, max_item_len: int) -> list[
         if len(out) >= max(0, int(max_items)):
             break
     return out
+
+
+def _dedupe_keep_order(items: list[str], *, max_items: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        t = item.strip()
+        if not t:
+            continue
+        low = t.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        out.append(t)
+        if len(out) >= max(0, int(max_items)):
+            break
+    return out
+
+
+def _split_summary_text_items(
+    value: object, *, max_items: int, max_item_len: int
+) -> list[str]:
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                clipped = _clip_text(item, max_item_len)
+                if clipped:
+                    parts.append(clipped)
+                continue
+            if isinstance(item, dict):
+                for key in (
+                    "event",
+                    "details",
+                    "summary",
+                    "text",
+                    "title",
+                    "name",
+                    "quote",
+                    "analysis",
+                    "theme",
+                    "symbol",
+                    "meaning",
+                ):
+                    clipped = _clip_text(item.get(key), max_item_len)
+                    if clipped:
+                        parts.append(clipped)
+                        break
+        return _dedupe_keep_order(parts, max_items=max_items)
+    if not isinstance(value, str):
+        return []
+
+    raw = value.strip()
+    if not raw:
+        return []
+
+    parts: list[str] = []
+    for chunk in re.split("(?:\\r?\\n+|[;\uFF1B]+)", raw):
+        piece = str(chunk or "").strip()
+        if not piece:
+            continue
+        piece = re.sub("^\\s*(?:[-*\u2022\u00B7\u25CF\u25AA\u25E6]|\\d{1,3}[\\.\u3001:\uFF1A\\)])\\s*", "", piece)
+        subparts = re.split("(?<=[\u3002\uFF01\uFF1F.!?])\\s+", piece)
+        for sub in subparts:
+            s = str(sub or "").strip().strip("-\u2014\u2013\u2022\u00B7,\uFF0C;\uFF1B:\uFF1A ")
+            if s:
+                parts.append(_clip_text(s, max_item_len))
+    return _dedupe_keep_order(parts, max_items=max_items)
+
+
+_GENERIC_CHARACTER_NAMES = {
+    "\u4eba\u7269",
+    "\u89d2\u8272",
+    "\u4e3b\u89d2",
+    "\u914d\u89d2",
+    "\u4f17\u4eba",
+    "\u5927\u5bb6",
+    "\u4ed6\u4eec",
+    "\u5979\u4eec",
+    "\u6709\u4eba",
+    "\u67d0\u4eba",
+    "\u5c11\u5973",
+    "\u5c11\u5e74",
+    "\u7537\u5b50",
+    "\u5973\u5b50",
+    "\u8363\u56fd\u5e9c",
+    "\u5b81\u56fd\u5e9c",
+    "\u8363\u5e9c",
+    "\u5b81\u5e9c",
+    "\u8d3e\u5e9c",
+    "\u859b\u5bb6",
+    "\u738b\u5bb6",
+    "\u5218\u5bb6",
+    "\u91d1\u9675",
+    "\u626c\u5dde",
+    "\u4eac\u57ce",
+    "\u4eac\u90fd",
+    "\u592a\u865a\u5e7b\u5883",
+    "\u51b7\u9999\u4e38",
+    "\u5bab\u82b1",
+    "\u4e49\u5b66",
+    "others",
+    "other",
+    "someone",
+    "unknown",
+}
+
+
+def _normalize_character_name(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+
+    name = value.strip().strip("\"'\u201c\u201d\u2018\u2019()\uFF08\uFF09[]\u3010\u3011<>\u300a\u300b")
+    if not name:
+        return ""
+
+    name = re.sub(r"\s+", " ", name)
+    name = re.sub(r"^(?:\u4eba\u7269|\u89d2\u8272|\u59d3\u540d|\u89d2\u8272\u540d)\s*[:\uFF1A-]\s*", "", name)
+    name = re.split(r"[:\uFF1A]", name, maxsplit=1)[0].strip()
+    name = re.split(r"[\u2014\u2013]", name, maxsplit=1)[0].strip()
+    name = re.split(r"\s+-\s+", name, maxsplit=1)[0].strip()
+    name = re.split(r"[\uFF08(]", name, maxsplit=1)[0].strip()
+    name = name.strip("-\u2014\u2013,\uFF0C;\uFF1B/\\ ")
+    if not name or len(name) <= 1 or len(name) > 24:
+        return ""
+    if name.lower() in _GENERIC_CHARACTER_NAMES or name in _GENERIC_CHARACTER_NAMES:
+        return ""
+    return name
+
+
+def _coerce_character_names(value: object, *, max_items: int) -> list[str]:
+    items: list[str] = []
+    if isinstance(value, list):
+        for raw in value:
+            if isinstance(raw, dict):
+                norm = ""
+                for key in ("name", "character", "person", "id", "source", "target"):
+                    norm = _normalize_character_name(raw.get(key))
+                    if norm:
+                        break
+            else:
+                norm = _normalize_character_name(raw)
+            if norm:
+                items.append(norm)
+        return _dedupe_keep_order(items, max_items=max_items)
+    if isinstance(value, dict):
+        for key in ("name", "character", "person", "id"):
+            norm = _normalize_character_name(value.get(key))
+            if norm:
+                return [norm]
+        return []
+    if not isinstance(value, str):
+        return []
+
+    raw_items = _split_summary_text_items(
+        value, max_items=max_items * 4, max_item_len=80
+    )
+    for raw in raw_items:
+        head = re.split(r"[:?]", raw, maxsplit=1)[0]
+        for part in re.split(
+            r"(?:[?,?/?&]|\s+and\s+|\s+with\s+|\s+?\s+|\s+?\s+|\s+?\s+)",
+            head,
+        ):
+            norm = _normalize_character_name(part)
+            if norm:
+                items.append(norm)
+    return _dedupe_keep_order(items, max_items=max_items)
+
+
+_COMMON_CJK_SURNAMES = (
+    "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华"
+    "金魏陶姜谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方"
+    "俞任袁柳酆鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅"
+    "皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧"
+    "计伏成戴谈宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾甄冷焦"
+)
+
+_TITLE_VERB_CHARS = "初再会见入送戏演说抛怀梦游饮识指乱判逢试进出赴遇哭笑醉骂访投设读探拜请商仙夤"
+
+
+def _looks_like_character_name(name: str) -> bool:
+    if not name:
+        return False
+    if name.lower() in _GENERIC_CHARACTER_NAMES or name in _GENERIC_CHARACTER_NAMES:
+        return False
+    if name.endswith(("府", "城", "院", "楼", "案", "境", "歌", "丸", "花", "学", "事", "情", "梦", "回", "章", "卷")):
+        return False
+    if len(name) > 5 and not name.endswith("家的"):
+        return False
+    return True
+
+
+def _infer_character_names_from_title(title: object, *, max_items: int) -> list[str]:
+    if not isinstance(title, str):
+        return []
+    raw = title.strip()
+    if not raw:
+        return []
+    items: list[str] = []
+
+    def _pick_strong_name(fragment: str, *, reverse: bool) -> str:
+        text = fragment.strip()
+        if not text:
+            return ""
+        sizes = (2, 3, 4)
+        for size in sizes:
+            if len(text) < size:
+                continue
+            candidate = text[-size:] if reverse else text[:size]
+            name = _normalize_character_name(candidate)
+            if not (
+                _looks_like_character_name(name)
+                and name
+                and _CJK_RE.search(name)
+                and name[0] in _COMMON_CJK_SURNAMES
+            ):
+                continue
+            if name[-1] in _TITLE_VERB_CHARS:
+                continue
+            if not reverse and len(text) > size:
+                next_char = text[size]
+                if next_char not in (" ", "\u3000", "\uFF0C", "\u3002", "\uFF1B", "\u3001") and next_char not in _TITLE_VERB_CHARS:
+                    continue
+            return name
+        return ""
+
+    for idx, ch in enumerate(raw):
+        if ch not in _TITLE_VERB_CHARS:
+            continue
+        before = _pick_strong_name(raw[max(0, idx - 4) : idx], reverse=True)
+        after = _pick_strong_name(raw[idx + 1 : idx + 5], reverse=False)
+        if before:
+            items.append(before)
+        if after:
+            items.append(after)
+    return _dedupe_keep_order(items, max_items=max_items)
+
+
+def _infer_character_names_from_text(
+    text: object, *, known_names: list[str], max_items: int
+) -> list[str]:
+    if not isinstance(text, str):
+        return []
+    raw = text.strip()
+    if not raw:
+        return []
+    vocab = _dedupe_keep_order(
+        [name for name in known_names if _looks_like_character_name(name)],
+        max_items=128,
+    )
+    items: list[str] = []
+    for name in sorted(vocab, key=len, reverse=True):
+        variants = [name]
+        if _CJK_RE.search(name) and len(name) >= 3:
+            variants.append(name[-2:])
+        if name.endswith("家的") and len(name) > 2:
+            variants.append(name[:-2])
+        if any(variant and variant in raw for variant in variants):
+            items.append(name)
+    return _dedupe_keep_order(items, max_items=max_items)
+
+
+def _normalize_book_summary_data(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+
+    summary = _clip_text(
+        out.get("summary") or out.get("overall_summary") or out.get("text"),
+        1200,
+    )
+    if summary:
+        out["summary"] = summary
+
+    character_candidates: list[str] = []
+    for raw in (
+        out.get("characters"),
+        out.get("main_characters"),
+        out.get("characters_involved"),
+    ):
+        character_candidates.extend(
+            _coerce_character_names(raw, max_items=32)
+        )
+    characters = _dedupe_keep_order(character_candidates, max_items=16)
+    if characters:
+        out["characters"] = characters
+
+    event_candidates: list[str] = []
+    for raw in (out.get("key_events"), out.get("events"), out.get("timeline")):
+        event_candidates.extend(
+            _split_summary_text_items(raw, max_items=12, max_item_len=220)
+        )
+    key_events = _dedupe_keep_order(event_candidates, max_items=10)
+    if key_events:
+        out["key_events"] = key_events
+
+    locations = _split_summary_text_items(
+        out.get("locations"), max_items=10, max_item_len=120
+    )
+    if locations:
+        out["locations"] = locations
+
+    timeline = _split_summary_text_items(
+        out.get("timeline"), max_items=10, max_item_len=160
+    )
+    if timeline:
+        out["timeline"] = timeline
+
+    open_loops = _split_summary_text_items(
+        out.get("open_loops"), max_items=10, max_item_len=220
+    )
+    if open_loops:
+        out["open_loops"] = open_loops
+
+    theme_candidates: list[str] = []
+    for raw in (out.get("themes"), out.get("motifs")):
+        theme_candidates.extend(
+            _split_summary_text_items(raw, max_items=10, max_item_len=160)
+        )
+    themes = _dedupe_keep_order(theme_candidates, max_items=8)
+    if themes:
+        out["themes_list"] = themes
+
+    return out
+
+
+def _coerce_int_list(value: object, *, max_items: int) -> list[int]:
+    if not isinstance(value, list):
+        return []
+
+    out: list[int] = []
+    for item in value:
+        try:
+            n = int(item)
+        except Exception:
+            continue
+        if n <= 0:
+            continue
+        out.append(int(n))
+        if len(out) >= max(0, int(max_items)):
+            break
+    return out
+
+
+def _normalize_characters_graph(obj: Any) -> tuple[dict[str, Any] | None, int, int]:
+    if not isinstance(obj, dict):
+        return None, 0, 0
+
+    graph = obj.get("graph") if isinstance(obj.get("graph"), dict) else obj
+    if not isinstance(graph, dict):
+        return None, 0, 0
+
+    raw_chars = graph.get("characters")
+    raw_rels = graph.get("relations")
+    provisional: dict[str, dict[str, Any]] = {}
+    alias_to_id: dict[str, str] = {}
+
+    def register_alias(raw: str, cid: str) -> None:
+        t = raw.strip()
+        if not t:
+            return
+        alias_to_id.setdefault(t.lower(), cid)
+
+    if isinstance(raw_chars, list):
+        for item in raw_chars:
+            if not isinstance(item, dict):
+                continue
+            name = _normalize_character_name(item.get("name"))
+            raw_id = _normalize_character_name(item.get("id"))
+            cid = raw_id or name
+            if not cid or not name:
+                continue
+
+            aliases = _coerce_character_names(item.get("aliases"), max_items=8)
+            chapters = _coerce_int_list(item.get("chapters"), max_items=24)
+            card: dict[str, Any] = {
+                "id": cid,
+                "name": name,
+            }
+            if aliases:
+                card["aliases"] = aliases
+            for key, max_len in (
+                ("gender", 40),
+                ("identity", 120),
+                ("personality", 220),
+                ("plot", 260),
+            ):
+                v = _clip_text(item.get(key), max_len)
+                if v:
+                    card[key] = v
+            if chapters:
+                card["chapters"] = chapters
+
+            related_events = _split_summary_text_items(
+                item.get("related_events"), max_items=8, max_item_len=180
+            )
+            if related_events:
+                card["related_events"] = related_events
+
+            provisional[cid] = card
+            register_alias(cid, cid)
+            register_alias(name, cid)
+            for alias in aliases:
+                register_alias(alias, cid)
+
+    rels_out: list[dict[str, Any]] = []
+    if isinstance(raw_rels, list):
+        for item in raw_rels:
+            if not isinstance(item, dict):
+                continue
+            src_raw = _normalize_character_name(
+                item.get("source") if item.get("source") is not None else item.get("from")
+            )
+            dst_raw = _normalize_character_name(
+                item.get("target") if item.get("target") is not None else item.get("to")
+            )
+            if not src_raw or not dst_raw or src_raw == dst_raw:
+                continue
+
+            src = alias_to_id.get(src_raw.lower(), src_raw)
+            dst = alias_to_id.get(dst_raw.lower(), dst_raw)
+            if src not in provisional:
+                provisional[src] = {"id": src, "name": src}
+                register_alias(src, src)
+            if dst not in provisional:
+                provisional[dst] = {"id": dst, "name": dst}
+                register_alias(dst, dst)
+
+            rel_type = _clip_text(item.get("type") or "other", 40) or "other"
+            label = _clip_text(item.get("label"), 80)
+            detail = _clip_text(item.get("detail"), 220)
+            chapters = _coerce_int_list(item.get("chapters"), max_items=24)
+            try:
+                strength = float(item.get("strength"))
+            except Exception:
+                strength = 0.6
+
+            rel: dict[str, Any] = {
+                "source": src,
+                "target": dst,
+                "type": rel_type,
+                "strength": max(0.0, min(1.0, strength)),
+            }
+            if label:
+                rel["label"] = label
+            if detail:
+                rel["detail"] = detail
+            if chapters:
+                rel["chapters"] = chapters
+            rels_out.append(rel)
+
+    characters = sorted(
+        provisional.values(),
+        key=lambda c: (
+            -len(c.get("chapters") or []),
+            str(c.get("name") or c.get("id") or ""),
+        ),
+    )
+    rels_dedup: list[dict[str, Any]] = []
+    seen_rels: set[tuple[str, str, str]] = set()
+    for rel in rels_out:
+        key = (
+            str(rel.get("source") or ""),
+            str(rel.get("target") or ""),
+            str(rel.get("type") or "other"),
+        )
+        if key in seen_rels:
+            continue
+        seen_rels.add(key)
+        rels_dedup.append(rel)
+
+    return {
+        "characters": characters,
+        "relations": rels_dedup,
+    }, len(characters), len(rels_dedup)
+
+
+def _same_character_surname(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if _CJK_RE.search(left) and _CJK_RE.search(right):
+        return len(left) >= 2 and len(right) >= 2 and left[0] == right[0]
+    return left.split(" ", 1)[0].lower() == right.split(" ", 1)[0].lower()
+
+
+def _heuristic_characters_graph_from_summaries(
+    parts: list[dict[str, Any]], *, lang: str
+) -> dict[str, Any]:
+    chapter_map: dict[str, set[int]] = defaultdict(set)
+    event_map: dict[str, list[str]] = defaultdict(list)
+    pair_counter: Counter[tuple[str, str]] = Counter()
+    pair_chapters: dict[tuple[str, str], set[int]] = defaultdict(set)
+
+    for part in parts:
+        idx = int(part.get("index") or 0)
+        if idx <= 0:
+            continue
+        names = _dedupe_keep_order(
+            _coerce_character_names(part.get("characters"), max_items=16), max_items=16
+        )
+        if not names:
+            continue
+        for name in names:
+            chapter_map[name].add(idx)
+            for ev in _split_summary_text_items(
+                part.get("key_events"), max_items=4, max_item_len=180
+            ):
+                if ev not in event_map[name]:
+                    event_map[name].append(ev)
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                pair = tuple(sorted((names[i], names[j])))
+                pair_counter[pair] += 1
+                pair_chapters[pair].add(idx)
+
+    ordered_names = sorted(
+        chapter_map,
+        key=lambda name: (-len(chapter_map[name]), name),
+    )[:40]
+    characters: list[dict[str, Any]] = []
+    for name in ordered_names:
+        chapters = sorted(chapter_map[name])
+        card: dict[str, Any] = {
+            "id": name,
+            "name": name,
+            "chapters": chapters[:24],
+        }
+        related_events = event_map.get(name, [])[:4]
+        if related_events:
+            card["related_events"] = related_events
+            joiner = "\uFF1B" if lang == "zh" else "; "
+            card["plot"] = _clip_text(joiner.join(related_events), 220)
+        if len(chapters) >= 4:
+            card["identity"] = "\u5e38\u9a7b\u89d2\u8272" if lang == "zh" else "Recurring character"
+        characters.append(card)
+
+    valid_names = {str(c["id"]) for c in characters}
+    relations: list[dict[str, Any]] = []
+    for (left, right), count in pair_counter.most_common(120):
+        if left not in valid_names or right not in valid_names:
+            continue
+        chapters = sorted(pair_chapters[(left, right)])
+        rel_type = "family" if _same_character_surname(left, right) else (
+            "ally" if count >= 2 else "friend"
+        )
+        detail = (
+            f"\u5171\u540c\u51fa\u73b0\u5728\u7ae0\u8282 {', '.join(str(n) for n in chapters[:6])}"
+            if lang == "zh"
+            else f"Co-appear in chapters {', '.join(str(n) for n in chapters[:6])}"
+        )
+        relations.append(
+            {
+                "source": left,
+                "target": right,
+                "type": rel_type,
+                "label": "\u5171\u73b0" if lang == "zh" else "Co-appearance",
+                "detail": detail,
+                "chapters": chapters[:24],
+                "strength": max(0.45, min(0.9, 0.45 + 0.08 * count)),
+            }
+        )
+        if len(relations) >= 80:
+            break
+
+    if not relations and len(characters) >= 2:
+        first = str(characters[0]["id"])
+        second = str(characters[1]["id"])
+        shared = sorted(
+            set(characters[0].get("chapters") or []).intersection(
+                characters[1].get("chapters") or []
+            )
+        )
+        relations.append(
+            {
+                "source": first,
+                "target": second,
+                "type": "other",
+                "label": "\u5171\u4eab\u5f27\u5149" if lang == "zh" else "Shared arc",
+                "chapters": shared[:24],
+                "strength": 0.5,
+            }
+        )
+
+    return {
+        "characters": characters,
+        "relations": relations,
+    }
 
 
 def _compact_compiled_book_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -522,6 +1108,51 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 return normalized, None
             return normalized, "repair_empty_or_invalid_edges"
 
+        async def _repair_book_characters_json(
+            *,
+            source_text: str,
+            base_cfg: Any,
+            max_tokens: int,
+        ) -> tuple[dict[str, Any] | None, str | None]:
+            repair_cfg = replace(
+                base_cfg, temperature=0.1, max_tokens=min(int(max_tokens), 1100)
+            )
+            if (
+                repair_cfg.provider == "gemini"
+                and "packyapi.com" in (repair_cfg.base_url or "").lower()
+            ):
+                repair_cfg = resolve_llm_config(
+                    {
+                        "llm": {
+                            "provider": "openai",
+                            "temperature": 0.1,
+                            "max_tokens": min(int(max_tokens), 1100),
+                        }
+                    }
+                )
+
+            repair_system = (
+                "You are BookCharactersJSONRepairAgent. Convert the input into strict JSON only. "
+                'Do NOT add explanations. Output schema: {"characters":[{"id":string,"name":string,"aliases":[string],"gender":string,"identity":string,"personality":string,"plot":string,"chapters":[int],"related_events":[string]}],"relations":[{"source":string,"target":string,"type":string,"label":string,"detail":string,"chapters":[int],"strength":0..1}]}. '
+                "Allowed relation types: family, love, friend, enemy, master_servant, mentor, rival, ally, colleague, other. "
+                'If uncertain, return {"characters":[],"relations":[]} only.'
+            )
+            repair_user = f"RawModelOutput:\n{source_text[:12000]}"
+            repaired_text = await _generate_text_with_timeout(
+                system_prompt=repair_system,
+                user_prompt=repair_user,
+                cfg=repair_cfg,
+                timeout_s=90.0,
+                label="book_characters_repair",
+                attempt=1,
+            )
+            repaired_clean = strip_think_blocks(repaired_text).strip()
+            repaired_parsed = parse_json_loose(repaired_clean)
+            normalized, n_chars, n_rels = _normalize_characters_graph(repaired_parsed)
+            if normalized is not None and (n_chars > 0 or n_rels > 0):
+                return normalized, None
+            return normalized, "repair_empty_or_invalid_graph"
+
         def _is_model_unavailable_error(msg: str) -> bool:
             m = (msg or "").strip().lower()
             if not m:
@@ -584,6 +1215,204 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     continue
                 return model
             return current
+
+        def _structured_cfg(
+            base_cfg: LLMConfig, *, min_max_tokens: int, temperature: float = 0.2
+        ) -> LLMConfig:
+            try:
+                target_max_tokens = max(int(base_cfg.max_tokens), int(min_max_tokens))
+            except Exception:
+                target_max_tokens = int(min_max_tokens)
+            try:
+                target_temperature = min(float(base_cfg.temperature), float(temperature))
+            except Exception:
+                target_temperature = float(temperature)
+            return replace(
+                base_cfg,
+                temperature=max(0.0, target_temperature),
+                max_tokens=target_max_tokens,
+            )
+
+        def _clean_json_text(text: str) -> str:
+            return strip_think_blocks(text or "").strip()
+
+        def _openai_structured_fallback_cfg(
+            *, min_max_tokens: int, temperature: float = 0.2
+        ) -> LLMConfig | None:
+            fallback_settings = deep_merge(
+                project.settings or {},
+                {
+                    "llm": {
+                        "provider": "openai",
+                        "temperature": temperature,
+                        "max_tokens": min_max_tokens,
+                    }
+                },
+            )
+            fallback_cfg = resolve_llm_config(fallback_settings)
+            if not fallback_cfg.api_key:
+                return None
+            if (
+                fallback_cfg.provider == "openai"
+                and "packyapi.com" in (fallback_cfg.base_url or "").lower()
+            ):
+                fallback_cfg = replace(
+                    fallback_cfg,
+                    model="gpt-5.1-codex",
+                    wire_api="chat",
+                )
+            return _structured_cfg(
+                fallback_cfg,
+                min_max_tokens=min_max_tokens,
+                temperature=temperature,
+            )
+
+        def _openai_writer_fallback_cfg(
+            *, min_max_tokens: int, temperature: float = 0.6
+        ) -> LLMConfig | None:
+            fallback_settings = deep_merge(
+                project.settings or {},
+                {
+                    "llm": {
+                        "provider": "openai",
+                        "temperature": temperature,
+                        "max_tokens": min_max_tokens,
+                    }
+                },
+            )
+            fallback_cfg = resolve_llm_config(fallback_settings)
+            if not fallback_cfg.api_key:
+                return None
+            if (
+                fallback_cfg.provider == "openai"
+                and "packyapi.com" in (fallback_cfg.base_url or "").lower()
+            ):
+                fallback_cfg = replace(fallback_cfg, wire_api="chat")
+            return _structured_cfg(
+                fallback_cfg,
+                min_max_tokens=min_max_tokens,
+                temperature=temperature,
+            )
+
+        def _structured_agent_cfg(
+            base_cfg: LLMConfig, *, min_max_tokens: int, temperature: float = 0.2
+        ) -> tuple[LLMConfig, str | None]:
+            structured_cfg = _structured_cfg(
+                base_cfg,
+                min_max_tokens=min_max_tokens,
+                temperature=temperature,
+            )
+            if "packyapi.com" in (base_cfg.base_url or "").lower():
+                if base_cfg.provider == "gemini":
+                    openai_cfg = _openai_structured_fallback_cfg(
+                        min_max_tokens=min_max_tokens,
+                        temperature=temperature,
+                    )
+                    if openai_cfg is not None:
+                        return openai_cfg, "prefer_openai_structured_for_gemini_packy"
+                if base_cfg.provider == "openai" and str(base_cfg.model or "").lower().startswith("gpt-5.4"):
+                    openai_cfg = _openai_structured_fallback_cfg(
+                        min_max_tokens=min_max_tokens,
+                        temperature=temperature,
+                    )
+                    if openai_cfg is not None:
+                        return openai_cfg, "prefer_packy_openai_structured_fallback"
+            return structured_cfg, None
+
+        def _should_openai_fallback_structured_generate(
+            base_cfg: LLMConfig, err: str
+        ) -> bool:
+            return (
+                base_cfg.provider == "gemini"
+                and "packyapi.com" in (base_cfg.base_url or "").lower()
+                and (
+                    _is_retryable_gateway_error(err)
+                    or _is_model_unavailable_error(err)
+                )
+            )
+
+        async def _parse_or_repair_json(
+            *,
+            label: str,
+            raw_text: str,
+            schema_hint: str,
+            base_cfg: LLMConfig,
+            min_max_tokens: int,
+        ) -> tuple[Any, bool, str | None]:
+            cleaned = _clean_json_text(raw_text)
+            try:
+                return parse_json_loose(cleaned), False, None
+            except Exception:
+                pass
+
+            repair_cfg = _structured_cfg(
+                base_cfg, min_max_tokens=min_max_tokens, temperature=0.1
+            )
+            if (
+                base_cfg.provider == "gemini"
+                and "packyapi.com" in (base_cfg.base_url or "").lower()
+            ):
+                openai_cfg = _openai_structured_fallback_cfg(
+                    min_max_tokens=min_max_tokens, temperature=0.1
+                )
+                if openai_cfg is not None:
+                    repair_cfg = openai_cfg
+            repair_model = str(repair_cfg.model or "")
+            repair_system = (
+                f"You are {label}JSONRepairAgent. Convert the input into strict JSON only. "
+                "Do not add explanations, markdown fences, or commentary. "
+                f"Return JSON matching this schema shape:\n{schema_hint}"
+            )
+            repair_user = f"RawModelOutput:\n{cleaned[:12000]}"
+
+            try:
+                repaired_text = await _generate_text_with_timeout(
+                    system_prompt=repair_system,
+                    user_prompt=repair_user,
+                    cfg=repair_cfg,
+                    timeout_s=90.0,
+                    label=f"{label}_json_repair",
+                    attempt=1,
+                )
+            except LLMError as e:
+                if (
+                    repair_cfg.provider == "gemini"
+                    and "packyapi.com" in (repair_cfg.base_url or "").lower()
+                    and _is_model_unavailable_error(str(e))
+                ):
+                    repair_cfg = replace(
+                        repair_cfg,
+                        model=_choose_packy_gemini_rescue_model(
+                            str(repair_cfg.model or ""), str(e)
+                        ),
+                    )
+                    repair_model = str(repair_cfg.model or "")
+                    repaired_text = await _generate_text_with_timeout(
+                        system_prompt=repair_system,
+                        user_prompt=repair_user,
+                        cfg=repair_cfg,
+                        timeout_s=90.0,
+                        label=f"{label}_json_repair",
+                        attempt=2,
+                    )
+                else:
+                    raise
+
+            repaired_clean = _clean_json_text(repaired_text)
+            return parse_json_loose(repaired_clean), True, repair_model
+
+        def _is_suspicious_editor_output(original: str, candidate: str) -> bool:
+            w = original.strip()
+            e = candidate.strip()
+            if not e:
+                return True
+            if not re.search(r"(?m)^#\s+\S", candidate):
+                return True
+            if len(w) >= 400 and len(e) < int(len(w) * 0.65):
+                return True
+            if output_lang == "zh" and _CJK_RE.search(w) and not _CJK_RE.search(e):
+                return True
+            return False
 
         def mark_run_failed(msg: str) -> None:
             with get_session() as s3:
@@ -710,6 +1539,17 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             max_consecutive_failures = clamp_int(
                 payload.get("max_consecutive_failures"), 4, 2, 20
             )
+            requested_segment_indices = _coerce_int_list(
+                payload.get("segment_indices")
+                if payload.get("segment_indices") is not None
+                else (
+                    payload.get("chapter_indices")
+                    if payload.get("chapter_indices") is not None
+                    else payload.get("chunk_indices")
+                ),
+                max_items=20_000,
+            )
+            requested_segment_index_set = set(requested_segment_indices)
 
             # Keep max_tokens small; this is a batch process and should be cost-safe.
             summary_max_tokens = clamp_int(
@@ -785,6 +1625,9 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             consecutive_failures = 0
             aborted_early = False
             abort_msg: str | None = None
+            failed_index_set: set[int] = set()
+            failed_indices: list[int] = []
+            failed_items: list[dict[str, Any]] = []
 
             summarizer_cfg = replace(
                 llm_cfg(),
@@ -833,6 +1676,25 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     return set()
 
             existing_part_indices: set[int] = load_existing_part_indices(segment_mode)
+
+            def record_failed_segment(
+                *,
+                idx: int,
+                error: str,
+                chapter_label: str | None = None,
+                chapter_title: str | None = None,
+            ) -> None:
+                if idx <= 0 or idx in failed_index_set:
+                    return
+                failed_index_set.add(int(idx))
+                failed_indices.append(int(idx))
+                item: dict[str, Any] = {"index": int(idx)}
+                if chapter_label:
+                    item["chapter_label"] = _clip_text(chapter_label, 120)
+                if chapter_title:
+                    item["chapter_title"] = _clip_text(chapter_title, 160)
+                item["error"] = _clip_text(error, 240) or "unknown_error"
+                failed_items.append(item)
 
             async def summarize_segment(
                 *,
@@ -974,6 +1836,12 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 except LLMError as e:
                     last_llm_error = str(e)
                     failed += 1
+                    record_failed_segment(
+                        idx=idx,
+                        error=str(e),
+                        chapter_label=chapter_label,
+                        chapter_title=chapter_title,
+                    )
                     yield emit(
                         "agent_output",
                         "BookSummarizer",
@@ -988,6 +1856,12 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 except Exception as e:
                     last_llm_error = f"llm_failed:{type(e).__name__}"
                     failed += 1
+                    record_failed_segment(
+                        idx=idx,
+                        error=f"llm_failed:{type(e).__name__}",
+                        chapter_label=chapter_label,
+                        chapter_title=chapter_title,
+                    )
                     yield emit(
                         "agent_output",
                         "BookSummarizer",
@@ -1029,7 +1903,10 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     base_record["original_chars"] = int(original_chars)
 
                 if isinstance(parsed, dict):
-                    record = {**base_record, "data": parsed}
+                    record = {
+                        **base_record,
+                        "data": _normalize_book_summary_data(parsed),
+                    }
                 else:
                     record = {
                         **base_record,
@@ -1151,6 +2028,18 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                             max_chapters_i = int(len(chapters_raw))
                         if max_chapters_i > 0 and len(chapters_use) > max_chapters_i:
                             chapters_use = chapters_use[:max_chapters_i]
+                        if requested_segment_index_set:
+                            filtered_chapters: list[dict[str, Any]] = []
+                            for i, ch in enumerate(chapters_use, start=1):
+                                if not isinstance(ch, dict):
+                                    continue
+                                try:
+                                    chapter_idx = int(ch.get("index") or i) or i
+                                except Exception:
+                                    chapter_idx = i
+                                if chapter_idx in requested_segment_index_set:
+                                    filtered_chapters.append(ch)
+                            chapters_use = filtered_chapters
 
                         total_parts = len(chapters_use)
                         yield emit(
@@ -1276,9 +2165,15 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                             overlap_chars=overlap_chars,
                             max_chunks=max_chunks,
                         )
+                        if not requested_segment_index_set
+                        or int(_idx) in requested_segment_index_set
                     )
                 except Exception:
-                    total_parts = int(max_chunks)
+                    total_parts = (
+                        len(requested_segment_indices)
+                        if requested_segment_indices
+                        else int(max_chunks)
+                    )
                 total_parts = max(0, min(int(total_parts), int(max_chunks)))
 
                 yield emit(
@@ -1299,6 +2194,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     overlap_chars=overlap_chars,
                     max_chunks=max_chunks,
                 ):
+                    if requested_segment_index_set and int(idx) not in requested_segment_index_set:
+                        continue
                     end_char = int(start_char) + len(chunk_text or "")
                     good_before = int(created + skipped)
                     failed_before = int(failed)
@@ -1363,6 +2260,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     "processed": processed,
                     "created": created,
                     "failed": failed,
+                    "failed_indices": failed_indices,
+                    "failed_items": failed_items,
                     "skipped": skipped,
                     "json_parse_failed": json_parse_failed,
                     "aborted_early": aborted_early,
@@ -1374,8 +2273,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         "max_chunks": max_chunks,
                         "max_chapters": max_chapters,
                         "segment_max_chars": segment_max_chars,
+                        "summary_chars": summary_max_chars,
+                        "summary_max_tokens": summary_max_tokens,
                         "replace_existing": replace_existing,
                         "max_consecutive_failures": max_consecutive_failures,
+                        "segment_indices": requested_segment_indices,
                     },
                 },
             )
@@ -1518,6 +2420,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     continue
 
                 if isinstance(data_summary, dict):
+                    data_summary = _normalize_book_summary_data(data_summary)
                     summaries.append(
                         {
                             "segment_mode": part_kind,
@@ -2100,6 +3003,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     continue
 
                 if isinstance(data_summary, dict):
+                    data_summary = _normalize_book_summary_data(data_summary)
                     rel_parts.append(
                         {
                             "segment_mode": part_kind,
@@ -2113,6 +3017,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                             ),
                             "locations": _safe_list(data_summary.get("locations"), 6),
                             "open_loops": _safe_list(data_summary.get("open_loops"), 8),
+                            "themes": _safe_list(data_summary.get("themes_list"), 6),
                         }
                     )
                 else:
@@ -2127,6 +3032,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                             "characters": [],
                             "locations": [],
                             "open_loops": [],
+                            "themes": [],
                         }
                     )
 
@@ -2137,6 +3043,37 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     for s in rel_parts
                     if str(s.get("segment_mode") or "") == "chapter"
                 ]
+
+            known_character_names: list[str] = []
+            for part in rel_parts:
+                known_character_names.extend(_safe_list(part.get("characters"), 12))
+                known_character_names.extend(
+                    _infer_character_names_from_title(
+                        part.get("chapter_title"), max_items=8
+                    )
+                )
+            known_character_names = _dedupe_keep_order(
+                known_character_names, max_items=96
+            )
+            for part in rel_parts:
+                inferred_names = _infer_character_names_from_text(
+                    " ".join(
+                        x
+                        for x in (
+                            _safe_str(part.get("chapter_title"), 160),
+                            _safe_str(part.get("summary"), 600),
+                            "；".join(_safe_list(part.get("key_events"), 6)),
+                        )
+                        if x
+                    ),
+                    known_names=known_character_names,
+                    max_items=12,
+                )
+                if inferred_names:
+                    part["characters"] = _dedupe_keep_order(
+                        _safe_list(part.get("characters"), 12) + inferred_names,
+                        max_items=12,
+                    )
 
             rel_parts.sort(key=lambda x: int(x.get("index") or 0))
             total = len(rel_parts)
@@ -2162,9 +3099,15 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 ke = _safe_list(p.get("key_events"), 6)
                 if ke:
                     out["key_events"] = ke
+                chs = _safe_list(p.get("characters"), 10)
+                if chs:
+                    out["characters"] = chs
                 ol = _safe_list(p.get("open_loops"), 8)
                 if ol:
                     out["open_loops"] = ol
+                themes = _safe_list(p.get("themes"), 6)
+                if themes:
+                    out["themes"] = themes
                 return out
 
             parts_compact = [compact_for_relations(p) for p in rel_parts]
@@ -2184,55 +3127,143 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 edges: list[dict[str, Any]] = []
                 if len(sel) < 2:
                     return edges
-                for i in range(len(sel)):
-                    a = sel[i]
-                    ai = int(a.get("index") or 0)
-                    if ai <= 0:
-                        continue
-                    a_terms = set(
-                        _safe_list(a.get("key_events"), 6)
-                        + _safe_list(a.get("open_loops"), 8)
+
+                def add_edge(
+                    src: int, dst: int, rel_type: str, label: str, strength: float
+                ) -> None:
+                    if src <= 0 or dst <= 0 or src == dst:
+                        return
+                    edges.append(
+                        {
+                            "from": src,
+                            "to": dst,
+                            "type": rel_type,
+                            "label": _clip_text(label, 36),
+                            "strength": max(0.0, min(1.0, float(strength))),
+                        }
                     )
-                    for j in range(i + 1, len(sel)):
-                        b = sel[j]
-                        bi = int(b.get("index") or 0)
-                        if bi <= 0 or bi == ai:
+
+                character_occurs: dict[str, list[int]] = defaultdict(list)
+                loop_occurs: dict[str, list[int]] = defaultdict(list)
+                theme_occurs: dict[str, list[int]] = defaultdict(list)
+
+                for part in sel:
+                    idx = int(part.get("index") or 0)
+                    if idx <= 0:
+                        continue
+                    for name in _safe_list(part.get("characters"), 10):
+                        character_occurs[name].append(idx)
+                    for term in _safe_list(part.get("open_loops"), 8) + _safe_list(
+                        part.get("key_events"), 6
+                    ):
+                        loop_occurs[_clip_text(term, 36)].append(idx)
+                    for theme in _safe_list(part.get("themes"), 6):
+                        theme_occurs[_clip_text(theme, 36)].append(idx)
+
+                for name, occ in sorted(
+                    character_occurs.items(), key=lambda kv: (-len(set(kv[1])), kv[0])
+                ):
+                    ordered = sorted(set(occ))
+                    if len(ordered) < 2:
+                        continue
+                    pair_count = 0
+                    for src, dst in zip(ordered, ordered[1:]):
+                        if dst - src <= 0 or dst - src > 10:
                             continue
-                        b_terms = set(
-                            _safe_list(b.get("key_events"), 6)
-                            + _safe_list(b.get("open_loops"), 8)
+                        add_edge(
+                            src,
+                            dst,
+                            "character_arc",
+                            name,
+                            0.68 if (dst - src) <= 4 else 0.62,
                         )
-                        common = [x for x in a_terms if x in b_terms]
-                        if not common and (bi - ai) < 3:
+                        pair_count += 1
+                        if pair_count >= 3:
+                            break
+                    if len(ordered) >= 3 and (ordered[-1] - ordered[0]) >= 6:
+                        add_edge(ordered[0], ordered[-1], "payoff", name, 0.64)
+
+                for term, occ in sorted(
+                    loop_occurs.items(), key=lambda kv: (-len(set(kv[1])), kv[0])
+                ):
+                    ordered = sorted(set(occ))
+                    if len(ordered) < 2:
+                        continue
+                    add_edge(
+                        ordered[0],
+                        ordered[1],
+                        "foreshadow",
+                        term,
+                        0.72 if len(ordered) >= 3 else 0.66,
+                    )
+                    if len(ordered) >= 3:
+                        add_edge(ordered[1], ordered[-1], "payoff", term, 0.70)
+
+                for theme, occ in sorted(
+                    theme_occurs.items(), key=lambda kv: (-len(set(kv[1])), kv[0])
+                ):
+                    ordered = sorted(set(occ))
+                    if len(ordered) < 2:
+                        continue
+                    add_edge(ordered[0], ordered[-1], "theme", theme, 0.58)
+
+                if not edges:
+                    for i in range(len(sel)):
+                        a = sel[i]
+                        ai = int(a.get("index") or 0)
+                        if ai <= 0:
                             continue
-                        label = (common[0] if common else "long_range")[:36]
-                        strength = 0.6 if common else 0.52
-                        rel_type = "payoff" if common else "structure"
-                        edges.append(
-                            {
-                                "from": ai,
-                                "to": bi,
-                                "type": rel_type,
-                                "label": label,
-                                "strength": strength,
-                            }
-                        )
-                        if len(edges) >= 60:
-                            return edges
+                        a_chars = set(_safe_list(a.get("characters"), 8))
+                        if not a_chars:
+                            continue
+                        for j in range(i + 1, min(len(sel), i + 6)):
+                            b = sel[j]
+                            bi = int(b.get("index") or 0)
+                            if bi <= 0 or bi == ai:
+                                continue
+                            shared_chars = sorted(
+                                a_chars.intersection(_safe_list(b.get("characters"), 8))
+                            )
+                            if not shared_chars:
+                                continue
+                            add_edge(ai, bi, "parallel", shared_chars[0], 0.56)
+                            if len(edges) >= 40:
+                                break
+                        if len(edges) >= 40:
+                            break
+
                 if not edges:
                     first = int(sel[0].get("index") or 0)
                     last = int(sel[-1].get("index") or 0)
                     if first > 0 and last > 0 and first != last:
-                        edges.append(
-                            {
-                                "from": first,
-                                "to": last,
-                                "type": "structure",
-                                "label": "book_progression",
-                                "strength": 0.5,
-                            }
-                        )
-                return edges
+                        add_edge(first, last, "structure", "book_progression", 0.5)
+
+                if len(edges) <= 1:
+                    return edges
+                ranked = sorted(
+                    edges,
+                    key=lambda e: (
+                        -float(e.get("strength") or 0),
+                        int(e.get("from") or 0),
+                        int(e.get("to") or 0),
+                        str(e.get("label") or ""),
+                    ),
+                )
+                deduped: list[dict[str, Any]] = []
+                seen_pairs: set[tuple[int, int, str]] = set()
+                for edge in ranked:
+                    key = (
+                        int(edge.get("from") or 0),
+                        int(edge.get("to") or 0),
+                        str(edge.get("type") or "relation"),
+                    )
+                    if key in seen_pairs:
+                        continue
+                    seen_pairs.add(key)
+                    deduped.append(edge)
+                    if len(deduped) >= 60:
+                        break
+                return deduped
 
             if total <= 60:
                 selected = parts_compact
@@ -2504,9 +3535,67 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     if parse_err is None:
                         parse_err = f"repair_failed:{type(e).__name__}"
 
-            if relation_edges_count <= 0:
-                heuristic_edges = heuristic_relations_from_selected(selected)
-                if heuristic_edges:
+            def _relation_edges_list(obj: Any) -> list[dict[str, Any]]:
+                if not isinstance(obj, dict) or not isinstance(obj.get("edges"), list):
+                    return []
+                return [e for e in obj.get("edges") or [] if isinstance(e, dict)]
+
+            def _has_meaningful_relation_edges(edges: list[dict[str, Any]]) -> bool:
+                for edge in edges:
+                    edge_type = str(edge.get("type") or "").strip().lower()
+                    label = str(edge.get("label") or "").strip().lower()
+                    if edge_type and edge_type != "structure":
+                        return True
+                    if label and label != "book_progression":
+                        return True
+                return False
+
+            def _merge_relation_edges(
+                primary: list[dict[str, Any]], secondary: list[dict[str, Any]]
+            ) -> list[dict[str, Any]]:
+                best: dict[tuple[int, int, str, str], dict[str, Any]] = {}
+                for group in (primary, secondary):
+                    for raw_edge in group:
+                        normalized_group, _ = _normalize_relations_graph(
+                            {"edges": [raw_edge]}
+                        )
+                        if normalized_group is None:
+                            continue
+                        for edge in normalized_group.get("edges") or []:
+                            key = (
+                                int(edge.get("from") or 0),
+                                int(edge.get("to") or 0),
+                                str(edge.get("type") or "relation"),
+                                str(edge.get("label") or ""),
+                            )
+                            prev = best.get(key)
+                            if prev is None or float(edge.get("strength") or 0) > float(
+                                prev.get("strength") or 0
+                            ):
+                                best[key] = edge
+                return sorted(
+                    best.values(),
+                    key=lambda edge: (
+                        -float(edge.get("strength") or 0),
+                        int(edge.get("from") or 0),
+                        int(edge.get("to") or 0),
+                        str(edge.get("type") or ""),
+                        str(edge.get("label") or ""),
+                    ),
+                )[:60]
+
+            heuristic_edges = heuristic_relations_from_selected(selected)
+            parsed_edges = _relation_edges_list(parsed)
+            parsed_has_signal = _has_meaningful_relation_edges(parsed_edges)
+            heuristic_has_signal = _has_meaningful_relation_edges(heuristic_edges)
+
+            if (relation_edges_count <= 0 or not parsed_has_signal) and heuristic_edges:
+                if heuristic_has_signal or relation_edges_count <= 0:
+                    replace_reason = (
+                        "heuristic_fallback"
+                        if relation_edges_count <= 0
+                        else "heuristic_replace_generic"
+                    )
                     parsed = {"edges": heuristic_edges}
                     relation_edges_count = len(heuristic_edges)
                     parse_err = None
@@ -2514,7 +3603,21 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         "agent_output",
                         "BookRelations",
                         {
-                            "step": "heuristic_fallback",
+                            "step": replace_reason,
+                            "soft_fail": True,
+                            "edges": relation_edges_count,
+                        },
+                    )
+            elif parsed_has_signal and heuristic_has_signal and relation_edges_count < 6:
+                merged_edges = _merge_relation_edges(parsed_edges, heuristic_edges)
+                if len(merged_edges) > relation_edges_count:
+                    parsed = {"edges": merged_edges}
+                    relation_edges_count = len(merged_edges)
+                    yield emit(
+                        "agent_output",
+                        "BookRelations",
+                        {
+                            "step": "heuristic_enhance",
                             "soft_fail": True,
                             "edges": relation_edges_count,
                         },
@@ -2704,6 +3807,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     continue
 
                 if isinstance(data_summary, dict):
+                    data_summary = _normalize_book_summary_data(data_summary)
                     char_parts.append(
                         {
                             "segment_mode": part_kind,
@@ -2741,6 +3845,37 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     for s in char_parts
                     if str(s.get("segment_mode") or "") == "chapter"
                 ]
+
+            known_character_names: list[str] = []
+            for part in char_parts:
+                known_character_names.extend(_safe_list(part.get("characters"), 16))
+                known_character_names.extend(
+                    _infer_character_names_from_title(
+                        part.get("chapter_title"), max_items=8
+                    )
+                )
+            known_character_names = _dedupe_keep_order(
+                known_character_names, max_items=128
+            )
+            for part in char_parts:
+                inferred_names = _infer_character_names_from_text(
+                    " ".join(
+                        x
+                        for x in (
+                            _safe_str(part.get("chapter_title"), 160),
+                            _safe_str(part.get("summary"), 600),
+                            "；".join(_safe_list(part.get("key_events"), 8)),
+                        )
+                        if x
+                    ),
+                    known_names=known_character_names,
+                    max_items=16,
+                )
+                if inferred_names:
+                    part["characters"] = _dedupe_keep_order(
+                        _safe_list(part.get("characters"), 16) + inferred_names,
+                        max_items=16,
+                    )
 
             char_parts.sort(key=lambda x: int(x.get("index") or 0))
             total = len(char_parts)
@@ -3007,8 +4142,15 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             cleaned = strip_think_blocks(out).strip()
             parsed: Any | None = None
             parse_err: str | None = None
+            char_count = 0
+            rel_count = 0
             try:
                 parsed = parse_json_loose(cleaned)
+                normalized_graph, char_count, rel_count = _normalize_characters_graph(
+                    parsed
+                )
+                if normalized_graph is not None:
+                    parsed = normalized_graph
             except Exception as e:
                 parse_err = type(e).__name__
                 yield emit(
@@ -3019,6 +4161,73 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         "soft_fail": True,
                     },
                 )
+
+            if parse_err or char_count <= 0 or rel_count <= 0:
+                try:
+                    yield emit(
+                        "tool_call",
+                        "BookCharacters",
+                        {
+                            "tool": "llm.generate_text",
+                            "provider": char_cfg.provider,
+                            "model": char_cfg.model,
+                            "max_tokens": min(int(char_cfg.max_tokens), 1100),
+                            "note": "repair_json_after_parse_fail_or_incomplete_graph",
+                        },
+                    )
+                    repaired, repaired_err = await _repair_book_characters_json(
+                        source_text=cleaned,
+                        base_cfg=char_cfg,
+                        max_tokens=min(int(char_cfg.max_tokens), 1100),
+                    )
+                    repaired_graph, repaired_chars, repaired_rels = _normalize_characters_graph(
+                        repaired
+                    )
+                    if repaired_graph is not None and (
+                        repaired_chars > 0 or repaired_rels > 0
+                    ):
+                        parsed = repaired_graph
+                        char_count = repaired_chars
+                        rel_count = repaired_rels
+                        parse_err = None
+                    elif parse_err is None:
+                        parse_err = repaired_err or "repair_failed"
+                except Exception as e:
+                    if parse_err is None:
+                        parse_err = f"repair_failed:{type(e).__name__}"
+
+            if char_count <= 0 or rel_count <= 0:
+                heuristic_graph = _heuristic_characters_graph_from_summaries(
+                    selected, lang=output_lang
+                )
+                heuristic_norm, heuristic_chars, heuristic_rels = _normalize_characters_graph(
+                    heuristic_graph
+                )
+                if heuristic_norm is not None and heuristic_chars > 0:
+                    if isinstance(parsed, dict) and char_count > 0 and rel_count <= 0:
+                        parsed = {
+                            "characters": parsed.get("characters")
+                            if isinstance(parsed.get("characters"), list)
+                            else (heuristic_norm.get("characters") or []),
+                            "relations": heuristic_norm.get("relations") or [],
+                        }
+                        char_count = len(parsed.get("characters") or [])
+                        rel_count = len(parsed.get("relations") or [])
+                    else:
+                        parsed = heuristic_norm
+                        char_count = heuristic_chars
+                        rel_count = heuristic_rels
+                    parse_err = None
+                    yield emit(
+                        "agent_output",
+                        "BookCharacters",
+                        {
+                            "step": "heuristic_fallback",
+                            "soft_fail": True,
+                            "characters": char_count,
+                            "relations": rel_count,
+                        },
+                    )
 
             record: dict[str, Any] = {
                 "book_source_id": source_id,
@@ -3041,7 +4250,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 tags.append(f"book_file:{filename_tag}")
             kb_tags = ",".join(tags)
             title = (
-                f"人物关系图谱（{filename[:40]}）"
+                f"\u4eba\u7269\u5173\u7cfb\u56fe\u8c31\uff08{filename[:40]}\uff09"
                 if output_lang == "zh"
                 else f"Character graph ({filename[:40]})"
             )
@@ -3062,13 +4271,6 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 s_char.commit()
                 s_char.refresh(kb)
 
-            char_count = 0
-            rel_count = 0
-            if isinstance(parsed, dict):
-                if isinstance(parsed.get("characters"), list):
-                    char_count = len(parsed.get("characters") or [])
-                if isinstance(parsed.get("relations"), list):
-                    rel_count = len(parsed.get("relations") or [])
 
             yield emit(
                 "artifact",
@@ -3155,7 +4357,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 user = (
                     "CurrentSettingsJSON:\n"
                     f"{json_dumps(project.settings or {})}\n\n"
-                    "Return a JSON object with keys you want to add. Keep it small and practical.\n"
+                    "Return a JSON object with keys you want to add. Keep it small and practical. "
+                    "Do not use markdown fences. Keep strings short and only fill fields that are clearly missing.\n"
                     "Suggested schema (only include what is missing):\n"
                     "{\n"
                     '  "story": {\n'
@@ -3168,30 +4371,81 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     '  "writing": { "chapter_count": 10, "chapter_words": 1200 }\n'
                     "}\n"
                 )
-                cfg = llm_cfg()
+                cfg, cfg_note = _structured_agent_cfg(
+                    llm_cfg(), min_max_tokens=640, temperature=0.2
+                )
+                tool_call_data = {
+                    "tool": "llm.generate_text",
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                }
+                if cfg_note:
+                    tool_call_data["note"] = cfg_note
                 yield emit(
                     "tool_call",
                     "ConfigAutofill",
-                    {
-                        "tool": "llm.generate_text",
-                        "provider": cfg.provider,
-                        "model": cfg.model,
-                    },
+                    tool_call_data,
                 )
                 yield emit(
                     "agent_output",
                     "ConfigAutofill",
                     {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
                 )
-                autofill_text = await generate_text(
-                    system_prompt=system, user_prompt=user, cfg=cfg
-                )
+                try:
+                    autofill_text = await generate_text(
+                        system_prompt=system, user_prompt=user, cfg=cfg
+                    )
+                except LLMError as e:
+                    msg = str(e)
+                    fallback_cfg = (
+                        _openai_structured_fallback_cfg(
+                            min_max_tokens=640, temperature=0.2
+                        )
+                        if _should_openai_fallback_structured_generate(cfg, msg)
+                        else None
+                    )
+                    if fallback_cfg is None:
+                        raise
+                    yield emit(
+                        "tool_call",
+                        "ConfigAutofill",
+                        {
+                            "tool": "llm.generate_text",
+                            "provider": fallback_cfg.provider,
+                            "model": fallback_cfg.model,
+                            "max_tokens": fallback_cfg.max_tokens,
+                            "note": "fallback_openai_structured",
+                        },
+                    )
+                    autofill_text = await generate_text(
+                        system_prompt=system,
+                        user_prompt=user,
+                        cfg=fallback_cfg,
+                    )
+                    cfg = fallback_cfg
                 yield emit(
                     "agent_output",
                     "ConfigAutofill",
                     {"step": "parse_json", "step_index": 3, "step_total": 4},
                 )
-                parsed = parse_json_loose(autofill_text)
+                parsed, repaired_json, repair_model = await _parse_or_repair_json(
+                    label="config_autofill",
+                    raw_text=autofill_text,
+                    schema_hint='{"story":{"genre":"...","logline":"..."},"writing":{"chapter_count":10,"chapter_words":1200}}',
+                    base_cfg=cfg,
+                    min_max_tokens=640,
+                )
+                if repaired_json:
+                    yield emit(
+                        "agent_output",
+                        "ConfigAutofill",
+                        {
+                            "step": "repair_json",
+                            "step_index": 3,
+                            "step_total": 4,
+                            "model": repair_model,
+                        },
+                    )
                 if isinstance(parsed, dict):
                     patch = parsed
                     with get_session() as s4:
@@ -3304,43 +4558,97 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     f"{lang_hint_json} "
                     "Output JSON only."
                 )
+                extractor_excerpt = _clip_text(source_text, 6000)
                 user = (
                     "Extract the following fields:\n"
                     "{\n"
-                    '  "summary_so_far": "...",\n'
-                    '  "characters": [ {"name":"...","current_status":"...","relationships":"..."} ],\n'
-                    '  "world": "...",\n'
-                    '  "timeline": [ {"event":"...","when":"..."} ],\n'
-                    '  "open_loops": ["..."],\n'
+                    '  "summary_so_far": "<=220 chars",\n'
+                    '  "characters": [ {"name":"...","current_status":"<=80 chars","relationships":"<=100 chars"} ],\n'
+                    '  "world": "<=160 chars",\n'
+                    '  "timeline": [ {"event":"<=80 chars","when":"<=40 chars"} ],\n'
+                    '  "open_loops": ["<=60 chars"],\n'
                     '  "style_profile": {"pov":"...","tense":"...","tone":"..."}\n'
                     "}\n\n"
+                    "Keep it compact: max 8 characters, max 6 timeline items, max 6 open loops. "
+                    "No markdown fences, no commentary.\n\n"
                     "Manuscript (excerpt):\n"
-                    f"{source_text}\n"
+                    f"{extractor_excerpt}\n"
                 )
-                cfg = llm_cfg()
+                cfg, cfg_note = _structured_agent_cfg(
+                    llm_cfg(), min_max_tokens=900, temperature=0.2
+                )
+                tool_call_data = {
+                    "tool": "llm.generate_text",
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                }
+                if cfg_note:
+                    tool_call_data["note"] = cfg_note
                 yield emit(
                     "tool_call",
                     "Extractor",
-                    {
-                        "tool": "llm.generate_text",
-                        "provider": cfg.provider,
-                        "model": cfg.model,
-                    },
+                    tool_call_data,
                 )
                 yield emit(
                     "agent_output",
                     "Extractor",
                     {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
                 )
-                extracted_text = await generate_text(
-                    system_prompt=system, user_prompt=user, cfg=cfg
-                )
+                try:
+                    extracted_text = await generate_text(
+                        system_prompt=system, user_prompt=user, cfg=cfg
+                    )
+                except LLMError as e:
+                    msg = str(e)
+                    fallback_cfg = (
+                        _openai_structured_fallback_cfg(
+                            min_max_tokens=900, temperature=0.2
+                        )
+                        if _should_openai_fallback_structured_generate(cfg, msg)
+                        else None
+                    )
+                    if fallback_cfg is None:
+                        raise
+                    yield emit(
+                        "tool_call",
+                        "Extractor",
+                        {
+                            "tool": "llm.generate_text",
+                            "provider": fallback_cfg.provider,
+                            "model": fallback_cfg.model,
+                            "max_tokens": fallback_cfg.max_tokens,
+                            "note": "fallback_openai_structured",
+                        },
+                    )
+                    extracted_text = await generate_text(
+                        system_prompt=system,
+                        user_prompt=user,
+                        cfg=fallback_cfg,
+                    )
+                    cfg = fallback_cfg
                 yield emit(
                     "agent_output",
                     "Extractor",
                     {"step": "parse_json", "step_index": 3, "step_total": 4},
                 )
-                parsed = parse_json_loose(extracted_text)
+                parsed, repaired_json, repair_model = await _parse_or_repair_json(
+                    label="extractor",
+                    raw_text=extracted_text,
+                    schema_hint='{"summary_so_far":"...","characters":[{"name":"...","current_status":"...","relationships":"..."}],"world":"...","timeline":[{"event":"...","when":"..."}],"open_loops":["..."],"style_profile":{"pov":"...","tense":"...","tone":"..."}}',
+                    base_cfg=cfg,
+                    min_max_tokens=900,
+                )
+                if repaired_json:
+                    yield emit(
+                        "agent_output",
+                        "Extractor",
+                        {
+                            "step": "repair_json",
+                            "step_index": 3,
+                            "step_total": 4,
+                            "model": repair_model,
+                        },
+                    )
                 if isinstance(parsed, dict):
                     story_state = parsed
                     with get_session() as s4b:
@@ -3402,6 +4710,11 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
         except Exception:
             pass
         chapter_words = max(200, min(10_000, int(chapter_words)))
+        try:
+            chapter_index = int(payload.get("chapter_index") or 1)
+        except Exception:
+            chapter_index = 1
+        chapter_index = max(1, chapter_index)
 
         # For batch generation, UI may call Outliner once and then run many chapters
         # with skip_outliner=true to avoid repeated outline calls.
@@ -3433,76 +4746,100 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 else:
                     lang_user = "Language requirement: Use English for all natural language fields.\n\n"
                     example = '{ "chapters": [ {"index":1,"title":"...","summary":"...","goal":"..."} ] }'
+                target_desc = (
+                    f"Target chapter index: {chapter_index}\n"
+                    "Return exactly ONE concise chapter plan for the target chapter only.\n\n"
+                    if kind in {"chapter", "continue"}
+                    else f"Target chapter_count: {chapter_count}\n\n"
+                )
                 user = (
                     f"{lang_user}"
                     f"Story info:\n{json_dumps(story)}\n\n"
                     f"StoryState (if any):\n{json_dumps(story_state or {})}\n\n"
-                    f"Target chapter_count: {chapter_count}\n\n"
+                    f"{target_desc}"
                     "Output JSON in the form:\n"
                     f"{example}\n"
                 )
-                cfg = llm_cfg()
+                cfg, cfg_note = _structured_agent_cfg(
+                    llm_cfg(),
+                    min_max_tokens=480 if kind in {"chapter", "continue"} else 900,
+                    temperature=0.2,
+                )
+                tool_call_data = {
+                    "tool": "llm.generate_text",
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                }
+                if cfg_note:
+                    tool_call_data["note"] = cfg_note
                 yield emit(
                     "tool_call",
                     "Outliner",
-                    {
-                        "tool": "llm.generate_text",
-                        "provider": cfg.provider,
-                        "model": cfg.model,
-                    },
+                    tool_call_data,
                 )
                 yield emit(
                     "agent_output",
                     "Outliner",
                     {"step": "llm.generate_text", "step_index": 2, "step_total": 5},
                 )
-                outline_text = await generate_text(
-                    system_prompt=system, user_prompt=user, cfg=cfg
-                )
                 try:
-                    yield emit(
-                        "agent_output",
-                        "Outliner",
-                        {"step": "parse_json", "step_index": 3, "step_total": 5},
+                    outline_text = await generate_text(
+                        system_prompt=system, user_prompt=user, cfg=cfg
                     )
-                    outline = parse_json_loose(outline_text)
-                except Exception:
-                    # Retry once with stricter guidance (some gateways sometimes
-                    # prepend chatter or truncate JSON).
-                    cfg_retry = cfg
-                    if (
-                        cfg.provider == "gemini"
-                        and "packyapi.com" in (cfg.base_url or "").lower()
-                    ):
-                        cfg_retry = replace(
-                            cfg_retry,
-                            model=_choose_packy_gemini_rescue_model(
-                                str(cfg_retry.model or ""), "json_parse_retry"
+                except LLMError as e:
+                    msg = str(e)
+                    fallback_cfg = (
+                        _openai_structured_fallback_cfg(
+                            min_max_tokens=(
+                                480 if kind in {"chapter", "continue"} else 900
                             ),
+                            temperature=0.2,
                         )
-                    cfg_retry = replace(cfg_retry, temperature=0.2)
+                        if _should_openai_fallback_structured_generate(cfg, msg)
+                        else None
+                    )
+                    if fallback_cfg is None:
+                        raise
                     yield emit(
                         "tool_call",
                         "Outliner",
                         {
                             "tool": "llm.generate_text",
-                            "provider": cfg_retry.provider,
-                            "model": cfg_retry.model,
-                            "note": "retry_parse_json",
+                            "provider": fallback_cfg.provider,
+                            "model": fallback_cfg.model,
+                            "max_tokens": fallback_cfg.max_tokens,
+                            "note": "fallback_openai_structured",
                         },
                     )
-                    outline_text2 = await generate_text(
+                    outline_text = await generate_text(
                         system_prompt=system,
-                        user_prompt=user
-                        + "\n\nIMPORTANT: Output JSON only. No markdown, no commentary, no code fences.",
-                        cfg=cfg_retry,
+                        user_prompt=user,
+                        cfg=fallback_cfg,
                     )
+                    cfg = fallback_cfg
+                yield emit(
+                    "agent_output",
+                    "Outliner",
+                    {"step": "parse_json", "step_index": 3, "step_total": 5},
+                )
+                outline, repaired_json, repair_model = await _parse_or_repair_json(
+                    label="outliner",
+                    raw_text=outline_text,
+                    schema_hint='{"chapters":[{"index":1,"title":"...","summary":"...","goal":"..."}]}',
+                    base_cfg=cfg,
+                    min_max_tokens=480 if kind in {"chapter", "continue"} else 900,
+                )
+                if repaired_json:
                     yield emit(
                         "agent_output",
                         "Outliner",
-                        {"step": "parse_json", "step_index": 3, "step_total": 5},
+                        {
+                            "step": "repair_json",
+                            "step_index": 3,
+                            "step_total": 5,
+                            "model": repair_model,
+                        },
                     )
-                    outline = parse_json_loose(outline_text2)
                 # Some code-first models may still default to English. If we asked for zh,
                 # do a single best-effort translation pass for the natural language fields.
                 if (
@@ -3637,11 +4974,6 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             return
 
         # ---- Chapter writing ----
-        try:
-            chapter_index = int(payload.get("chapter_index") or 1)
-        except Exception:
-            chapter_index = 1
-        chapter_index = max(1, chapter_index)
 
         story_outline = (
             ((project.settings or {}).get("story") or {}).get("outline")
@@ -4246,8 +5578,9 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     system_prompt=system, user_prompt=user_prompt, cfg=cfg
                 )
             except LLMError as e:
-                # Rescue path for flaky gateways: retry once with a smaller prompt
-                # and (for PackyAPI Gemini) a more available flash model.
+                # Rescue path for flaky gateways: retry with a smaller prompt first
+                # on the SAME selected model; only switch models when the gateway
+                # reports model-unavailable style errors.
                 msg = str(e)
                 retryable = bool(
                     kind in {"chapter", "continue", "book_continue"}
@@ -4256,20 +5589,7 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 if not retryable:
                     raise
 
-                retry_cfg = cfg
-                if (
-                    retry_cfg.provider == "gemini"
-                    and "packyapi.com" in (retry_cfg.base_url or "").lower()
-                ):
-                    retry_cfg = replace(
-                        retry_cfg,
-                        model=_choose_packy_gemini_rescue_model(
-                            str(retry_cfg.model or ""), msg
-                        ),
-                    )
-                retry_cfg = replace(
-                    retry_cfg, max_tokens=min(int(retry_cfg.max_tokens), 1536)
-                )
+                retry_cfg = replace(cfg, max_tokens=min(int(cfg.max_tokens), 1536))
 
                 retry_parts = _build_user_parts(
                     recent_max=2000, excerpt_max=2000, kb_max=1800
@@ -4293,12 +5613,70 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                         "provider": retry_cfg.provider,
                         "model": retry_cfg.model,
                         "max_tokens": retry_cfg.max_tokens,
-                        "note": f"retry_gateway_error:{msg[:60]}",
+                        "note": f"retry_gateway_error_same_model:{msg[:60]}",
                     },
                 )
-                writer_text = await generate_text(
-                    system_prompt=system, user_prompt=retry_prompt, cfg=retry_cfg
-                )
+                try:
+                    writer_text = await generate_text(
+                        system_prompt=system, user_prompt=retry_prompt, cfg=retry_cfg
+                    )
+                except LLMError as retry_err:
+                    retry_msg = str(retry_err)
+                    if not (
+                        retry_cfg.provider == "gemini"
+                        and "packyapi.com" in (retry_cfg.base_url or "").lower()
+                        and (
+                            _is_model_unavailable_error(retry_msg)
+                            or _is_retryable_gateway_error(retry_msg)
+                            or retry_msg.startswith("empty_completion")
+                        )
+                    ):
+                        raise
+                    openai_retry_cfg = _openai_writer_fallback_cfg(
+                        min_max_tokens=int(retry_cfg.max_tokens),
+                        temperature=min(float(cfg.temperature), 0.6),
+                    )
+                    if openai_retry_cfg is not None:
+                        retry_cfg = openai_retry_cfg
+                        yield emit(
+                            "tool_call",
+                            "Writer",
+                            {
+                                "tool": "llm.generate_text",
+                                "provider": retry_cfg.provider,
+                                "model": retry_cfg.model,
+                                "max_tokens": retry_cfg.max_tokens,
+                                "note": f"retry_gateway_error_openai_fallback:{retry_msg[:60]}",
+                            },
+                        )
+                        writer_text = await generate_text(
+                            system_prompt=system,
+                            user_prompt=retry_prompt,
+                            cfg=retry_cfg,
+                        )
+                        cfg = retry_cfg
+                    else:
+                        retry_cfg = replace(
+                            retry_cfg,
+                            model=_choose_packy_gemini_rescue_model(
+                                str(retry_cfg.model or ""), retry_msg
+                            ),
+                        )
+                        yield emit(
+                            "tool_call",
+                            "Writer",
+                            {
+                                "tool": "llm.generate_text",
+                                "provider": retry_cfg.provider,
+                                "model": retry_cfg.model,
+                                "max_tokens": retry_cfg.max_tokens,
+                                "note": f"retry_gateway_error_fallback_model:{retry_msg[:60]}",
+                            },
+                        )
+                        writer_text = await generate_text(
+                            system_prompt=system, user_prompt=retry_prompt, cfg=retry_cfg
+                        )
+                        cfg = retry_cfg
             writer_text = strip_think_blocks(writer_text)
             if not re.search(r"(?m)^#\\s+\\S", writer_text):
                 title = _default_chapter_title(output_lang, chapter_index)
@@ -4310,20 +5688,8 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             if output_lang == "zh":
                 cjk_count = len(_CJK_RE.findall(writer_text))
                 if cjk_count < min_len:
-                    # Retry once when the gateway returns a suspiciously short
-                    # completion (often truncated/partial). Prefer a more
-                    # available fallback model on PackyAPI.
+                    # Retry once on the same selected model before falling back.
                     retry_cfg = cfg
-                    if (
-                        cfg.provider == "gemini"
-                        and "packyapi.com" in (cfg.base_url or "").lower()
-                    ):
-                        retry_cfg = replace(
-                            retry_cfg,
-                            model=_choose_packy_gemini_rescue_model(
-                                str(retry_cfg.model or ""), "too_short_retry"
-                            ),
-                        )
                     yield emit(
                         "tool_call",
                         "Writer",
@@ -4354,6 +5720,54 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                     cjk_count2 = len(_CJK_RE.findall(writer_text2))
                     if cjk_count2 >= min_len:
                         writer_text = writer_text2
+                    elif (
+                        cfg.provider == "gemini"
+                        and "packyapi.com" in (cfg.base_url or "").lower()
+                    ):
+                        openai_retry_cfg = _openai_structured_fallback_cfg(
+                            min_max_tokens=int(retry_cfg.max_tokens),
+                            temperature=min(float(cfg.temperature), 0.6),
+                        )
+                        if openai_retry_cfg is not None:
+                            retry_cfg = openai_retry_cfg
+                            note = "retry_too_short_openai_fallback"
+                        else:
+                            retry_cfg = replace(
+                                retry_cfg,
+                                model=_choose_packy_gemini_rescue_model(
+                                    str(retry_cfg.model or ""), "too_short_retry"
+                                ),
+                            )
+                            note = "retry_too_short_fallback_model"
+                        yield emit(
+                            "tool_call",
+                            "Writer",
+                            {
+                                "tool": "llm.generate_text",
+                                "provider": retry_cfg.provider,
+                                "model": retry_cfg.model,
+                                "max_tokens": retry_cfg.max_tokens,
+                                "note": note,
+                            },
+                        )
+                        writer_text3 = await generate_text(
+                            system_prompt=system, user_prompt=retry_user, cfg=retry_cfg
+                        )
+                        writer_text3 = strip_think_blocks(writer_text3)
+                        if not re.search(r"(?m)^#\s+\S", writer_text3):
+                            title = _default_chapter_title(output_lang, chapter_index)
+                            if isinstance(chapter_plan, dict):
+                                t = chapter_plan.get("title")
+                                if isinstance(t, str) and t.strip():
+                                    title = t.strip()
+                            writer_text3 = f"# {title}\n\n{writer_text3.lstrip()}"
+                        cjk_count3 = len(_CJK_RE.findall(writer_text3))
+                        if cjk_count3 >= min_len:
+                            writer_text = writer_text3
+                        else:
+                            raise LLMError(
+                                f"writer_output_too_short:cjk={cjk_count3},min={min_len}"
+                            )
                     else:
                         raise LLMError(
                             f"writer_output_too_short:cjk={cjk_count2},min={min_len}"
@@ -4416,25 +5830,37 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
             )
             cfg0 = llm_cfg()
             editor_max_tokens = max(int(cfg0.max_tokens), int(writer_max_tokens))
-            cfg = (
-                replace(cfg0, max_tokens=editor_max_tokens)
-                if editor_max_tokens != cfg0.max_tokens
-                else cfg0
+            cfg = replace(
+                cfg0,
+                max_tokens=editor_max_tokens,
+                temperature=min(float(cfg0.temperature), 0.2),
             )
+            editor_note: str | None = None
+            if cfg.provider == "gemini" and "packyapi.com" in (cfg.base_url or "").lower():
+                openai_cfg = _openai_writer_fallback_cfg(
+                    min_max_tokens=editor_max_tokens,
+                    temperature=0.2,
+                )
+                if openai_cfg is not None:
+                    cfg = openai_cfg
+                    editor_note = "prefer_openai_editor_for_gemini_packy"
             yield emit(
                 "agent_output",
                 "Editor",
                 {"step": "llm.generate_text", "step_index": 2, "step_total": 4},
             )
+            tool_call_data = {
+                "tool": "llm.generate_text",
+                "provider": cfg.provider,
+                "model": cfg.model,
+                "max_tokens": cfg.max_tokens,
+            }
+            if editor_note:
+                tool_call_data["note"] = editor_note
             yield emit(
                 "tool_call",
                 "Editor",
-                {
-                    "tool": "llm.generate_text",
-                    "provider": cfg.provider,
-                    "model": cfg.model,
-                    "max_tokens": cfg.max_tokens,
-                },
+                tool_call_data,
             )
             edited_text = await generate_text(
                 system_prompt=system, user_prompt=user, cfg=cfg
@@ -4445,21 +5871,31 @@ async def stream_run(project_id: str, payload: dict[str, Any]) -> StreamingRespo
                 "Editor",
                 {"step": "validate_output", "step_index": 3, "step_total": 4},
             )
-            # Guardrail: some models may incorrectly summarize/shorten or output
-            # partial content; fall back to the original writer output.
-            w = writer_text.strip()
-            e = edited_text.strip()
-            suspicious = False
-            if not e:
-                suspicious = True
-            elif not re.search(r"(?m)^#\\s+\\S", edited_text):
-                suspicious = True
-            elif len(w) >= 400 and len(e) < int(len(w) * 0.65):
-                suspicious = True
-            elif output_lang == "zh" and _CJK_RE.search(w) and not _CJK_RE.search(e):
-                suspicious = True
-            if suspicious:
-                raise ValueError("editor_suspicious_output")
+            if _is_suspicious_editor_output(writer_text, edited_text):
+                repair_cfg = replace(cfg, temperature=0.1)
+                repair_user = (
+                    user
+                    + "\n\nIMPORTANT: Keep the exact chapter structure, keep the length close to the input, "
+                    + "return full Markdown only, no commentary, no fences."
+                )
+                yield emit(
+                    "tool_call",
+                    "Editor",
+                    {
+                        "tool": "llm.generate_text",
+                        "provider": repair_cfg.provider,
+                        "model": repair_cfg.model,
+                        "max_tokens": repair_cfg.max_tokens,
+                        "note": "retry_suspicious_output",
+                    },
+                )
+                edited_retry = await generate_text(
+                    system_prompt=system, user_prompt=repair_user, cfg=repair_cfg
+                )
+                edited_retry = strip_think_blocks(edited_retry)
+                if _is_suspicious_editor_output(writer_text, edited_retry):
+                    raise ValueError("editor_suspicious_output")
+                edited_text = edited_retry
             yield emit(
                 "agent_output",
                 "Editor",

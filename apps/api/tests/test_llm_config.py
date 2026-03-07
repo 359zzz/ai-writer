@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from ai_writer_api.llm import resolve_llm_config
+from ai_writer_api.llm import (
+    _gemini_proxy_fallback_models,
+    _packy_openai_fallback_models,
+    resolve_llm_config,
+)
 from ai_writer_api.secrets import Secrets
 
 
@@ -56,3 +60,13 @@ def test_openai_model_gpt5_dash_insertion() -> None:
     )
     assert cfg.model == "gpt-5.1-codex"
 
+
+def test_packy_openai_fallbacks_cover_gpt54() -> None:
+    models = _packy_openai_fallback_models("gpt-5.4", "openai_http_404")
+    assert models[:2] == ["gpt-5.2", "gpt-5.1-codex"]
+
+
+def test_packy_gemini_disables_hidden_cross_model_fallbacks() -> None:
+    assert _gemini_proxy_fallback_models(
+        "gemini-2.5-pro", "https://www.packyapi.com/v1"
+    ) == []

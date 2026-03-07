@@ -22,6 +22,7 @@ build/
 node_modules/
 .next/
 out/
+apps/web/test-results/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -37,9 +38,11 @@ exports/
 
 # --- Local reference / experiments (not shipped) ---
 _ref/
+.codex/
 .serena/
 apps/api/api-boot.err.log
 apps/api/api-boot.out.log
+红楼梦前30回.txt
 
 # --- Export templates generated locally ---
 apps/api/templates/export/reference.docx
